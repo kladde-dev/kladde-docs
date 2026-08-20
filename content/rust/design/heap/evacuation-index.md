@@ -39,7 +39,7 @@ So "does this gap fit this allocation?" is answered by a key comparison, and "th
 That is what turns a pair query into a range query.
 
 The bit layout is chosen so the ordering within one size is *resizable allocation, fixed allocation, gap* — which makes a gap sort above every allocation it can hold, including one of exactly its own size.
-The size field is shifted by two, so addresses are capped at 2⁶².
+The size field is shifted by two, so addresses are capped at $2^{62}$.
 
 ## The aggregate
 

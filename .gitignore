@@ -12,3 +12,5 @@ replit.nix
 quartz/cli/tui/dist/
 .turbo/
 .stfolder/
+/kladde.pdf
+/kladde.md
