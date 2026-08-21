@@ -17,11 +17,15 @@ then hands it to pandoc.  The fiddly parts, and why they are needed:
 Usage:  tools/make-pdf.py [-o kladde.pdf] [--keep-markdown]
 
 Needs: pandoc, texlive-xetex, lmodern, fonts-texgyre, fonts-texgyre-math,
-       fonts-dejavu.
+       fonts-dejavu, librsvg2-bin (pandoc shells out to rsvg-convert to turn
+       the generated SVGs into PDF), and `npm install` for the mermaid
+       renderer in tools/render-mermaid.mjs.
 """
 
 import argparse
+import json
 import re
+import shutil as _shutil
 import shutil
 import subprocess
 import sys
@@ -210,6 +214,154 @@ def stamp_headings(body, prefix):
     return "\n".join(out)
 
 
+SVG_CALL = re.compile(r"(var|color-mix)\(([^()]*)\)")   # innermost call only
+SVG_HEX = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _css_args(s):
+    out, depth, cur = [], 0, ""
+    for ch in s:
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth == 0:
+            out.append(cur.strip()); cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur.strip())
+    return out
+
+
+def _rgb(c):
+    m = SVG_HEX.match(c.strip())
+    if not m:
+        return None
+    h = m.group(1)
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def flatten_svg(svg):
+    """Resolve CSS custom properties and color-mix() into literal colours.
+
+    Every non-browser SVG converter -- rsvg-convert, cairosvg, resvg, and
+    ImageMagick, which delegates to librsvg anyway -- supports neither, and
+    silently paints the whole diagram black instead of failing.  Flattening here
+    is what makes the SVG portable to any of them.
+    """
+    decls = dict(re.findall(r"(--[\w-]+)\s*:\s*([^;}\"\']+)", svg))
+
+    def one(m):
+        kind, args = m.group(1), _css_args(m.group(2))
+        if kind == "var":
+            return decls.get(args[0], args[1] if len(args) > 1 else "none")
+        parts = [a for a in args if not a.startswith("in ")]
+        if len(parts) != 2:
+            return "none"
+        pct = re.search(r"([\d.]+)%", parts[0])
+        ratio = float(pct.group(1)) / 100 if pct else 0.5
+        a, b = (_rgb(re.sub(r"[\d.]+%", "", x)) for x in parts)
+        if not a or not b:
+            return "none"
+        return "#%02x%02x%02x" % tuple(
+            round(x * ratio + y * (1 - ratio)) for x, y in zip(a, b))
+
+    for _ in range(20):
+        svg, n = SVG_CALL.subn(one, svg)
+        if not n:
+            break
+        decls = dict(re.findall(r"(--[\w-]+)\s*:\s*([^;}\"\']+)", svg))
+    if SVG_CALL.search(svg):
+        sys.exit("flatten_svg: unresolved CSS in a diagram; see tools/render-mermaid.mjs")
+    return re.sub(r"@import\s+url\([^)]*\)\s*;", "", svg)   # offline: no webfont
+
+
+def _fences(body):
+    """Yield (index, info_string, [content lines]) for every fenced block."""
+    opener, block = None, []
+    for i, line in enumerate(body.splitlines()):
+        m = FENCE.match(line)
+        if m and opener is None:
+            opener, block = line.strip().strip("`~").strip(), []
+        elif m:
+            yield opener, block
+            opener = None
+        elif opener is not None:
+            block.append(line)
+
+
+def collect_mermaid(body):
+    return ["\n".join(b) for info, b in _fences(body) if info == "mermaid"]
+
+
+def render_mermaid(sources, figdir):
+    """Render every mermaid source to a flattened SVG file, in one node call."""
+    script = Path(__file__).resolve().parent / "render-mermaid.mjs"
+    if not _shutil.which("node"):
+        sys.exit("node not found; needed to render the mermaid diagrams")
+    proc = subprocess.run(
+        ["node", str(script)], input=json.dumps({"sources": sources}),
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.exit(f"mermaid renderer failed:\n{proc.stderr}")
+    if proc.stderr.strip():
+        print(proc.stderr.strip(), file=sys.stderr)
+    if not _shutil.which("rsvg-convert"):
+        sys.exit("rsvg-convert not found (install librsvg2-bin)")
+    figdir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i, svg in enumerate(json.loads(proc.stdout)["svgs"]):
+        if svg is None:
+            sys.exit(f"mermaid diagram {i + 1} did not render")
+        stem = figdir / f"diagram-{i + 1:02d}"
+        svg_path = stem.with_suffix(".svg")
+        svg_path.write_text(flatten_svg(svg))
+        # LaTeX cannot size an SVG.  Pandoc converts them for its *own* image
+        # elements, but these are injected as raw LaTeX, so do it here -- which
+        # also puts the failure in one obvious place if rsvg-convert is missing.
+        pdf_path = stem.with_suffix(".pdf")
+        conv = subprocess.run(
+            ["rsvg-convert", "-f", "pdf", "-o", str(pdf_path), str(svg_path)],
+            capture_output=True, text=True)
+        if conv.returncode != 0:
+            sys.exit(f"rsvg-convert failed on diagram {i + 1}:\n{conv.stderr}")
+        paths.append(pdf_path)
+    return paths
+
+
+def substitute_mermaid(body, paths):
+    """Replace each mermaid fence with the figure rendered from it.
+
+    `paths` is empty under --check-only, which renders nothing; the fence is
+    then left alone rather than exploding, since that mode only reports on
+    links and page coverage.
+    """
+    out, opener, block = [], None, []
+    for line in body.splitlines():
+        if FENCE.match(line) and opener is None:
+            opener, block = line, []
+        elif FENCE.match(line):
+            figure = (next(paths, None)
+                      if opener.strip().strip("`~").strip() == "mermaid" else None)
+            if figure is not None:
+                # Raw LaTeX rather than `![](...)`: pandoc only centres an image
+                # that carries a caption, and these want no caption.
+                out += ["```{=latex}", "\\begin{center}",
+                        # `max width` (adjustbox) rather than `width`: a small
+                        # diagram keeps its natural size, a wide one is scaled
+                        # down to the text block instead of running off it.
+                        f"\\includegraphics[max width=\\linewidth]{{{figure}}}",
+                        "\\end{center}", "```"]
+            else:
+                out += [opener, *block, line]
+            opener = None
+        elif opener is not None:
+            block.append(line)
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _cells(line):
     s = line.strip().strip("|")
     return [c.strip() for c in re.split(r"(?<!\\)\|", s)]
@@ -303,7 +455,7 @@ def wrap_diagrams(body):
     return "\n".join(out)
 
 
-def build_markdown(pages, problems):
+def build_markdown(pages, problems, figdir=None):
     chunks = [
         "---",
         'title: "Kladde"',
@@ -322,18 +474,32 @@ def build_markdown(pages, problems):
         f'monofont: "{MONO_FONT}"',
         "header-includes: |",
         "  \\usepackage{fancyvrb}",
+        # Injected as raw LaTeX, so pandoc never sees an Image element and
+        # does not load graphicx itself.  The \\maxwidth dance is pandoc's own
+        # idiom: natural size, capped at the text width.
+        "  \\usepackage{graphicx}",
+        "  \\usepackage[export]{adjustbox}",
         "  \\DefineVerbatimEnvironment{kladdediagram}{Verbatim}"
                 f"{{baselinestretch={DIAGRAM_LEADING},samepage=true}}",
         "fontsize: 10pt",
         "---",
         "",
     ]
+    # Two passes: every mermaid source in the document is collected first so
+    # that node is started once rather than once per diagram.
+    bodies = {}
     for rel, page in pages.items():
         body = rewrite_links(rel, page["body"], pages, problems)
+        bodies[rel] = stamp_headings(body, page["prefix"])
+    sources = [s for body in bodies.values() for s in collect_mermaid(body)]
+    figures = iter(render_mermaid(sources, figdir) if sources and figdir else [])
+
+    for rel, page in pages.items():
+        body = substitute_mermaid(bodies[rel], figures)
         chunks.append(f"# {page['title']} {{#{page['prefix']}}}\n")
-        chunks.append(size_tables(wrap_diagrams(stamp_headings(body, page["prefix"]))).strip())
+        chunks.append(size_tables(wrap_diagrams(body)).strip())
         chunks.append("")
-    return "\n".join(chunks)
+    return "\n".join(chunks), len(sources)
 
 
 def main():
@@ -351,12 +517,15 @@ def main():
 
     problems = []
     pages = collect(ORDER)
-    merged = build_markdown(pages, problems)
+    figdir = Path(args.output).with_suffix("").parent / (
+        Path(args.output).stem + "-figures")
+    merged, diagrams = build_markdown(
+        pages, problems, None if args.check_only else figdir)
 
     for p in problems:
         print(f"link: {p}", file=sys.stderr)
     print(f"{len(pages)} pages, {len(merged.splitlines())} lines, "
-          f"{len(problems)} link problem(s)", file=sys.stderr)
+          f"{diagrams} diagram(s), {len(problems)} link problem(s)", file=sys.stderr)
 
     if args.check_only:
         return
@@ -384,6 +553,7 @@ def main():
         sys.exit(f"pandoc failed; its input is at {md_path}")
     if not args.keep_markdown:
         md_path.unlink()
+        _shutil.rmtree(figdir, ignore_errors=True)
     print(f"wrote {args.output}", file=sys.stderr)
 
 
