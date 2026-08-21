@@ -21,34 +21,26 @@ The parts stack, and the stack is the reading order.
 
 ## The stack
 
-```
-        ┌─────────────────────────────────────────────┐
-        │  application code                           │
-        └───────────────────┬─────────────────────────┘
-                            │
-        ┌───────────────────▼─────────────────────────┐
-        │  kladde           root value, flush policy  │
-        └───────────────────┬─────────────────────────┘
-                            │
-   ┌────────────────────────┼──────────────────┬──────────────┐
-   │                        │                  │              │
-┌──▼───────────┐  ┌─────────▼────────┐  ┌──────▼──────┐  ┌────▼─────────┐
-│ kladde-types │  │  kladde-derive   │  │kladde-schema│  │kladde-varint │
-│ containers   │  │  #[derive]       │  │ descriptors │  │  LEB128      │
-└──┬───────────┘  └─────────┬────────┘  └──────┬──────┘  └────▲─────────┘
-   │                        │                  └──────────────┘
-   └────────────┬───────────┘
-                │
-   ┌────────────▼────────────────────────────────┐
-   │  kladde-persist                             │
-   │  Persistable, Guard, Location, PointerRepr  │
-   └────────────┬────────────────────────────────┘
-                │
-   ┌────────────▼────────────────────────────────┐
-   │  kladde-heap                                │
-   │  Pointer, RelocatableHeap, Storage,         │
-   │  Backend / ReadBackend / WriteBackend       │
-   └─────────────────────────────────────────────┘
+```mermaid
+graph TD
+  APP["application code"]
+  K["kladde<br/>root value, flush policy"]
+  T["kladde-types<br/>containers"]
+  D["kladde-derive<br/>derive macro"]
+  P["kladde-persist<br/>Persistable, Guard, Location, PointerRepr"]
+  S["kladde-schema<br/>descriptors, encoding, fingerprints"]
+  V["kladde-varint<br/>LEB128"]
+  H["kladde-heap<br/>Pointer, RelocatableHeap, Storage,<br/>Backend / ReadBackend / WriteBackend"]
+  APP --> K
+  APP --> T
+  K --> P
+  K --> H
+  T --> D
+  T --> P
+  D --> P
+  P --> S
+  P --> H
+  S --> V
 ```
 
 Dependencies point strictly downward.
@@ -88,7 +80,7 @@ See [Persistence](persistence/).
 The Rust implementation of the [language-independent schema model](../../spec/schema/): the descriptor types, the canonical encoding, and the fingerprint computation.
 
 Depends only on `kladde-varint`.
-It has no connection to the heap or to `Persistable` — deliberately, because it must be portable and testable on its own.
+It depends on neither the heap nor `Persistable` — deliberately, because it must be portable and testable on its own; the arrow in the diagram points the other way, from `kladde-persist` into it.
 The binding between a Rust type and its descriptor lives one layer up.
 
 See [Schema](schema/).
