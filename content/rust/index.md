@@ -58,7 +58,7 @@ See [Architecture](design/) for exactly where that seam falls.
 | `kladde-persist` | the serialization layer: `Persistable`, `Location`, the pointer byte encoding, and the typed conveniences on top of a backend. |
 | `kladde-schema` | type descriptors, their canonical encoding, and fingerprints. Depends on nothing but `kladde-varint`. |
 | `kladde-varint` | LEB128 varints. |
-| `kladde-types` | the built-in containers: vector, hash map, string, blob. |
+| `kladde-types` | the built-in containers: vector, hash map, string, blob. The default collection, not a layer — it uses only the public API any library could. |
 | `kladde-derive` | the `#[derive(Persistable)]` macro. |
 | `kladde` | the application-facing entry point: opening files, the root value, the default backend. |
 

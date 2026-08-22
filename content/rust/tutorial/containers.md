@@ -2,8 +2,20 @@
 title: The built-in containers
 ---
 
-Kladde provides four backed containers.
+`kladde-types` provides four backed containers.
 They are hand-implemented against the persistence layer rather than derived, the same way `std`'s collections hand-write raw pointer manipulation internally.
+
+## A default library, not a privileged one
+
+`kladde-types` is not part of the machinery, and nothing depends on it.
+It is a collection of types most applications turn out to want, offered so that you do not have to write them yourself.
+
+Everything in it is built on the same public `Persistable`/`Guard` surface available to any crate.
+There is no internal kladde magic here that a third-party library — or your own application — could not use equally well, and third-party libraries of general-purpose backed types are welcome.
+
+One exception exists today: [generic tooling](../../spec/tooling.md) will initially carry built-in knowledge of the opaque types this crate declares, so that a tool can render a vector or a map without knowing the library that wrote it.
+That is a stopgap rather than a privilege.
+The intended replacement is a mechanism by which *any* opaque type can optionally describe itself to tooling, at which point `kladde-types` becomes ordinary in that respect too.
 
 ## `PersistableVec<T>`
 

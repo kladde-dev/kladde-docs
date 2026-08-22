@@ -94,6 +94,9 @@ See [Schema](schema/).
 The built-in containers, and the macro that turns user types into backed ones.
 Both build on `kladde-persist`.
 
+Neither is load-bearing: nothing below them depends on either, and `kladde-types` uses only the public surface any third-party library could use.
+It is the default collection of backed types, not a layer of the system — see [Containers](persistence/containers.md).
+
 See [Containers](persistence/containers.md) and [The derive macro](persistence/derive-macro.md).
 
 ### `kladde` — the entry point
