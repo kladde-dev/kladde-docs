@@ -283,6 +283,102 @@ SVG_EDGE = re.compile(
     r'(<polyline class="edge" data-from="([^"]+)" data-to="([^"]+)"[^>]*points=")([^"]+)(")')
 
 
+def _svg(nodes, edges):
+    """A minimal laid-out diagram, in the shape the renderer emits."""
+    body = "".join(
+        f'<g class="node" data-id="{i}" data-label="{i}" data-shape="rectangle">'
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="0" ry="0"/></g>'
+        for i, x, y, w, h in nodes)
+    body += "".join(
+        f'<polyline class="edge" data-from="{a}" data-to="{b}" data-style="solid"'
+        f' data-arrow-start="false" data-arrow-end="true" points="{p}"/>'
+        for a, b, p in edges)
+    return f"<svg>{body}</svg>"
+
+
+def _points(svg, frm, to):
+    m = re.search(rf'data-from="{frm}" data-to="{to}"[^>]*points="([^"]+)"', svg)
+    return [tuple(round(float(v), 1) for v in q.split(",")) for q in m.group(1).split()]
+
+
+def self_test():
+    """Exercise the layout passes and the checker on synthetic diagrams.
+
+    Every one of these corresponds to a defect that reached a rendered PDF and
+    was found by eye rather than by a check. They need neither node nor pandoc,
+    so they run anywhere in well under a second.
+    """
+    cases, failures = [], []
+
+    def check(name, ok):
+        cases.append(name)
+        if not ok:
+            failures.append(name)
+
+    # Three boxes in a column, so an edge from the top to the bottom one has the
+    # middle box in its way.
+    stack = [("A", 0, 0, 80, 40), ("C", 0, 100, 80, 40), ("B", 0, 200, 80, 40)]
+
+    errs, _ = lint_diagram(_svg(stack, [("A", "B", "40,40 40,200")]))
+    check("an edge through a node is an error", any("through node C" in e for e in errs))
+
+    errs, _ = lint_diagram(_svg(stack, [("A", "B", "300,40 300,200"),
+                                        ("A", "B", "300,40 300,200")]))
+    check("an edge hidden under another is an error", any("lies entirely" in e for e in errs))
+
+    errs, warns = lint_diagram(_svg(stack, [("A", "B", "300,40 300,200"),
+                                            ("C", "B", "250,120 250,150 350,150 350,200")]))
+    check("a plain crossing only warns", not errs and any("crosses" in w for w in warns))
+
+    errs, warns = lint_diagram(_svg(stack, [("A", "B", "300,40 300,150 200,150 200,200"),
+                                            ("C", "B", "400,120 400,150 250,150 250,200")]))
+    check("a shared channel only warns", not errs and any("channel" in w for w in warns))
+
+    errs, warns = lint_diagram(_svg(stack, [("A", "C", "40,40 40,100")]))
+    check("a clean diagram is silent", not errs and not warns)
+
+    # straighten_svg: the jog collapses only when the result stays on both faces.
+    wide = [("A", 0, 0, 200, 40), ("B", 0, 200, 200, 40)]
+    out = straighten_svg(_svg(wide, [("A", "B", "40,40 40,120 90,120 90,200")]))
+    check("a needless jog is straightened", len(_points(out, "A", "B")) == 2)
+
+    narrow = [("A", 0, 0, 20, 40), ("B", 300, 200, 20, 40)]
+    out = straighten_svg(_svg(narrow, [("A", "B", "10,40 10,120 310,120 310,200")]))
+    check("a jog that must travel sideways is kept", len(_points(out, "A", "B")) == 4)
+
+    # Straightening may legitimately pick either column, so assert the invariant
+    # it actually promises: it never makes the diagram worse than it found it.
+    # `C` blocks the left column, so the pass must route right or not at all.
+    blocked = [("A", 0, 0, 200, 40), ("C", 20, 100, 40, 40), ("B", 0, 200, 200, 40)]
+    edge = [("A", "B", "40,40 40,60 160,60 160,200")]
+    before, _ = lint_diagram(_svg(blocked, edge))
+    after, _ = lint_diagram(straighten_svg(_svg(blocked, edge)))
+    check("straightening introduces no new defect", len(after) <= len(before))
+
+    # spread_ports: a fan from one shared point gets one exit per edge.
+    fan = [("A", 0, 0, 200, 40), ("B", 0, 200, 40, 40), ("C", 300, 200, 40, 40)]
+    out = spread_ports(_svg(fan, [("A", "B", "100,40 100,120 20,120 20,200"),
+                                  ("A", "C", "100,40 100,120 320,120 320,200")]))
+    check("a shared fan-out point is spread",
+          _points(out, "A", "B")[0][0] != _points(out, "A", "C")[0][0])
+
+    # separate_channels: two horizontals on one channel get their own.
+    # The two horizontals must overlap in x, or there is nothing to separate.
+    conv = [("A", 0, 0, 60, 40), ("D", 200, 100, 60, 40), ("B", 100, 300, 120, 40)]
+    shared = [("A", "B", "30,40 30,250 190,250 190,300"),
+              ("D", "B", "230,140 230,250 150,250 150,300")]
+    _, before = lint_diagram(_svg(conv, shared))
+    out = separate_channels(_svg(conv, shared))
+    _, after = lint_diagram(out)
+    check("a shared channel is detected", any("channel" in w for w in before))
+    check("a shared channel is separated", not any("channel" in w for w in after))
+
+    for name in cases:
+        print(f"  {'FAIL' if name in failures else 'ok  '}  {name}")
+    print(f"{len(cases) - len(failures)}/{len(cases)} passed")
+    return 1 if failures else 0
+
+
 def lint_diagram(svg):
     """Check a laid-out diagram for the defects this pipeline has produced before.
 
@@ -756,9 +852,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--output", default=str(ROOT / "kladde.pdf"))
     ap.add_argument("--keep-markdown", action="store_true")
+    ap.add_argument("--self-test", action="store_true",
+                    help="check the layout passes against synthetic diagrams and exit")
     ap.add_argument("--check-only", action="store_true",
                     help="report link problems and exit without running pandoc")
     args = ap.parse_args()
+
+    if args.self_test:
+        sys.exit(self_test())
 
     on_disk = {p.relative_to(CONTENT).as_posix() for p in CONTENT.rglob("*.md")}
     missing = on_disk - set(ORDER)
