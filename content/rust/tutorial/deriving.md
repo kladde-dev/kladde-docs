@@ -4,6 +4,58 @@ title: Deriving your own types
 
 `#[derive(Persistable)]` turns your own struct or enum into a backed type, as long as every persisted field is itself `Persistable`.
 
+## What to import
+
+Two crates: `kladde` for the machinery, `kladde-types` for the containers.
+
+```toml
+[dependencies]
+kladde = "0.1"
+kladde-types = "0.1"
+```
+
+You do **not** need `kladde-derive` or `kladde-persist`.
+The macro is re-exported from `kladde` behind its `derive` feature, which is on by default, and generated code is rooted at `::kladde`, which re-exports every item it names.
+That is deliberate: if you had to add `kladde-persist` yourself, a version disagreeing with `kladde`'s would give you two distinct copies of the `Persistable` trait and an error message that prints the expected and found types identically.
+
+Here is a complete program:
+
+```rust
+use kladde::{Kladde, Persistable};
+use kladde_types::{PersistableString, PersistableVec};
+
+#[derive(Persistable)]
+enum PhoneNumber {
+    Mobile(PersistableString),
+    Landline(PersistableString),
+}
+
+#[derive(Persistable)]
+struct Contact {
+    email: PersistableString,
+    phones: PersistableVec<PhoneNumber>,
+    starred: bool,
+}
+
+fn main() {
+    let mut contact = Kladde::new(Contact {
+        email: PersistableString::from("ada@example.com"),
+        phones: PersistableVec::new(),
+        starred: false,
+    });
+
+    let mut guard = contact.guard();
+    guard.starred_mut().set(true);
+    guard
+        .phones_mut()
+        .push(PhoneNumber::Mobile(PersistableString::from("555-0100")));
+}
+```
+
+The `Persistable` in that `use` is the derive *macro*.
+It shares its name with the `Persistable` *trait*, which is legal and deliberate — they live in different namespaces, exactly as `serde`'s `Serialize` does.
+If you need to name the trait explicitly in the same file, import it under an alias.
+
 ## Structs
 
 ```rust

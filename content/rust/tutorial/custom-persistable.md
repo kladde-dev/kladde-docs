@@ -58,33 +58,120 @@ A `PersistableVec` built by `from_iter` holds real content but no pointer, becau
 Loads are sequential, so a single exclusive borrow reborrowed down the recursion suffices, and it lets the read path hand out a real seekable cursor.
 It also means the borrow checker forbids loading while any guard is alive, which is a free correctness property.
 
-## A minimal example
+## What to import
 
-A fixed-size type with no allocation of its own:
+One crate. `kladde` re-exports everything a hand-written impl names, so you never add `kladde-persist` yourself:
+
+```toml
+[dependencies]
+kladde = "0.1"
+```
+
+If you are writing a *library* on top of `kladde-persist` and have no reason to pull the facade in, depend on `kladde-persist` directly and point the macro at it instead — see [the derive macro's path resolution](../design/persistence/derive-macro.md#path-resolution).
+
+## A complete example
+
+A fixed-size type owning no allocation of its own.
+This is everything the trait requires: the inline size, a guard, the two halves of the round trip, and the descriptor.
 
 ```rust
-struct Rgb { r: u8, g: u8, b: u8 }
+use kladde::{
+    Field, Guard, Location, Persistable, PointerRepr, ReadBackend,
+    SchemaBuilder, TypeDescriptor, WriteBackend,
+};
+use std::io::Read;
+
+struct Rgb {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+struct RgbGuard<'s, B: WriteBackend> {
+    inner: &'s mut Rgb,
+    backend: &'s B,
+    location: Location<B::Pointer, B::Size>,
+}
+
+impl<'s, B: WriteBackend> RgbGuard<'s, B> {
+    fn set(&mut self, mut value: Rgb) {
+        <Rgb as Persistable<B::Pointer>>::store(&mut value, self.backend, self.location);
+        *self.inner = value;
+    }
+}
+
+impl<'s, B: WriteBackend> Guard for RgbGuard<'s, B> {
+    type Persistable = Rgb;
+    type Backend = B;
+    fn as_persistable(&self) -> &Rgb {
+        self.inner
+    }
+    fn as_persistable_mut(&mut self) -> &mut Rgb {
+        self.inner
+    }
+    fn backend(&self) -> &B {
+        self.backend
+    }
+}
 
 impl<P: PointerRepr> Persistable<P> for Rgb {
     const INLINE_SIZE: usize = 3;
 
-    fn store<B: WriteBackend<Pointer = P>>(
-        &mut self, backend: &B, location: Location<P, B::Size>,
-    ) {
+    type Guard<'s, B: WriteBackend<Pointer = P>>
+        = RgbGuard<'s, B>
+    where
+        B: 's;
+
+    fn guard<'s, B: WriteBackend<Pointer = P>>(
+        &'s mut self,
+        backend: &'s B,
+        location: Location<P, B::Size>,
+    ) -> RgbGuard<'s, B> {
+        RgbGuard { inner: self, backend, location }
+    }
+
+    fn store<B: WriteBackend<Pointer = P>>(&mut self, backend: &B, location: Location<P, B::Size>) {
         backend.write(location.anchor, location.offset, &[self.r, self.g, self.b]);
     }
 
-    fn load<B: ReadBackend<Pointer = P>>(
-        backend: &mut B, location: Location<P, B::Size>,
-    ) -> Self {
+    fn load<B: ReadBackend<Pointer = P>>(backend: &mut B, location: Location<P, B::Size>) -> Self {
         let mut buf = [0u8; 3];
-        backend.read_at(location.anchor, location.offset)
+        backend
+            .read_at(location.anchor, location.offset)
             .read_exact(&mut buf)
             .expect("read rgb");
         Rgb { r: buf[0], g: buf[1], b: buf[2] }
     }
+
+    fn describe_local(builder: &mut SchemaBuilder) -> TypeDescriptor {
+        TypeDescriptor::Struct {
+            name: "Rgb".into(),
+            fields: ["r", "g", "b"]
+                .into_iter()
+                .map(|name| Field {
+                    name: name.into(),
+                    ty: <u8 as Persistable<P>>::describe(builder),
+                })
+                .collect(),
+        }
+    }
 }
 ```
+
+Four things worth noting.
+
+`INLINE_SIZE` is 3 because `store` writes exactly three bytes.
+Every offset computed by a containing struct depends on that number being right.
+
+**The guard is a separate type**, generated for you by the derive macro but written out here.
+It holds the value, the backend and the location, and its mutating methods do both halves: write the bytes, then update the in-memory value.
+
+**`describe_local` declares what the bytes are, not what the Rust type is.**
+`Rgb` writes three consecutive `u8`s, so it declares a `Struct` of three `u8` fields — even though the implementation is hand-written.
+Declare `Opaque` only when the representation genuinely is not decomposable; see [Your descriptor](#your-descriptor).
+
+The impl is generic over `P: PointerRepr`, so `Rgb` works at any pointer width.
+A type that *holds* a pointer cannot do that and is written for one `P`.
 
 ## Owning an allocation
 
