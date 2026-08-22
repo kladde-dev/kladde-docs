@@ -276,6 +276,99 @@ def flatten_svg(svg):
     return re.sub(r"@import\s+url\([^)]*\)\s*;", "", svg)   # offline: no webfont
 
 
+SVG_NODE = re.compile(
+    r'<g class="node" data-id="([^"]+)"[^>]*>\s*<rect[^>]*?x="([-\d.]+)"[^>]*?y="([-\d.]+)"'
+    r'[^>]*?width="([\d.]+)"[^>]*?height="([\d.]+)"')
+SVG_EDGE = re.compile(
+    r'(<polyline class="edge" data-from="([^"]+)" data-to="([^"]+)"[^>]*points=")([^"]+)(")')
+
+
+def spread_ports(svg):
+    """Give each of a node's outgoing edges its own exit, ordered by destination.
+
+    The layout engine fans every out-edge from a single point on the node's face.
+    That looks fine until `straighten_svg` drags one of them sideways onto its
+    own column, at which point it can cut straight across a sibling.  Spreading
+    the exits across the face in left-to-right destination order keeps each edge
+    on its own side, so straightening cannot produce a crossing.
+    """
+    boxes = {m.group(1): tuple(float(v) for v in m.groups()[1:])
+             for m in SVG_NODE.finditer(svg)}
+    paths = {}
+    for m in SVG_EDGE.finditer(svg):
+        _, src, dst, pts, _ = m.groups()
+        paths[(src, dst)] = [tuple(float(v) for v in q.split(",")) for q in pts.split()]
+
+    outgoing = {}
+    for key in paths:
+        outgoing.setdefault(key[0], []).append(key)
+
+    remap = {}
+    for src, keys in outgoing.items():
+        # Only when they really do all leave from one shared point.
+        if len(keys) < 2 or src not in boxes:
+            continue
+        if len({tuple(round(c, 2) for c in paths[k][0]) for k in keys}) != 1:
+            continue
+        bx, _, bw, _ = boxes[src]
+        for i, k in enumerate(sorted(keys, key=lambda k: paths[k][-1][0])):
+            remap[k] = bx + bw * (i + 1) / (len(keys) + 1)
+
+    def one(m):
+        head, src, dst, pts, tail = m.groups()
+        p, xe = paths[(src, dst)], remap.get((src, dst))
+        if xe is not None:
+            x0 = p[0][0]
+            p = [(xe, y) if abs(x - x0) < .01 and i < len(p) - 1 else (x, y)
+                 for i, (x, y) in enumerate(p)]
+        return head + " ".join(f"{x},{y}" for x, y in p) + tail
+
+    return SVG_EDGE.sub(one, svg)
+
+
+def straighten_svg(svg, inset=4.0):
+    """Collapse the dog-leg out of an edge when a straight line still lands on
+    both of its nodes.
+
+    The layout engine anchors an edge at its source node's centre and then routes
+    orthogonally, so two nodes whose centres differ by a few pixels get a visible
+    kink for no reason -- and a long edge can end up jogging around nothing.
+    Sliding one endpoint along the face it already touches removes the kink
+    without detaching the edge.
+
+    Left alone when the slide would leave that face (the edge genuinely travels
+    sideways) or when the straightened line would cross another node, so this can
+    only ever remove a kink, never introduce a collision.
+    """
+    boxes = {m.group(1): tuple(float(v) for v in m.groups()[1:])
+             for m in SVG_NODE.finditer(svg)}
+
+    def on_face(node, x):
+        bx, _, bw, _ = boxes[node]
+        return bx + inset <= x <= bx + bw - inset
+
+    def hits_a_node(x, y0, y1, exclude):
+        lo, hi = sorted((y0, y1))
+        return any(bx + inset < x < bx + bw - inset and lo < by + bh and hi > by
+                   for n, (bx, by, bw, bh) in boxes.items()
+                   if n not in exclude)
+
+    def one(m):
+        head, src, dst, pts, tail = m.groups()
+        p = [tuple(float(v) for v in q.split(",")) for q in pts.split()]
+        if len(p) == 4 and src in boxes and dst in boxes:
+            (x0, y0), (x1, y1), (x2, y2), (x3, y3) = p
+            if abs(x0 - x1) < .01 and abs(y1 - y2) < .01 and abs(x2 - x3) < .01:
+                for x in ([x3] if on_face(src, x3) else []) + \
+                         ([x0] if on_face(dst, x0) else []):
+                    if not hits_a_node(x, y0, y3, {src, dst}):
+                        p = [(x, y0), (x, y3)]
+                        break
+        return head + " ".join(f"{x},{y}" for x, y in p) + tail
+
+    return SVG_EDGE.sub(one, svg)
+
+
 def _fences(body):
     """Yield (index, info_string, [content lines]) for every fenced block."""
     opener, block = None, []
@@ -315,7 +408,7 @@ def render_mermaid(sources, figdir):
             sys.exit(f"mermaid diagram {i + 1} did not render")
         stem = figdir / f"diagram-{i + 1:02d}"
         svg_path = stem.with_suffix(".svg")
-        svg_path.write_text(flatten_svg(svg))
+        svg_path.write_text(flatten_svg(straighten_svg(spread_ports(svg))))
         # LaTeX cannot size an SVG.  Pandoc converts them for its *own* image
         # elements, but these are injected as raw LaTeX, so do it here -- which
         # also puts the failure in one obvious place if rsvg-convert is missing.
