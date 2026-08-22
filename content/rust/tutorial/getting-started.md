@@ -21,7 +21,8 @@ A *Kladde* is a merchant's rough day-book — transactions scribbled down in ord
 
 ```rust
 use kladde::Kladde;
-use kladde_types::{Persistable, PersistableString, PersistableVec};
+use kladde::Persistable;
+use kladde_types::{PersistableString, PersistableVec};
 
 #[derive(Persistable)]
 struct Journal {

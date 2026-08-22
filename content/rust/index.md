@@ -18,7 +18,8 @@ A Rust workspace providing backed data structures: containers and derived types 
 
 ```rust
 use kladde::Kladde;
-use kladde_types::{Persistable, PersistableString, PersistableVec};
+use kladde::Persistable;
+use kladde_types::{PersistableString, PersistableVec};
 
 #[derive(Persistable)]
 struct Notes {
@@ -59,8 +60,8 @@ See [Architecture](design/) for exactly where that seam falls.
 | `kladde-schema` | type descriptors, their canonical encoding, and fingerprints. Depends on nothing but `kladde-varint`. |
 | `kladde-varint` | LEB128 varints. |
 | `kladde-types` | the built-in containers: vector, hash map, string, blob. The default collection, not a layer — it uses only the public API any library could. |
-| `kladde-derive` | the `#[derive(Persistable)]` macro. |
-| `kladde` | the application-facing entry point: opening files, the root value, the default backend. |
+| `kladde-derive` | the `#[derive(Persistable)]` macro. Reached through `kladde`'s `derive` feature; applications do not depend on it directly. |
+| `kladde` | the application-facing entry point: opening files, the root value, the default backend. Re-exports the derive macro and everything a `Persistable` impl names, so an application needs this crate and nothing below it. |
 
 The dependency direction is strictly downward, and `kladde-heap` deliberately depends on none of the others — it is usable on its own as a relocatable persistent heap, independently of anything kladde-specific.
 

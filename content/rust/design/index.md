@@ -35,12 +35,10 @@ graph TD
   APP --> T
   K --> P
   K --> H
-  %% T --> P is declared before T --> D deliberately: the layout engine we use
-  %% to render PDFs (beautiful-mermaid) honours declaration order, and the
-  %% other way round it routes the types->persist edge straight through the
-  %% derive box, where it is invisible underneath derive->persist.
+  %% K --> D is dashed because it is optional: `kladde`'s `derive` feature,
+  %% on by default. Nothing else depends on the macro crate.
+  K -.-> D
   T --> P
-  T --> D
   D --> P
   P --> S
   P --> H
@@ -48,6 +46,7 @@ graph TD
 ```
 
 Dependencies point strictly downward.
+The dashed edge is optional: `kladde-derive` arrives through `kladde`'s `derive` feature, which is on by default.
 
 ## The parts
 
@@ -92,7 +91,9 @@ See [Schema](schema/).
 ### `kladde-types` and `kladde-derive` — the type vocabulary
 
 The built-in containers, and the macro that turns user types into backed ones.
-Both build on `kladde-persist`.
+Both build on `kladde-persist`, and neither depends on the other.
+
+The macro is re-exported from `kladde`, not from `kladde-types`, so that an application can use the containers without the macro machinery and vice versa — and because generated code is rooted at `::kladde`, which is where the items it names are re-exported from.
 
 Neither is load-bearing: nothing below them depends on either, and `kladde-types` uses only the public surface any third-party library could use.
 It is the default collection of backed types, not a layer of the system — see [Containers](persistence/containers.md).

@@ -63,9 +63,21 @@ The latter is the more interesting one: it would let a caller write `match guard
 
 ## Path resolution
 
-Generated code references the persistence crate by absolute path, so any crate using the macro needs that crate as a **direct** dependency, not merely a transitive one.
+Generated code names items by absolute path, because a macro cannot know what the user called their imports.
+It roots them at **`::kladde`**, and `kladde` re-exports every item generated code touches — thirteen of them, all of which a hand-written impl needs anyway.
 
-This is the same constraint `#[derive(serde::Serialize)]` imposes, for the same reason: a macro cannot know what the user called their imports.
+So an application depends on `kladde` and nothing below it, and an author who later hand-writes an impl finds the same items in the same place.
+That matters for more than convenience: if the facade did *not* re-export them, the author would add `kladde-persist` themselves, and a version that disagreed with the facade's would produce two distinct copies of the `Persistable` trait and an error that prints the expected and found types identically.
+
+A library built directly on `kladde-persist` has no reason to pull the facade in, and redirects the macro instead:
+
+```rust
+#[derive(Persistable)]
+#[kladde(crate = "kladde_persist")]
+struct Node { /* ... */ }
+```
+
+This is the same arrangement as `serde`'s `#[serde(crate = "...")]`, for the same reason.
 
 ## What is missing
 
