@@ -16,3 +16,5 @@ quartz/cli/tui/dist/
 /kladde.md
 /kladde-figures/
 __pycache__/
+*.sync-conflict-*
+/content/.stignore

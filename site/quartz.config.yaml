@@ -11,6 +11,7 @@ configuration:
     - private
     - templates
     - .obsidian
+    - "**/*.sync-conflict-*"
   theme:
     fontOrigin: googleFonts
     cdnCaching: true
