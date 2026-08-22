@@ -23,20 +23,24 @@ The parts stack, and the stack is the reading order.
 
 ```mermaid
 graph TD
-  APP["application code"]
-  K["kladde<br/>root value, flush policy"]
-  T["kladde-types<br/>containers"]
-  D["kladde-derive<br/>derive macro"]
-  P["kladde-persist<br/>Persistable, Guard, Location, PointerRepr"]
-  S["kladde-schema<br/>descriptors, encoding, fingerprints"]
-  V["kladde-varint<br/>LEB128"]
-  H["kladde-heap<br/>Pointer, RelocatableHeap, Storage,<br/>Backend / ReadBackend / WriteBackend"]
+  APP["<strong>application code</strong>"]
+  K["<strong>kladde</strong><br/>root value, flush policy"]
+  T["<strong>kladde-types</strong><br/>containers"]
+  D["<strong>kladde-derive</strong><br/>derive macro"]
+  P["<strong>kladde-persist</strong><br/>Persistable, Guard, Location, PointerRepr"]
+  S["<strong>kladde-schema</strong><br/>descriptors, encoding, fingerprints"]
+  V["<strong>kladde-varint</strong><br/>LEB128"]
+  H["<strong>kladde-heap</strong><br/>Pointer, RelocatableHeap, Storage,<br/>Backend / ReadBackend / WriteBackend"]
   APP --> K
   APP --> T
   K --> P
   K --> H
-  T --> D
+  %% T --> P is declared before T --> D deliberately: the layout engine we use
+  %% to render PDFs (beautiful-mermaid) honours declaration order, and the
+  %% other way round it routes the types->persist edge straight through the
+  %% derive box, where it is invisible underneath derive->persist.
   T --> P
+  T --> D
   D --> P
   P --> S
   P --> H
