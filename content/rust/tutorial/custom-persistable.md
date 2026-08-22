@@ -74,6 +74,7 @@ If you are writing a *library* on top of `kladde-persist` and have no reason to 
 A fixed-size type owning no allocation of its own.
 This is everything the trait requires: the inline size, a guard, the two halves of the round trip, and the descriptor.
 
+<!-- kladde-example: name=rgb file=src/lib.rs deps=kladde -->
 ```rust
 use kladde::{
     Field, Guard, Location, Persistable, PointerRepr, ReadBackend,

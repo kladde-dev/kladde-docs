@@ -19,6 +19,12 @@ A *Kladde* is a merchant's rough day-book â€” transactions scribbled down in ord
 
 ## Your first backed value
 
+<!-- kladde-example: name=journal file=src/main.rs mode=run deps=kladde,kladde-types
+after:
+  mod chaining;
+  mod nesting;
+  mod reading_back;
+-->
 ```rust
 use kladde::Kladde;
 use kladde::Persistable;
@@ -76,6 +82,15 @@ Persistence is not something you can forget, because the only mutating API is th
 
 Guards compose to arbitrary depth, and each level reborrows the same backend:
 
+<!-- kladde-example: name=journal file=src/nesting.rs
+before:
+  use crate::Journal;
+  use kladde::Kladde;
+  use kladde_types::PersistableString;
+  fn nesting(journal: &mut Kladde<Journal>) {
+after:
+  }
+-->
 ```rust
 let mut guard = journal.guard();
 let mut entries = guard.entries_mut();
@@ -85,8 +100,16 @@ entries.push(PersistableString::from("third"));
 
 Or in one chain, when you only need one mutation:
 
+<!-- kladde-example: name=journal file=src/chaining.rs
+before:
+  use crate::Journal;
+  use kladde::Kladde;
+  fn chaining(journal: &mut Kladde<Journal>) {
+after:
+  }
+-->
 ```rust
-journal.guard().owner_mut().set(PersistableString::from("grace"));
+journal.guard().owner_mut().set("grace");
 ```
 
 Hold a guard only as long as you need it.
@@ -94,6 +117,14 @@ It borrows the root, so nothing else can touch the structure while it is alive â
 
 ## Reading back
 
+<!-- kladde-example: name=journal file=src/reading_back.rs
+before:
+  use crate::Journal;
+  use kladde::Kladde;
+  fn reading_back(journal: &mut Kladde<Journal>) {
+after:
+  }
+-->
 ```rust
 let restored = journal.load();
 assert_eq!(restored.entries.len(), 1);

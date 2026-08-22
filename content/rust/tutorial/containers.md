@@ -22,8 +22,21 @@ The intended replacement is a mechanism by which *any* opaque type can optionall
 A growable sequence.
 `T` must be `Persistable`, and nothing more — no `Clone`, no `Serialize`.
 
+<!-- kladde-example: name=containers file=src/vec.rs deps=kladde,kladde-types
+before:
+  use kladde::{Kladde, Persistable};
+  use kladde_types::{PersistableString, PersistableVec};
+  #[derive(Persistable)]
+  struct Journal {
+      entries: PersistableVec<PersistableString>,
+  }
+  fn demo(journal: &mut Kladde<Journal>) {
+after:
+  }
+-->
 ```rust
-let mut v = journal.guard().entries_mut();
+let mut guard = journal.guard();
+let mut v = guard.entries_mut();
 v.push(PersistableString::from("a"));
 v.push(PersistableString::from("b"));
 ```
@@ -39,19 +52,62 @@ Removal from the middle shifts the tail, exactly as `Vec` does.
 
 Growable text.
 
+<!-- kladde-example: name=containers file=src/string.rs
+before:
+  use kladde::{Kladde, Persistable};
+  use kladde_types::PersistableString;
+  #[derive(Persistable)]
+  struct Journal {
+      owner: PersistableString,
+  }
+  fn demo(journal: &mut Kladde<Journal>) {
+  let mut guard = journal.guard();
+after:
+  }
+-->
 ```rust
-guard.owner_mut().set(PersistableString::from("ada"));
+guard.owner_mut().set("ada");
 ```
 
 It is a thin wrapper around `PersistableVec<u8>`, which is more interesting than it sounds.
 Plain `String` deliberately has **no** `Persistable` implementation, and that absence is the enforcement mechanism: a struct field typed `String` simply fails to compile, rather than silently persisting nothing.
 `PersistableString` exists because a backed string needs a field of its own to remember which allocation holds its bytes, and `String` has nowhere to put one.
 
+So this does not compile, and that is the point:
+
+<!-- kladde-example: name=plain-string-is-rejected file=src/lib.rs mode=compile_fail deps=kladde
+before:
+  use kladde::Persistable;
+-->
+```rust
+#[derive(Persistable)]
+struct Journal {
+    owner: String,  // the trait bound `String: Persistable<_>` is not satisfied
+}
+```
+
 ## `PersistableHashMap<K, V>`
 
 A key-value map.
 `K: Eq + Hash + Persistable`, `V: Persistable`.
 
+<!-- kladde-example: name=containers file=src/map.rs
+before:
+  use kladde::{Kladde, Persistable};
+  use kladde_types::{PersistableHashMap, PersistableString};
+  #[derive(Persistable)]
+  struct Contact {
+      email: PersistableString,
+  }
+  #[derive(Persistable)]
+  struct Book {
+      contacts: PersistableHashMap<PersistableString, Contact>,
+  }
+  fn demo(book: &mut Kladde<Book>, contact: Contact) {
+  let mut guard = book.guard();
+after:
+  }
+-->
 ```rust
 let mut contacts = guard.contacts_mut();
 contacts.insert(PersistableString::from("ada"), contact);
@@ -74,6 +130,17 @@ No guard is ever handed out for a key; `Persistable` on `K` governs only how its
 
 An escape hatch for foreign types.
 
+<!-- kladde-example: name=containers file=src/blob.rs deps=kladde-types[serde],serde
+before:
+  use kladde::Persistable;
+  use kladde_types::PersistableBlob;
+  use serde::{Deserialize, Serialize};
+  #[derive(Default, Serialize, Deserialize)]
+  struct WindowGeometry {
+      width: u32,
+      height: u32,
+  }
+-->
 ```rust
 #[derive(Persistable)]
 struct Config {

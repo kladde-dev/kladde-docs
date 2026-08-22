@@ -16,6 +16,12 @@ They go top-down: the [architecture overview](design/) first, then a document pe
 
 A Rust workspace providing backed data structures: containers and derived types whose mutations are recorded durably as they happen.
 
+<!-- kladde-example: name=notes file=src/main.rs mode=run deps=kladde,kladde-types
+before:
+  fn main() {
+after:
+  }
+-->
 ```rust
 use kladde::Kladde;
 use kladde::Persistable;

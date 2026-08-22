@@ -14,7 +14,7 @@ then hands it to pandoc.  The fiddly parts, and why they are needed:
     rewritten to those ids.  Unresolvable ones are reported, not silently
     dropped -- the report doubles as a link checker for the website.
 
-Usage:  tools/make-pdf.py [-o kladde.pdf] [--keep-markdown]
+Usage:  tools/make-pdf.py [-o kladde.pdf] [--keep-markdown] [--check-examples]
 
 Needs: pandoc, texlive-xetex, lmodern, fonts-texgyre, fonts-texgyre-math,
        fonts-dejavu, librsvg2-bin (pandoc shells out to rsvg-convert to turn
@@ -30,6 +30,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pages import ORDER, ROOT, CONTENT, split_front_matter  # noqa: E402
 
 # Prose and headings.  Alternatives that ship with `fonts-texgyre` and have a
 # matching math companion: "TeX Gyre Termes" (Times), "TeX Gyre Schola"
@@ -55,54 +58,6 @@ MONO_FONT = "DejaVu Sans Mono"
 # which the tighter leading makes more likely by shifting where things land.
 DIAGRAM_LEADING = "0.85"
 
-ROOT = Path(__file__).resolve().parent.parent
-CONTENT = ROOT / "content"
-
-# Reading order.  Explicit rather than derived: alphabetical would interleave
-# the tutorial and the design docs, and put `conformance` before `file-format`.
-ORDER = [
-    "index.md",
-    "spec/index.md",
-    "spec/file-format.md",
-    "spec/allocations.md",
-    "spec/journal.md",
-    "spec/schema/index.md",
-    "spec/schema/type-descriptors.md",
-    "spec/schema/canonical-encoding.md",
-    "spec/schema/fingerprints.md",
-    "spec/schema/evolution.md",
-    "spec/tooling.md",
-    "spec/conformance.md",
-    "rust/index.md",
-    "rust/tutorial/index.md",
-    "rust/tutorial/getting-started.md",
-    "rust/tutorial/containers.md",
-    "rust/tutorial/deriving.md",
-    "rust/tutorial/comparison-to-serde.md",
-    "rust/tutorial/durability.md",
-    "rust/tutorial/custom-persistable.md",
-    "rust/design/index.md",
-    "rust/design/heap/index.md",
-    "rust/design/heap/relocatable-heap.md",
-    "rust/design/heap/placement.md",
-    "rust/design/heap/compaction.md",
-    "rust/design/heap/evacuation-index.md",
-    "rust/design/heap/pathologies.md",
-    "rust/design/journal/index.md",
-    "rust/design/journal/semantics.md",
-    "rust/design/journal/fold-and-schedule.md",
-    "rust/design/journal/crash-consistency.md",
-    "rust/design/persistence/index.md",
-    "rust/design/persistence/pointers.md",
-    "rust/design/persistence/persistable-and-guards.md",
-    "rust/design/persistence/containers.md",
-    "rust/design/persistence/derive-macro.md",
-    "rust/design/persistence/freeing.md",
-    "rust/design/schema/index.md",
-]
-
-FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
-TITLE_LINE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 LINK = re.compile(r"\]\((?!https?:)([^)]*)\)")
@@ -132,14 +87,6 @@ def slug(text):
 def doc_slug(rel):
     """A unique id prefix per page: spec/schema/fingerprints.md -> spec-schema-fingerprints."""
     return slug(rel[:-3].replace("/", "-"))
-
-
-def split_front_matter(text):
-    m = FRONT_MATTER.match(text)
-    if not m:
-        return None, text
-    t = TITLE_LINE.search(m.group(1))
-    return (t.group(1).strip('"\'') if t else None), text[m.end():]
 
 
 def collect(order):
@@ -856,6 +803,8 @@ def main():
                     help="check the layout passes against synthetic diagrams and exit")
     ap.add_argument("--check-only", action="store_true",
                     help="report link problems and exit without running pandoc")
+    ap.add_argument("--check-examples", action="store_true",
+                    help="also compile the marked Rust examples (needs cargo)")
     args = ap.parse_args()
 
     if args.self_test:
@@ -879,6 +828,14 @@ def main():
     print(f"{len(pages)} pages, {len(merged.splitlines())} lines, "
           f"{diagrams} diagram(s), {len(warnings)} layout warning(s), "
           f"{len(problems)} link problem(s)", file=sys.stderr)
+
+    if args.check_examples:
+        # Deliberately opt-in rather than part of every build: it needs a cargo
+        # toolchain and a checkout of the Rust workspace, neither of which a
+        # docs-only build has any other reason to want.
+        checker = Path(__file__).resolve().parent / "check-examples.py"
+        if subprocess.run([sys.executable, str(checker)]).returncode != 0:
+            sys.exit("example check failed")
 
     if args.check_only:
         return

@@ -20,6 +20,7 @@ That is deliberate: if you had to add `kladde-persist` yourself, a version disag
 
 Here is a complete program:
 
+<!-- kladde-example: name=phonebook file=src/main.rs mode=run deps=kladde,kladde-types -->
 ```rust
 use kladde::{Kladde, Persistable};
 use kladde_types::{PersistableString, PersistableVec};
