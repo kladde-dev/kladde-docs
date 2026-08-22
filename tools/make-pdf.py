@@ -283,6 +283,62 @@ SVG_EDGE = re.compile(
     r'(<polyline class="edge" data-from="([^"]+)" data-to="([^"]+)"[^>]*points=")([^"]+)(")')
 
 
+def lint_diagram(svg):
+    """Check a laid-out diagram for the defects this pipeline has produced before.
+
+    Returns (errors, warnings), split by whether a human could ever want it:
+
+    * An edge crossing a *node*, or lying entirely along another edge, is always
+      a bug -- it silently deletes information, and every instance so far looked
+      perfectly plausible in the rendered PDF. These fail the build.
+    * A crossing, or two horizontals sharing a channel, is ugly but can be
+      unavoidable -- a non-planar graph has to cross somewhere. These warn, and
+      the count reaches the summary line so it cannot scroll past unseen.
+    """
+    boxes = {m.group(1): tuple(float(v) for v in m.groups()[1:])
+             for m in SVG_NODE.finditer(svg)}
+    edges = []
+    for m in SVG_EDGE.finditer(svg):
+        _, src, dst, pts, _ = m.groups()
+        edges.append((src, dst,
+                      [tuple(float(v) for v in q.split(",")) for q in pts.split()]))
+
+    errors, warnings = [], []
+
+    for src, dst, p in edges:
+        for (x1, y1), (x2, y2) in zip(p, p[1:]):
+            for node, (bx, by, bw, bh) in boxes.items():
+                if node in (src, dst):
+                    continue
+                if (min(x1, x2) < bx + bw - 1 and max(x1, x2) > bx + 1
+                        and min(y1, y2) < by + bh - 1 and max(y1, y2) > by + 1):
+                    errors.append(f"{src}->{dst} passes through node {node}")
+
+    for i, (a, b, p) in enumerate(edges):
+        for c, d, q in edges[i + 1:]:
+            if len(p) <= len(q) and all(pt in q for pt in p):
+                errors.append(f"{a}->{b} lies entirely along {c}->{d}")
+            for (ax1, ay1), (ax2, ay2) in zip(p, p[1:]):
+                for (bx1, by1), (bx2, by2) in zip(q, q[1:]):
+                    a_vert = abs(ax1 - ax2) < .01
+                    b_vert = abs(bx1 - bx2) < .01
+                    if a_vert != b_vert:
+                        (vx, vy1, vy2), (hy, hx1, hx2) = (
+                            ((ax1, ay1, ay2), (by1, bx1, bx2)) if a_vert
+                            else ((bx1, by1, by2), (ay1, ax1, ax2)))
+                        if (min(vy1, vy2) < hy < max(vy1, vy2)
+                                and min(hx1, hx2) < vx < max(hx1, hx2)):
+                            warnings.append(f"{a}->{b} crosses {c}->{d}")
+                    elif not a_vert and abs(ay1 - by1) < .1:
+                        lo = max(min(ax1, ax2), min(bx1, bx2))
+                        hi = min(max(ax1, ax2), max(bx1, bx2))
+                        if hi - lo > 1:
+                            warnings.append(
+                                f"{a}->{b} and {c}->{d} share {hi - lo:.0f}px of channel")
+
+    return errors, warnings
+
+
 def spread_ports(svg):
     """Give each of a node's outgoing edges its own exit, ordered by destination.
 
@@ -326,6 +382,70 @@ def spread_ports(svg):
     return SVG_EDGE.sub(one, svg)
 
 
+def separate_channels(svg, clear=12.0):
+    """Move a horizontal run off a channel another edge is already using.
+
+    Two edges heading for the same node are routed along the same y by default,
+    so their horizontal runs lie on top of each other and read as a single line
+    -- worse than a crossing, because it hides that there are two edges at all.
+    An edge with vertical slack is slid to its own channel instead.
+
+    Only the y of a horizontal moves; every x stays put, so this cannot disturb
+    the port ordering or straightening that ran before it.
+    """
+    boxes = {m.group(1): tuple(float(v) for v in m.groups()[1:])
+             for m in SVG_NODE.finditer(svg)}
+    paths = {}
+    for m in SVG_EDGE.finditer(svg):
+        _, s, d, pts, _ = m.groups()
+        paths[(s, d)] = [tuple(float(v) for v in q.split(",")) for q in pts.split()]
+
+    def horizontals(exclude):
+        for k, p in paths.items():
+            if k == exclude:
+                continue
+            for (x1, y1), (x2, y2) in zip(p, p[1:]):
+                if abs(y1 - y2) < .01:
+                    yield min(x1, x2), max(x1, x2), y1
+
+    def usable(key, y, lo_x, hi_x):
+        for bx, by, bw, bh in boxes.values():          # never cut a node
+            if by - clear < y < by + bh + clear and bx < hi_x and bx + bw > lo_x:
+                return False
+        for ox1, ox2, oy in horizontals(key):          # nor share a channel
+            if abs(oy - y) < clear and ox1 < hi_x and ox2 > lo_x:
+                return False
+        for k, p in paths.items():                     # nor cut a vertical
+            if k == key:
+                continue
+            for (x1, y1), (x2, y2) in zip(p, p[1:]):
+                if abs(x1 - x2) < .01 and lo_x < x1 < hi_x and min(y1, y2) < y < max(y1, y2):
+                    return False
+        return True
+
+    for key, p in list(paths.items()):
+        if len(p) != 4 or abs(p[1][1] - p[2][1]) > .01:
+            continue
+        lo_x, hi_x = sorted((p[1][0], p[2][0]))
+        if usable(key, p[1][1], lo_x, hi_x):
+            continue
+        # Slide it towards the source, which is where the slack usually is.
+        top, bottom = p[0][1], p[3][1]
+        step = max(clear, (bottom - top) / 24)
+        y = top + step
+        while y < bottom - step:
+            if usable(key, y, lo_x, hi_x):
+                paths[key] = [p[0], (p[1][0], y), (p[2][0], y), p[3]]
+                break
+            y += step
+
+    def one(m):
+        head, s, d, _, tail = m.groups()
+        return head + " ".join(f"{x},{y}" for x, y in paths[(s, d)]) + tail
+
+    return SVG_EDGE.sub(one, svg)
+
+
 def straighten_svg(svg, inset=4.0):
     """Collapse the dog-leg out of an edge when a straight line still lands on
     both of its nodes.
@@ -342,6 +462,11 @@ def straighten_svg(svg, inset=4.0):
     """
     boxes = {m.group(1): tuple(float(v) for v in m.groups()[1:])
              for m in SVG_NODE.finditer(svg)}
+    others = {}
+    for m in SVG_EDGE.finditer(svg):
+        _, s, d, pts, _ = m.groups()
+        p = [tuple(float(v) for v in q.split(",")) for q in pts.split()]
+        others[(s, d)] = list(zip(p, p[1:]))
 
     def on_face(node, x):
         bx, _, bw, _ = boxes[node]
@@ -353,6 +478,24 @@ def straighten_svg(svg, inset=4.0):
                    for n, (bx, by, bw, bh) in boxes.items()
                    if n not in exclude)
 
+    def hits_an_edge(x, y0, y1, key):
+        """Would a straight run down `x` cut across some other edge's horizontal?
+
+        Straightening slides an edge onto its own column, which can drop it right
+        through a neighbour that was previously routed around it.  A kink is a
+        smaller blemish than a crossing, so when this fires the jog stays.
+        """
+        lo, hi = sorted((y0, y1))
+        for other, segs in others.items():
+            if other == key:
+                continue
+            for (ax, ay), (bx, by) in segs:
+                if abs(ay - by) > .01:          # only horizontals can be crossed
+                    continue
+                if lo < ay < hi and min(ax, bx) < x < max(ax, bx):
+                    return True
+        return False
+
     def one(m):
         head, src, dst, pts, tail = m.groups()
         p = [tuple(float(v) for v in q.split(",")) for q in pts.split()]
@@ -361,7 +504,8 @@ def straighten_svg(svg, inset=4.0):
             if abs(x0 - x1) < .01 and abs(y1 - y2) < .01 and abs(x2 - x3) < .01:
                 for x in ([x3] if on_face(src, x3) else []) + \
                          ([x0] if on_face(dst, x0) else []):
-                    if not hits_a_node(x, y0, y3, {src, dst}):
+                    if (not hits_a_node(x, y0, y3, {src, dst})
+                            and not hits_an_edge(x, y0, y3, (src, dst))):
                         p = [(x, y0), (x, y3)]
                         break
         return head + " ".join(f"{x},{y}" for x, y in p) + tail
@@ -387,8 +531,12 @@ def collect_mermaid(body):
     return ["\n".join(b) for info, b in _fences(body) if info == "mermaid"]
 
 
-def render_mermaid(sources, figdir):
-    """Render every mermaid source to a flattened SVG file, in one node call."""
+def render_mermaid(sources, figdir, warnings):
+    """Render every mermaid source to a laid-out, checked, flattened SVG file.
+
+    One node call for the whole document. Layout defects that are always bugs
+    stop the build here rather than shipping a plausible-looking PDF.
+    """
     script = Path(__file__).resolve().parent / "render-mermaid.mjs"
     if not _shutil.which("node"):
         sys.exit("node not found; needed to render the mermaid diagrams")
@@ -408,7 +556,15 @@ def render_mermaid(sources, figdir):
             sys.exit(f"mermaid diagram {i + 1} did not render")
         stem = figdir / f"diagram-{i + 1:02d}"
         svg_path = stem.with_suffix(".svg")
-        svg_path.write_text(flatten_svg(straighten_svg(spread_ports(svg))))
+        laid_out = separate_channels(straighten_svg(spread_ports(svg)))
+        errors, warned = lint_diagram(laid_out)
+        svg_path.write_text(flatten_svg(laid_out))
+        if errors:
+            sys.exit(f"diagram {i + 1} is malformed:\n  " + "\n  ".join(errors)
+                     + f"\n(written to {svg_path} for inspection)")
+        for w in warned:
+            print(f"diagram {i + 1}: {w}", file=sys.stderr)
+        warnings.extend(warned)
         # LaTeX cannot size an SVG.  Pandoc converts them for its *own* image
         # elements, but these are injected as raw LaTeX, so do it here -- which
         # also puts the failure in one obvious place if rsvg-convert is missing.
@@ -548,7 +704,7 @@ def wrap_diagrams(body):
     return "\n".join(out)
 
 
-def build_markdown(pages, problems, figdir=None):
+def build_markdown(pages, problems, figdir=None, warnings=None):
     chunks = [
         "---",
         'title: "Kladde"',
@@ -585,7 +741,8 @@ def build_markdown(pages, problems, figdir=None):
         body = rewrite_links(rel, page["body"], pages, problems)
         bodies[rel] = stamp_headings(body, page["prefix"])
     sources = [s for body in bodies.values() for s in collect_mermaid(body)]
-    figures = iter(render_mermaid(sources, figdir) if sources and figdir else [])
+    figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [])
+                   if sources and figdir else [])
 
     for rel, page in pages.items():
         body = substitute_mermaid(bodies[rel], figures)
@@ -612,13 +769,15 @@ def main():
     pages = collect(ORDER)
     figdir = Path(args.output).with_suffix("").parent / (
         Path(args.output).stem + "-figures")
+    warnings = []
     merged, diagrams = build_markdown(
-        pages, problems, None if args.check_only else figdir)
+        pages, problems, None if args.check_only else figdir, warnings)
 
     for p in problems:
         print(f"link: {p}", file=sys.stderr)
     print(f"{len(pages)} pages, {len(merged.splitlines())} lines, "
-          f"{diagrams} diagram(s), {len(problems)} link problem(s)", file=sys.stderr)
+          f"{diagrams} diagram(s), {len(warnings)} layout warning(s), "
+          f"{len(problems)} link problem(s)", file=sys.stderr)
 
     if args.check_only:
         return
