@@ -64,8 +64,10 @@ The latter is the more interesting one: it would let a caller write `match guard
 ## Path resolution
 
 Generated code names items by absolute path, because a macro cannot know what the user called their imports.
-It roots them at **`::kladde`**, and `kladde` re-exports every item generated code touches — thirteen of them, all of which a hand-written impl needs anyway.
+It roots them at **`::kladde`**, and `kladde` re-exports every item generated code touches — thirteen of them.
 
+Those thirteen are a floor, not the specification.
+The facade has to cover everything a *hand-written* impl names too, which is a strict superset: `Primitive` appears in the `describe_local` of any scalar-shaped type and in none of the macro's output, and was missing from the facade until it was noticed.
 So an application depends on `kladde` and nothing below it, and an author who later hand-writes an impl finds the same items in the same place.
 That matters for more than convenience: if the facade did *not* re-export them, the author would add `kladde-persist` themselves, and a version that disagreed with the facade's would produce two distinct copies of the `Persistable` trait and an error that prints the expected and found types identically.
 
