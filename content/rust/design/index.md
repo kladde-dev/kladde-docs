@@ -32,16 +32,16 @@ graph TD
   V["<strong>kladde-varint</strong><br/>LEB128"]
   H["<strong>kladde-heap</strong><br/>Pointer, RelocatableHeap, Storage,<br/>Backend / ReadBackend / WriteBackend"]
   APP --> K
-  APP --> T
-  K --> P
+  APP -. optional but common .-> T
   K --> H
+  K --> P
   %% K --> D is dashed because it is optional: `kladde`'s `derive` feature,
   %% on by default. Nothing else depends on the macro crate.
-  K -.-> D
+  K -. "derive" feature<br/>(on by default) .-> D
   T --> P
   D --> P
-  P --> S
   P --> H
+  P --> S
   S --> V
 ```
 
