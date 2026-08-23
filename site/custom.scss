@@ -1,3 +1,24 @@
 @use "./variables.scss" as *;
 
-// put your custom CSS here!
+// Mermaid diagrams render their labels in the code font.  That is not a
+// styling choice of ours: @quartz-community/obsidian-flavored-markdown hard-
+// codes `themeVariables.fontFamily` to `--codeFont` when it initializes
+// mermaid, and exposes no option to change it.  Diagram labels are prose, so
+// they belong in the body font.
+//
+// `!important` is unavoidable rather than lazy.  Mermaid states the family in
+// three places, and two of them outrank a plain rule: an `#<svg-id>` selector
+// in a `<style>` element it injects into the SVG, and `style="font-family:..."`
+// set inline on individual text nodes.
+//
+// Both selectors are needed: `.mermaid-content` is the fullscreen view, which
+// clones the SVG into a container sitting outside `code.mermaid`.
+//
+// Sizing follows along, because mermaid renders and measures inside the target
+// element -- so the boxes are laid out against the same font you end up seeing.
+:is(code.mermaid, .mermaid-content) svg {
+  &,
+  & * {
+    font-family: var(--bodyFont) !important;
+  }
+}
