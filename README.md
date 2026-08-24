@@ -30,6 +30,18 @@ tools/make-pdf.py --self-test      # the diagram layout passes
 Concatenates every page in reading order and hands it to pandoc, rendering the mermaid diagrams to figures on the way.
 See the module docstring for what it needs installed.
 
+Given one or more `.md` files it renders each on its own instead, writing `<basename>.pdf` to the working directory:
+
+```sh
+tools/make-pdf.py content/rust/tutorial/getting-started.md
+tools/make-pdf.py content/spec/*.md          # -> ./file-format.pdf, ./journal.pdf, ...
+```
+
+A single page becomes an `article` rather than a chapter of a `report`, with no table of contents.
+Links into *other* pages are left exactly as written — they are correct on the website, and a single-page PDF makes no claim about the rest of the set — so only same-page anchors are checked.
+Any markdown file works, not just one under `content/`; without front matter the title comes from its first `#` heading, or failing that its filename.
+Basenames must differ, since `content/` has an `index.md` per section.
+
 ### Checking the Rust examples
 
 ```sh

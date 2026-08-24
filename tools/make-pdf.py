@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Render the whole of content/ as one PDF.
+"""Render content/ as one PDF, or named pages as one PDF each.
 
-Concatenates every page in reading order into a single Markdown document,
-then hands it to pandoc.  The fiddly parts, and why they are needed:
+With no arguments, concatenates every page in reading order into a single
+Markdown document and hands it to pandoc.  Given one or more `.md` files, it
+renders each on its own instead, writing `<basename>.pdf` to the working
+directory -- an `article` rather than a chapter of a `report`, with links into
+other pages left as written, since there is no merged document to point into.
+
+The fiddly parts of the whole-set build, and why they are needed:
 
   * Pages carry their title in YAML front matter and have no H1 of their own
     (Quartz injects one).  We strip the front matter and synthesise the H1,
@@ -15,6 +20,7 @@ then hands it to pandoc.  The fiddly parts, and why they are needed:
     dropped -- the report doubles as a link checker for the website.
 
 Usage:  tools/make-pdf.py [-o kladde.pdf] [--keep-markdown] [--check-examples]
+        tools/make-pdf.py PAGE.md [PAGE.md ...]
 
 Needs: pandoc, texlive-xetex, lmodern, fonts-texgyre, fonts-texgyre-math,
        fonts-dejavu, librsvg2-bin (pandoc shells out to rsvg-convert to turn
@@ -89,6 +95,25 @@ def doc_slug(rel):
     return slug(rel[:-3].replace("/", "-"))
 
 
+def read_page(text, rel, fallback_title=None):
+    """One page's title, body, id prefix, and heading anchors."""
+    title, body = split_front_matter(text)
+    if title is None:
+        if fallback_title is None:
+            sys.exit(f"no `title:` in front matter: {rel}")
+        title = fallback_title
+    prefix = doc_slug(rel)
+    anchors, in_fence = {"": prefix}, False
+    for line in body.splitlines():
+        if FENCE.match(line):
+            in_fence = not in_fence
+        elif not in_fence:
+            h = HEADING.match(line)
+            if h:
+                anchors[slug(h.group(2))] = f"{prefix}--{slug(h.group(2))}"
+    return {"title": title, "body": body, "prefix": prefix, "anchors": anchors}
+
+
 def collect(order):
     """Read every page, returning per-page title, body, and heading ids."""
     pages = {}
@@ -96,29 +121,25 @@ def collect(order):
         path = CONTENT / rel
         if not path.is_file():
             sys.exit(f"listed in ORDER but missing: {rel}")
-        title, body = split_front_matter(path.read_text())
-        if title is None:
-            sys.exit(f"no `title:` in front matter: {rel}")
-        prefix = doc_slug(rel)
-        anchors, in_fence = {"": prefix}, False
-        for line in body.splitlines():
-            if FENCE.match(line):
-                in_fence = not in_fence
-            elif not in_fence:
-                h = HEADING.match(line)
-                if h:
-                    anchors[slug(h.group(2))] = f"{prefix}--{slug(h.group(2))}"
-        pages[rel] = {"title": title, "body": body, "prefix": prefix, "anchors": anchors}
+        pages[rel] = read_page(path.read_text(), rel)
     return pages
 
 
-def rewrite_links(rel, body, pages, problems):
-    """Point every relative link at the merged document's own ids."""
+def rewrite_links(rel, body, pages, problems, standalone=False):
+    """Point every relative link at the merged document's own ids.
+
+    `standalone` is single-page mode: there is no merged document, so a link
+    into another page has nothing to point at.  Those are left exactly as
+    written rather than reported -- they are correct on the website, and a
+    single-page PDF is a view of that page, not a claim about the whole set.
+    """
     here = Path(rel).parent
 
     def replace(m):
         target = m.group(1)
         path, _, frag = target.partition("#")
+        if path and standalone:
+            return m.group(0)
         if not path:                                    # same-page anchor
             dest = pages[rel]["anchors"].get(frag)
             if dest is None:
@@ -747,16 +768,22 @@ def wrap_diagrams(body):
     return "\n".join(out)
 
 
-def build_markdown(pages, problems, figdir=None, warnings=None):
-    chunks = [
+def preamble(title, subtitle=None, documentclass="report", toc=True):
+    """The pandoc YAML metadata block both modes share.
+
+    Only the class and the front matter differ: the whole set is a `report`
+    whose chapters are pages, a single page is an `article` with no table of
+    contents -- one page rarely needs one, and it would land on the title page.
+    """
+    yaml_title = title.replace('"', '\\"')
+    return [
         "---",
-        'title: "Kladde"',
-        'subtitle: "Specification and design documentation"',
-        "documentclass: report",
+        f'title: "{yaml_title}"',
+        *([f'subtitle: "{subtitle}"'] if subtitle else []),
+        f"documentclass: {documentclass}",
         "papersize: a4",
         "geometry: margin=2.5cm",
-        "toc: true",
-        "toc-depth: 2",
+        *(["toc: true", "toc-depth: 2"] if toc else []),
         "numbersections: true",
         "colorlinks: true",
         "linkcolor: RoyalBlue",
@@ -777,6 +804,10 @@ def build_markdown(pages, problems, figdir=None, warnings=None):
         "---",
         "",
     ]
+
+
+def build_markdown(pages, problems, figdir=None, warnings=None):
+    chunks = preamble("Kladde", "Specification and design documentation")
     # Two passes: every mermaid source in the document is collected first so
     # that node is started once rather than once per diagram.
     bodies = {}
@@ -795,9 +826,114 @@ def build_markdown(pages, problems, figdir=None, warnings=None):
     return "\n".join(chunks), len(sources)
 
 
+def build_standalone(path, rel, problems, figdir=None, warnings=None):
+    """One page as its own document."""
+    page = read_page(path.read_text(), rel, fallback_title=path.stem)
+    body = rewrite_links(rel, page["body"], {rel: page}, problems, standalone=True)
+    body = stamp_headings(body, page["prefix"])
+    sources = collect_mermaid(body)
+    figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [])
+                   if sources and figdir else [])
+    body = substitute_mermaid(body, figures)
+    # No synthesised H1: the title comes from the metadata block, and pandoc
+    # renders it properly rather than as a first section.
+    chunks = preamble(page["title"], documentclass="article", toc=False)
+    chunks.append(size_tables(wrap_diagrams(body)).strip())
+    chunks.append("")
+    return "\n".join(chunks), len(sources)
+
+
+def run_pandoc(md_path, out_path, extra=()):
+    if not shutil.which("pandoc"):
+        sys.exit("pandoc not found; install it or use --check-only")
+    cmd = [
+        "pandoc", str(md_path), "-o", str(out_path),
+        "--from", "markdown+pipe_tables+backtick_code_blocks+tex_math_dollars"
+                  "+header_attributes+fenced_code_attributes+raw_attribute",
+        "--pdf-engine", "xelatex",
+        "--highlight-style=tango",
+        "-V", "linkcolor=RoyalBlue",
+        *extra,
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError:
+        sys.exit(f"pandoc failed; its input is at {md_path}")
+
+
+def render_one(path, out_path, args):
+    """Build a single page into `out_path`, returning its problem count."""
+    # `<stem>.pandoc.md` rather than `<stem>.md`: the output lands in the
+    # working directory, so the obvious name is the *input file itself* when
+    # you render a page from the directory it lives in -- which would write
+    # over the source and then delete it.
+    md_path = out_path.with_name(out_path.stem + ".pandoc.md")
+    if md_path.resolve() == path.resolve():
+        sys.exit(f"the intermediate would overwrite {path}; pass -o elsewhere")
+    rel = (path.resolve().relative_to(CONTENT).as_posix()
+           if path.resolve().is_relative_to(CONTENT) else path.name)
+    problems, warnings = [], []
+    figdir = out_path.with_suffix("").with_name(out_path.stem + "-figures")
+    merged, diagrams = build_standalone(
+        path, rel, problems, None if args.check_only else figdir, warnings)
+
+    for pr in problems:
+        print(f"link: {pr}", file=sys.stderr)
+    print(f"{path}: {len(merged.splitlines())} lines, {diagrams} diagram(s), "
+          f"{len(warnings)} layout warning(s), {len(problems)} link problem(s)",
+          file=sys.stderr)
+    if args.check_only:
+        return len(problems)
+
+    md_path.write_text(merged)
+    # Pages have no H1 of their own, so their `##` sections would come out as
+    # subsections.  Promoting by one makes them sections of the article.
+    run_pandoc(md_path, out_path, ["--shift-heading-level-by=-1"])
+    if not args.keep_markdown:
+        md_path.unlink()
+        _shutil.rmtree(figdir, ignore_errors=True)
+    print(f"wrote {out_path}", file=sys.stderr)
+    return len(problems)
+
+
+def render_pages(args):
+    """`make-pdf.py a.md b.md` -- one PDF per page, in the working directory."""
+    paths, outputs = [], {}
+    for name in args.pages:
+        path = Path(name)
+        if not path.is_file():
+            sys.exit(f"no such file: {name}")
+        if path.suffix != ".md":
+            sys.exit(f"not a markdown file: {name}")
+        out = Path.cwd() / (path.stem + ".pdf")
+        if out in outputs:
+            # `content/` has an index.md per section, so this is easy to hit.
+            sys.exit(f"{name} and {outputs[out]} would both write {out.name}; "
+                     "rename one or render them separately")
+        outputs[out] = name
+        paths.append((path, out))
+
+    if args.output is not None:
+        if len(paths) > 1:
+            sys.exit("-o takes a single output path; drop it to write one PDF per page")
+        paths = [(paths[0][0], Path(args.output))]
+
+    if args.check_examples:
+        checker = Path(__file__).resolve().parent / "check-examples.py"
+        if subprocess.run([sys.executable, str(checker)]).returncode != 0:
+            return 1
+
+    return 1 if sum(render_one(path, out, args) for path, out in paths) else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("-o", "--output", default=str(ROOT / "kladde.pdf"))
+    ap.add_argument("pages", nargs="*", metavar="PAGE.md",
+                    help="render each of these on its own, to <basename>.pdf in "
+                         "the working directory, instead of building the whole set")
+    ap.add_argument("-o", "--output", default=None,
+                    help=f"output path (default: {ROOT / 'kladde.pdf'}); "
+                         "with a single PAGE.md, where that page goes")
     ap.add_argument("--keep-markdown", action="store_true")
     ap.add_argument("--self-test", action="store_true",
                     help="check the layout passes against synthetic diagrams and exit")
@@ -810,6 +946,10 @@ def main():
     if args.self_test:
         sys.exit(self_test())
 
+    if args.pages:
+        sys.exit(render_pages(args))
+
+    args.output = args.output or str(ROOT / "kladde.pdf")
     on_disk = {p.relative_to(CONTENT).as_posix() for p in CONTENT.rglob("*.md")}
     missing = on_disk - set(ORDER)
     if missing:
@@ -846,21 +986,7 @@ def main():
     md_path = Path(args.output).with_suffix(".md")
     md_path.write_text(merged)
 
-    if not shutil.which("pandoc"):
-        sys.exit("pandoc not found; install it or use --check-only")
-    cmd = [
-        "pandoc", str(md_path), "-o", args.output,
-        "--from", "markdown+pipe_tables+backtick_code_blocks+tex_math_dollars"
-                  "+header_attributes+fenced_code_attributes+raw_attribute",
-        "--pdf-engine", "xelatex",
-        "--top-level-division=chapter",
-        "--highlight-style=tango",
-        "-V", "linkcolor=RoyalBlue",
-    ]
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError:
-        sys.exit(f"pandoc failed; its input is at {md_path}")
+    run_pandoc(md_path, args.output, ["--top-level-division=chapter"])
     if not args.keep_markdown:
         md_path.unlink()
         _shutil.rmtree(figdir, ignore_errors=True)
