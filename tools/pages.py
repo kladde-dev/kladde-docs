@@ -21,6 +21,7 @@ ORDER = [
     "spec/file-format.md",
     "spec/allocations.md",
     "spec/journal.md",
+    "spec/transactions-and-batches.md",
     "spec/schema/index.md",
     "spec/schema/type-descriptors.md",
     "spec/schema/canonical-encoding.md",
@@ -67,4 +68,3 @@ def split_front_matter(text):
         return None, text
     t = TITLE_LINE.search(m.group(1))
     return (t.group(1).strip('"\'') if t else None), text[m.end():]
-
