@@ -30,6 +30,7 @@ Needs: pandoc, texlive-xetex, lmodern, fonts-texgyre, fonts-texgyre-math,
 
 import argparse
 import json
+import os
 import re
 import shutil as _shutil
 import shutil
@@ -67,6 +68,7 @@ DIAGRAM_LEADING = "0.85"
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 LINK = re.compile(r"\]\((?!https?:)([^)]*)\)")
+WIKILINK = re.compile(r"\[\[([^\]|#]*?)(?:#([^\]|]*))?(?:\|([^\]]*))?\]\]")
 BOX_DRAWING = re.compile(r"[\u2500-\u257f]")
 TABLE_DELIM = re.compile(r"^\s*\|(?:\s*:?-+:?\s*\|)+\s*$")
 TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
@@ -123,6 +125,47 @@ def collect(order):
             sys.exit(f"listed in ORDER but missing: {rel}")
         pages[rel] = read_page(path.read_text(), rel)
     return pages
+
+
+def expand_wikilinks(rel, body, pages, problems, standalone=False):
+    """Turn Obsidian `[[page#heading|alias]]` into an ordinary Markdown link.
+
+    Worth doing rather than telling authors not to write them, because a
+    heading wikilink is the *only* anchor form that works in both editors:
+    Obsidian matches a `](#fragment)` against the heading's literal text,
+    while Quartz and pandoc want a slug, so no single `](#...)` satisfies
+    both.  A wikilink does -- Quartz slugifies the fragment (verified: it
+    emits `href="#raii-types"` for `[[#RAII types]]`), and Obsidian is where
+    the syntax comes from.  Pandoc alone has no idea, and prints it verbatim.
+
+    Targets resolve by filename stem across the whole set, matching the
+    `markdownLinkResolution: shortest` in quartz.config.yaml.
+    """
+    stems = {}
+    for r in pages:
+        stems.setdefault(Path(r).stem, []).append(r)
+    here = Path(rel).parent
+
+    def replace(m):
+        target, frag, alias = m.group(1), m.group(2), m.group(3)
+        label = alias or frag or target
+        if not target:                                  # [[#Heading]]
+            return f"[{label}](#{slug(frag or '')})"
+        if "/" in target:                               # [[spec/journal]]
+            found = [target if target.endswith(".md") else target + ".md"]
+        else:
+            found = stems.get(target, [])
+        if not found and not standalone:
+            problems.append(f"{rel}: wikilink to a page that does not exist: [[{target}]]")
+            return label
+        if len(found) > 1:
+            problems.append(f"{rel}: ambiguous wikilink [[{target}]]: "
+                            + ", ".join(sorted(found)))
+        dest = found[0] if found else target + ".md"
+        path = os.path.relpath(dest, here or ".")
+        return f"[{label}]({path}#{slug(frag)})" if frag else f"[{label}]({path})"
+
+    return WIKILINK.sub(replace, body)
 
 
 def rewrite_links(rel, body, pages, problems, standalone=False):
@@ -812,7 +855,8 @@ def build_markdown(pages, problems, figdir=None, warnings=None):
     # that node is started once rather than once per diagram.
     bodies = {}
     for rel, page in pages.items():
-        body = rewrite_links(rel, page["body"], pages, problems)
+        body = expand_wikilinks(rel, page["body"], pages, problems)
+        body = rewrite_links(rel, body, pages, problems)
         bodies[rel] = stamp_headings(body, page["prefix"])
     sources = [s for body in bodies.values() for s in collect_mermaid(body)]
     figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [])
@@ -829,7 +873,8 @@ def build_markdown(pages, problems, figdir=None, warnings=None):
 def build_standalone(path, rel, problems, figdir=None, warnings=None):
     """One page as its own document."""
     page = read_page(path.read_text(), rel, fallback_title=path.stem)
-    body = rewrite_links(rel, page["body"], {rel: page}, problems, standalone=True)
+    body = expand_wikilinks(rel, page["body"], {rel: page}, problems, standalone=True)
+    body = rewrite_links(rel, body, {rel: page}, problems, standalone=True)
     body = stamp_headings(body, page["prefix"])
     sources = collect_mermaid(body)
     figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [])
