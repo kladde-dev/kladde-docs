@@ -21,14 +21,18 @@ The fiddly parts of the whole-set build, and why they are needed:
 
 Usage:  tools/make-pdf.py [-o kladde.pdf] [--keep-markdown] [--check-examples]
         tools/make-pdf.py PAGE.md [PAGE.md ...]
+        tools/make-pdf.py --diff OLD[..NEW] [PAGE.md ...]
 
 Needs: pandoc, texlive-xetex, lmodern, fonts-texgyre, fonts-texgyre-math,
        fonts-dejavu, librsvg2-bin (pandoc shells out to rsvg-convert to turn
        the generated SVGs into PDF), and `npm install` for the mermaid
-       renderer in tools/render-mermaid.mjs.
+       renderer in tools/render-mermaid.mjs.  --diff additionally needs
+       latexdiff and texlive-plain-generic (for ulem.sty).
 """
 
 import argparse
+import contextlib
+import hashlib
 import json
 import os
 import re
@@ -36,6 +40,7 @@ import shutil as _shutil
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -116,14 +121,25 @@ def read_page(text, rel, fallback_title=None):
     return {"title": title, "body": body, "prefix": prefix, "anchors": anchors}
 
 
-def collect(order):
-    """Read every page, returning per-page title, body, and heading ids."""
+def collect(order, source=None):
+    """Read every page, returning per-page title, body, and heading ids.
+
+    `source(rel)` supplies the text, so a build can be fed from a git ref
+    instead of the working tree; returning None drops the page, which is how
+    a page that did not exist at the old ref is handled.
+    """
     pages = {}
     for rel in order:
-        path = CONTENT / rel
-        if not path.is_file():
-            sys.exit(f"listed in ORDER but missing: {rel}")
-        pages[rel] = read_page(path.read_text(), rel)
+        if source is None:
+            path = CONTENT / rel
+            if not path.is_file():
+                sys.exit(f"listed in ORDER but missing: {rel}")
+            text = path.read_text()
+        else:
+            text = source(rel)
+            if text is None:
+                continue
+        pages[rel] = read_page(text, rel)
     return pages
 
 
@@ -638,7 +654,7 @@ def collect_mermaid(body):
     return ["\n".join(b) for info, b in _fences(body) if info == "mermaid"]
 
 
-def render_mermaid(sources, figdir, warnings):
+def render_mermaid(sources, figdir, warnings, by_content=False):
     """Render every mermaid source to a laid-out, checked, flattened SVG file.
 
     One node call for the whole document. Layout defects that are always bugs
@@ -661,7 +677,11 @@ def render_mermaid(sources, figdir, warnings):
     for i, svg in enumerate(json.loads(proc.stdout)["svgs"]):
         if svg is None:
             sys.exit(f"mermaid diagram {i + 1} did not render")
-        stem = figdir / f"diagram-{i + 1:02d}"
+        # In diff mode the two versions render into one directory, named by
+        # a hash of the source: an untouched diagram then lands on the same
+        # path in both, so latexdiff sees no change rather than a swap.
+        stem = figdir / (f"diagram-{hashlib.sha256(sources[i].encode()).hexdigest()[:12]}"
+                         if by_content else f"diagram-{i + 1:02d}")
         svg_path = stem.with_suffix(".svg")
         laid_out = separate_channels(straighten_svg(spread_ports(svg)))
         errors, warned = lint_diagram(laid_out)
@@ -849,8 +869,10 @@ def preamble(title, subtitle=None, documentclass="report", toc=True):
     ]
 
 
-def build_markdown(pages, problems, figdir=None, warnings=None):
-    chunks = preamble("Kladde", "Specification and design documentation")
+def build_markdown(pages, problems, figdir=None, warnings=None,
+                   subtitle="Specification and design documentation",
+                   by_content=False, for_diff=False):
+    chunks = preamble("Kladde", subtitle)
     # Two passes: every mermaid source in the document is collected first so
     # that node is started once rather than once per diagram.
     bodies = {}
@@ -859,33 +881,245 @@ def build_markdown(pages, problems, figdir=None, warnings=None):
         body = rewrite_links(rel, body, pages, problems)
         bodies[rel] = stamp_headings(body, page["prefix"])
     sources = [s for body in bodies.values() for s in collect_mermaid(body)]
-    figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [])
+    figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [],
+                                  by_content)
                    if sources and figdir else [])
 
     for rel, page in pages.items():
         body = substitute_mermaid(bodies[rel], figures)
         chunks.append(f"# {page['title']} {{#{page['prefix']}}}\n")
-        chunks.append(size_tables(wrap_diagrams(body)).strip())
+        chunks.append(size_tables(body if for_diff else wrap_diagrams(body)).strip())
         chunks.append("")
     return "\n".join(chunks), len(sources)
 
 
-def build_standalone(path, rel, problems, figdir=None, warnings=None):
+def build_standalone(text, rel, problems, figdir=None, warnings=None,
+                     subtitle=None, fallback_title=None, by_content=False,
+                     for_diff=False):
     """One page as its own document."""
-    page = read_page(path.read_text(), rel, fallback_title=path.stem)
+    page = read_page(text, rel, fallback_title=fallback_title or Path(rel).stem)
     body = expand_wikilinks(rel, page["body"], {rel: page}, problems, standalone=True)
     body = rewrite_links(rel, body, {rel: page}, problems, standalone=True)
     body = stamp_headings(body, page["prefix"])
     sources = collect_mermaid(body)
-    figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [])
+    figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [],
+                                  by_content)
                    if sources and figdir else [])
     body = substitute_mermaid(body, figures)
     # No synthesised H1: the title comes from the metadata block, and pandoc
     # renders it properly rather than as a first section.
-    chunks = preamble(page["title"], documentclass="article", toc=False)
-    chunks.append(size_tables(wrap_diagrams(body)).strip())
+    chunks = preamble(page["title"], subtitle, documentclass="article", toc=False)
+    chunks.append(size_tables(body if for_diff else wrap_diagrams(body)).strip())
     chunks.append("")
     return "\n".join(chunks), len(sources)
+
+
+# ---------------------------------------------------------------------------
+# Diff mode
+#
+# Two rendered versions of a document, compared as LaTeX rather than as
+# Markdown.  Diffing the sources would put `+`/`-` in column one, where the
+# Markdown reader takes them for list bullets and the result stops being the
+# document; and the raw diff loses the rendering that is the whole point.
+# latexdiff instead compares two *typeset* documents and marks up the result,
+# so a changed paragraph reads as a paragraph.
+# ---------------------------------------------------------------------------
+
+# `..` rather than `:` -- it is git's own range syntax (`git diff a..b`,
+# `git log a..b`), whereas `a:b` already means "path b at rev a" to git.
+DIFF_SEP = ".."
+
+# Either side may name the index instead of a commit.
+STAGED = ("staged", "index")
+
+# Diff mode renders code blocks plainly: `--no-highlight` so pandoc emits
+# `verbatim` rather than its fancyvrb `Highlighting`, and no `kladdediagram`
+# wrapper around the box-drawing diagrams.
+#
+# latexdiff marks up a verbatim block by rewriting it as `DIFverbatim`, which
+# it defines on top of `listings` so that its `%DIF <`/`%DIF >` line markers
+# become strike-through and underline. That rewrite only happens for the
+# environments it ships knowing about. Naming a fancyvrb environment in
+# VERBATIMLINEENV instead has it keep the original name and pass
+# `alsolanguage=DIFcode`, an `lstlisting` key that fancyvrb rejects; naming it
+# in VERBATIMENV suppresses markup altogether, so a change confined to a code
+# block silently renders as the new version with nothing marked.
+#
+# The cost is no syntax colouring in a diff, and the default leading for box
+# diagrams. Both are worth a code change actually being visible, and colour
+# competes with the red/blue markup anyway.
+DIFF_PANDOC = ["--no-highlight"]
+
+# Colour *and* a change bar in the margin, so a change is still findable on a
+# grayscale print.  CULINECHBAR is the only style that adds the bar without
+# taking something away: it is the default UNDERLINE markup -- blue wavy
+# underline for an insertion, red strikeout for a deletion -- with
+# `\cbstart`/`\cbend` around it.  CCHANGEBAR and CFONTCHBAR drop the
+# underline and strikeout, which is exactly the cue that separates an
+# insertion from a deletion once the colour is gone: both would print as
+# black text beside an identical bar.
+DIFF_MARKUP = "CULINECHBAR"
+
+# latexdiff loads `changebar` with the pdftex driver whatever the engine, and
+# the package refuses it outright under xelatex ("PDFTeX option cannot be
+# used").
+CHANGEBAR_DRIVER = "xetex"
+
+# Inside a code block latexdiff marks each changed line with `%DIF >`/`%DIF <`
+# and relies on its `listings` language to turn that into markup.  An added or
+# removed *blank* line leaves the marker with nothing after it, which listings
+# does not consume, so it prints as literal `%DIF >` in the PDF.  A blank line
+# gained or lost is not worth reporting anyway, so drop those markers.
+EMPTY_DIF_LINE = re.compile(r"^%DIF [<>][ \t]*\n", re.MULTILINE)
+
+
+def parse_diff_spec(spec):
+    """`old..new` -> (old, new); `old` -> (old, None), None meaning the working tree."""
+    old, sep, new = spec.partition(DIFF_SEP)
+    if not old:
+        sys.exit(f"--diff needs an old ref: {spec!r}")
+    if sep and not new:
+        sys.exit(f"--diff {spec!r}: no new ref after '{DIFF_SEP}' "
+                 f"(drop it to compare against the working tree)")
+    return old, (new if sep else None)
+
+
+def repo_root(path):
+    proc = subprocess.run(
+        ["git", "-C", str(path.parent.resolve()), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.exit(f"not inside a git repository: {path}")
+    return Path(proc.stdout.strip())
+
+
+def version_at(repo, rel, ref):
+    """The text of `rel` at `ref`, or None if it did not exist there.
+
+    `ref` is None for the working tree, "staged"/"index" for the index, and
+    anything else is handed to git as a revision.
+    """
+    if ref is None:
+        path = repo / rel
+        return path.read_text() if path.is_file() else None
+    target = f":{rel}" if ref in STAGED else f"{ref}:{rel}"
+    proc = subprocess.run(["git", "-C", str(repo), "show", target],
+                          capture_output=True, text=True)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def describe(ref):
+    return "the working tree" if ref is None else (
+        "the index" if ref in STAGED else f"`{ref}`")
+
+
+def check_ref(repo, ref):
+    """Fail early on a typo, rather than after rendering half the document."""
+    if ref is None or ref in STAGED:
+        return
+    if subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+                       f"{ref}^{{commit}}"], capture_output=True).returncode != 0:
+        sys.exit(f"not a git revision: {ref}")
+
+
+def to_latex(md_text, tex_path, extra=()):
+    """Render one version to standalone LaTeX, for latexdiff to compare."""
+    if not shutil.which("pandoc"):
+        sys.exit("pandoc not found; needed for --diff")
+    md_path = tex_path.with_suffix(".md")
+    md_path.write_text(md_text)
+    subprocess.run(
+        ["pandoc", str(md_path), "-o", str(tex_path), "--standalone", "--to", "latex",
+         "--from", "markdown+pipe_tables+backtick_code_blocks+tex_math_dollars"
+                   "+header_attributes+fenced_code_attributes+raw_attribute",
+         "--highlight-style=tango", *extra],
+        check=True)
+    return tex_path
+
+
+def latexdiff(old_tex, new_tex, out_tex):
+    if not shutil.which("latexdiff"):
+        sys.exit("latexdiff not found; install it (apt: latexdiff) to use --diff")
+    proc = subprocess.run(
+        ["latexdiff", f"--type={DIFF_MARKUP}", f"--driver={CHANGEBAR_DRIVER}",
+         str(old_tex), str(new_tex)],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.exit(f"latexdiff failed:\n{proc.stderr}")
+    out_tex.write_text(EMPTY_DIF_LINE.sub("", proc.stdout))
+    return out_tex
+
+
+# Two passes settle a table of contents.  `changebar` needs a third: it writes
+# each bar's position to a `.cb` file and only draws it on the run that reads
+# that back, and moving a bar can move a page break, which moves a bar.
+#
+# The stopping test is that `.cb` came out the same twice, *not* changebar's
+# own "Rerun to get the bars right".  Measured on a 25-page diff, the bar
+# positions are stable from the third pass on and that message still appears
+# on every pass to the sixth -- so believing it means five 30-second passes
+# for output that stopped changing after three.
+MIN_PASSES = 2
+MAX_PASSES = 5
+
+
+def compile_tex(tex_path, out_path):
+    """xelatex until the cross-references, the toc, and the change bars settle."""
+    if not shutil.which("xelatex"):
+        sys.exit("xelatex not found")
+    workdir = tex_path.parent
+    bars = tex_path.with_suffix(".cb")
+    previous = None
+    for pass_no in range(1, MAX_PASSES + 1):
+        proc = subprocess.run(
+            ["xelatex", "-interaction=nonstopmode", "-halt-on-error",
+             f"-output-directory={workdir}", str(tex_path)],
+            capture_output=True, text=True, cwd=workdir)
+        if proc.returncode != 0:
+            log = tex_path.with_suffix(".log")
+            errors = [l for l in proc.stdout.splitlines() if l.startswith("!")]
+            sys.exit(f"xelatex failed on the diff:\n  "
+                     + "\n  ".join(errors[:5] or ["(see the log)"])
+                     + f"\nits input is at {tex_path}, its log at {log}")
+        settled = bars.read_bytes() if bars.is_file() else b""
+        if pass_no >= MIN_PASSES and settled == previous:
+            break
+        previous = settled
+    else:
+        print(f"warning: the change bars had not settled after {MAX_PASSES} "
+              "passes; some may be misplaced", file=sys.stderr)
+    _shutil.copyfile(tex_path.with_suffix(".pdf"), out_path)
+
+
+@contextlib.contextmanager
+def diff_workdir(out_path, keep):
+    """Where the two renders and the merged .tex live."""
+    if keep:
+        path = out_path.with_name(out_path.stem + "-build")
+        path.mkdir(parents=True, exist_ok=True)
+        yield path
+        print(f"kept the diff sources in {path}", file=sys.stderr)
+    else:
+        with tempfile.TemporaryDirectory(prefix="kladde-diff-") as tmp:
+            yield Path(tmp)
+
+
+def render_diff(build, old_ref, new_ref, out_path, args, workdir):
+    """`build(ref, figdir) -> (markdown, diagrams)` for one side; diff the two."""
+    figdir = workdir / "figures"
+    texts = {}
+    for side, ref in (("old", old_ref), ("new", new_ref)):
+        texts[side], _ = build(ref, None if args.check_only else figdir)
+    if args.check_only:
+        return
+    # Both sides get the same `--shift-heading-level-by`, so the preamble
+    # latexdiff takes from the new side is the one we want.
+    extra = (["--shift-heading-level-by=-1"] if args.pages
+             else ["--top-level-division=chapter"]) + DIFF_PANDOC
+    old_tex = to_latex(texts["old"], workdir / "old.tex", extra)
+    new_tex = to_latex(texts["new"], workdir / "new.tex", extra)
+    compile_tex(latexdiff(old_tex, new_tex, workdir / "diff.tex"), out_path)
+    print(f"wrote {out_path}", file=sys.stderr)
 
 
 def run_pandoc(md_path, out_path, extra=()):
@@ -906,8 +1140,43 @@ def run_pandoc(md_path, out_path, extra=()):
         sys.exit(f"pandoc failed; its input is at {md_path}")
 
 
+def render_one_diff(path, out_path, args):
+    """One page, as the difference between two of its versions."""
+    old_ref, new_ref = parse_diff_spec(args.diff)
+    repo = repo_root(path)
+    for ref in (old_ref, new_ref):
+        check_ref(repo, ref)
+    git_rel = path.resolve().relative_to(repo).as_posix()
+    doc_rel = (path.resolve().relative_to(CONTENT).as_posix()
+               if path.resolve().is_relative_to(CONTENT) else path.name)
+    subtitle = f"changes from {describe(old_ref)} to {describe(new_ref)}"
+    problems, warnings = [], []
+
+    def build(ref, figdir):
+        text = version_at(repo, git_rel, ref)
+        if text is None:
+            sys.exit(f"{git_rel} does not exist at {describe(ref)}")
+        return build_standalone(text, doc_rel, problems, figdir, warnings,
+                                subtitle=subtitle, fallback_title=path.stem,
+                                by_content=True, for_diff=True)
+
+    with diff_workdir(out_path, args.keep_markdown) as workdir:
+        render_diff(build, old_ref, new_ref, out_path, args, workdir)
+    report(f"{path} ({subtitle})", problems, warnings)
+    return len(problems)
+
+
+def report(what, problems, warnings):
+    for pr in dict.fromkeys(problems):                  # both sides raise the same ones
+        print(f"link: {pr}", file=sys.stderr)
+    print(f"{what}: {len(warnings)} layout warning(s), "
+          f"{len(dict.fromkeys(problems))} link problem(s)", file=sys.stderr)
+
+
 def render_one(path, out_path, args):
     """Build a single page into `out_path`, returning its problem count."""
+    if args.diff:
+        return render_one_diff(path, out_path, args)
     # `<stem>.pandoc.md` rather than `<stem>.md`: the output lands in the
     # working directory, so the obvious name is the *input file itself* when
     # you render a page from the directory it lives in -- which would write
@@ -920,7 +1189,8 @@ def render_one(path, out_path, args):
     problems, warnings = [], []
     figdir = out_path.with_suffix("").with_name(out_path.stem + "-figures")
     merged, diagrams = build_standalone(
-        path, rel, problems, None if args.check_only else figdir, warnings)
+        path.read_text(), rel, problems, None if args.check_only else figdir,
+        warnings, fallback_title=path.stem)
 
     for pr in problems:
         print(f"link: {pr}", file=sys.stderr)
@@ -950,7 +1220,7 @@ def render_pages(args):
             sys.exit(f"no such file: {name}")
         if path.suffix != ".md":
             sys.exit(f"not a markdown file: {name}")
-        out = Path.cwd() / (path.stem + ".pdf")
+        out = Path.cwd() / (path.stem + ("-diff.pdf" if args.diff else ".pdf"))
         if out in outputs:
             # `content/` has an index.md per section, so this is easy to hit.
             sys.exit(f"{name} and {outputs[out]} would both write {out.name}; "
@@ -971,6 +1241,33 @@ def render_pages(args):
     return 1 if sum(render_one(path, out, args) for path, out in paths) else 0
 
 
+def render_whole_diff(args):
+    """The whole of content/, as the difference between two of its versions."""
+    old_ref, new_ref = parse_diff_spec(args.diff)
+    repo = repo_root(CONTENT)
+    for ref in (old_ref, new_ref):
+        check_ref(repo, ref)
+    prefix = CONTENT.resolve().relative_to(repo).as_posix()
+    out_path = Path(args.output or (ROOT / "kladde-diff.pdf"))
+    subtitle = f"changes from {describe(old_ref)} to {describe(new_ref)}"
+    problems, warnings = [], []
+
+    def build(ref, figdir):
+        # A page missing at the old ref is simply absent from that side, so it
+        # shows up as wholly added.  One deleted since is the mirror image, and
+        # does not appear at all -- ORDER is the current reading order.
+        source = None if ref is None else (
+            lambda rel: version_at(repo, f"{prefix}/{rel}", ref))
+        pages = collect(ORDER, source)
+        return build_markdown(pages, problems, figdir, warnings,
+                              subtitle=subtitle, by_content=True, for_diff=True)
+
+    with diff_workdir(out_path, args.keep_markdown) as workdir:
+        render_diff(build, old_ref, new_ref, out_path, args, workdir)
+    report(f"content/ ({subtitle})", problems, warnings)
+    return 1 if problems else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("pages", nargs="*", metavar="PAGE.md",
@@ -986,6 +1283,11 @@ def main():
                     help="report link problems and exit without running pandoc")
     ap.add_argument("--check-examples", action="store_true",
                     help="also compile the marked Rust examples (needs cargo)")
+    ap.add_argument("--diff", metavar="OLD[..NEW]",
+                    help="render the change between two versions instead of one "
+                         "version: `<name>-diff.pdf` per page, or kladde-diff.pdf "
+                         "for the whole set. NEW defaults to the working tree; "
+                         "either ref may be `staged` for the index")
     args = ap.parse_args()
 
     if args.self_test:
@@ -999,6 +1301,9 @@ def main():
     missing = on_disk - set(ORDER)
     if missing:
         sys.exit("not listed in ORDER: " + ", ".join(sorted(missing)))
+
+    if args.diff:
+        sys.exit(render_whole_diff(args))
 
     problems = []
     pages = collect(ORDER)

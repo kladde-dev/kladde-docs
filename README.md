@@ -42,6 +42,32 @@ Links into *other* pages are left exactly as written — they are correct on the
 Any markdown file works, not just one under `content/`; without front matter the title comes from its first `#` heading, or failing that its filename.
 Basenames must differ, since `content/` has an `index.md` per section.
 
+### Diffs
+
+`--diff` renders the *change* between two versions rather than one version:
+
+```sh
+tools/make-pdf.py --diff staged notes.md        # -> ./notes-diff.pdf
+tools/make-pdf.py --diff HEAD~3                 # -> kladde-diff.pdf
+tools/make-pdf.py --diff v0.1..HEAD page.md
+```
+
+The argument is `OLD` or `OLD..NEW` — git's own range syntax, since `OLD:NEW` already means "path NEW at rev OLD" to git.
+`NEW` defaults to the working tree, and either side may be `staged` for the index.
+Output is `<basename>-diff.pdf` per page, or `kladde-diff.pdf` for the whole set.
+
+Both versions are rendered to LaTeX and compared with [latexdiff](https://ctan.org/pkg/latexdiff), so the result is a typeset document with insertions underlined and deletions struck through — not a diff of the sources.
+Diffing the Markdown would be worse than useless: `+`/`-` in column one is a list bullet to the Markdown reader, so the document falls apart before it reaches pandoc.
+
+Two things are deliberately different in a diff: code blocks are unhighlighted, and box-drawing diagrams keep the default leading.
+latexdiff marks up a code block by rewriting it into a `listings`-based environment, which it only does for the plain `verbatim` that `--no-highlight` produces; left as pandoc's coloured fancyvrb blocks, a change confined to code renders with nothing marked at all.
+Mermaid figures are named by a hash of their source, so an untouched diagram is not reported as a change.
+
+Changes are marked twice over, so a diff survives a grayscale print: insertions in blue with a wavy underline, deletions in red struck through, and a change bar in the margin beside both.
+That is latexdiff's `CULINECHBAR` style, the only one that adds the bar without taking something away — `CCHANGEBAR` and `CFONTCHBAR` drop the underline and strikeout, which is exactly the cue that separates an insertion from a deletion once the colour is gone.
+The bars come from the `changebar` package, which needs a third xelatex pass to place them — it records each bar's position on one pass and draws it on the next.
+The diff is recompiled until those positions come out the same twice, rather than until changebar stops printing "Rerun to get the bars right": on a 25-page diff the positions are stable from the third pass but that message still appears on the sixth, so believing it costs several 30-second passes for output that has stopped changing.
+
 ### Checking the Rust examples
 
 ```sh
