@@ -965,6 +965,24 @@ DIFF_MARKUP = "CULINECHBAR"
 # used").
 CHANGEBAR_DRIVER = "xetex"
 
+# latexdiff brackets each changed region with `\DIFaddbegin`/`\DIFaddend` (and
+# the `del` pair).  Under the default SAFE subtype those are defined empty, so
+# they render nothing -- but an empty group is still a group, and between a
+# row's `\\` and the `\bottomrule` that closes a table only `\noalign` material
+# is legal.  A table that gained or lost a row therefore fails to compile with
+# "Misplaced \noalign".
+#
+# Dropping them in that position costs nothing, because there is nothing there
+# to draw.  (It would if the subtype ever became MARGIN, whose bracketing
+# commands are real `\marginpar`s -- hence the assertion in `latexdiff`.)
+# Suppressing table diffing wholesale via PICTUREENV was the alternative, and
+# is worse: a `longtable` cannot sit inside the `\DIFadd{...}` that carries the
+# colour and the change bar, so a changed table would render unmarked.
+NOALIGN_CLASH = re.compile(
+    r"(?:\\DIF(?:add|del)(?:begin|end)\s*)+"
+    r"(?=\\(?:bottomrule|midrule|toprule|cmidrule|hline"
+    r"|endhead|endfirsthead|endfoot|endlastfoot)\b)")
+
 # Inside a code block latexdiff marks each changed line with `%DIF >`/`%DIF <`
 # and relies on its `listings` language to turn that into markup.  An added or
 # removed *blank* line leaves the marker with nothing after it, which listings
@@ -1046,7 +1064,13 @@ def latexdiff(old_tex, new_tex, out_tex):
         capture_output=True, text=True)
     if proc.returncode != 0:
         sys.exit(f"latexdiff failed:\n{proc.stderr}")
-    out_tex.write_text(EMPTY_DIF_LINE.sub("", proc.stdout))
+    tex = proc.stdout
+    for command in ("DIFaddbegin", "DIFaddend", "DIFdelbegin", "DIFdelend"):
+        if f"\\providecommand{{\\{command}}}{{}}" not in tex:
+            sys.exit(f"latexdiff no longer defines \\{command} as empty; "
+                     "NOALIGN_CLASH would now be dropping visible markup")
+    tex = NOALIGN_CLASH.sub("", EMPTY_DIF_LINE.sub("", tex))
+    out_tex.write_text(tex)
     return out_tex
 
 
