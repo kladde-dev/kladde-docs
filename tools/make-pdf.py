@@ -990,6 +990,47 @@ NOALIGN_CLASH = re.compile(
 # gained or lost is not worth reporting anyway, so drop those markers.
 EMPTY_DIF_LINE = re.compile(r"^%DIF [<>][ \t]*\n", re.MULTILINE)
 
+# When a list is deleted, latexdiff comments out its `\begin`/`\end` (as
+# `%DIFDELCMD <`, which does not execute) but re-emits each deleted `\item` as
+# live code tagged `%DIFAUXCMD`, so that the deleted text still renders as a
+# list item.  If the surrounding list went away too, those items are left
+# outside any list and the compile dies on "Lonely \item".
+#
+# Dropping such an item costs the bullet, not the content: the struck-through
+# text after it still renders, as a paragraph rather than an item.  Restoring
+# the list instead -- uncommenting the deleted `\begin{itemize}` -- would
+# rebuild structure the new version does not have, around text that is by then
+# interleaved with additions.
+LIST_OR_ITEM = re.compile(
+    r"\\(?P<delim>begin|end)\{(?:itemize|enumerate|description)\}|\\item\b")
+UNESCAPED_COMMENT = re.compile(r"(?<!\\)%")
+
+
+def executed(line):
+    """The part of a line TeX runs: everything before an unescaped `%`."""
+    m = UNESCAPED_COMMENT.search(line)
+    return line if m is None else line[:m.start()]
+
+
+def drop_orphan_items(tex):
+    """Remove the `\\item`s latexdiff leaves outside any list."""
+    out, depth = [], 0
+    for line in tex.splitlines(keepends=True):
+        cuts = []
+        for m in LIST_OR_ITEM.finditer(executed(line)):
+            if m.group("delim") == "begin":
+                depth += 1
+            elif m.group("delim") == "end":
+                depth = max(depth - 1, 0)
+            elif depth == 0 and "%DIFAUXCMD" in line:
+                # Only latexdiff's own; a stray `\item` in the source is the
+                # document's problem and should still be reported as one.
+                cuts.append(m.span())
+        for start, end in reversed(cuts):
+            line = line[:start] + line[end:]
+        out.append(line)
+    return "".join(out)
+
 
 def parse_diff_spec(spec):
     """`old..new` -> (old, new); `old` -> (old, None), None meaning the working tree."""
@@ -1069,7 +1110,7 @@ def latexdiff(old_tex, new_tex, out_tex):
         if f"\\providecommand{{\\{command}}}{{}}" not in tex:
             sys.exit(f"latexdiff no longer defines \\{command} as empty; "
                      "NOALIGN_CLASH would now be dropping visible markup")
-    tex = NOALIGN_CLASH.sub("", EMPTY_DIF_LINE.sub("", tex))
+    tex = drop_orphan_items(NOALIGN_CLASH.sub("", EMPTY_DIF_LINE.sub("", tex)))
     out_tex.write_text(tex)
     return out_tex
 
