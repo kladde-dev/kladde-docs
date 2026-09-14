@@ -105,25 +105,31 @@ struct StatementRecord {     // one per statement that still has a reason to liv
 Content bytes are deliberately *not* counted here; [[#What counts as a live byte]] charges them to whichever page physically holds them, which is what makes `Inline` payloads accounted per byte without any per-statement counter.
 
 `pins` is a single refcount over heterogeneous holders, and a statement is live exactly while `pins > 0`.
-Three things take a pin, and [[#What counts as a live byte]] argues that one counter is right even though `Size` statements can hold all three at once:
+Three things take a pin, and which of them a statement can hold depends on its kind:
 
-1. each **fragment** resolving to the statement;
-2. each physically-present **older statement it denies** (suppressors only);
-3. being the id's **size authority** (the newest `Size` for that id).
+1. **`F`** — each **fragment** resolving to the statement. Any kind.
+2. **`A`** — being the id's **size authority**, i.e. the newest `Size` above `tombstone_epoch`. `Size` only.
+3. **`D`** — each physically-present statement naming the id that this one **denies**. The newest `Tombstone` only.
+
+So a content statement holds only `F`, a `Size` holds `A` and `F`, and a `Tombstone` holds only `D`.
+[[#What counts as a live byte]] derives the asymmetry; the short version is that a `Tombstone` denies *every* probe, so `D` is exact and cheap, whereas a `Size(id, n)` denies only statements reaching past `n` — a count no allocation-level counter can produce, and one it turns out never to need.
 
 The name is deliberate: this is a refcount whose holders are of different kinds, so `liveness` would read as a boolean or an enum, and `refcount` would say nothing about what is doing the referring.
-"Pin", in the buffer-manager sense of *something prevents this from being reclaimed*, is exactly the relationship, and it stays accurate as reason (2) and (3) join reason (1).
+"Pin", in the buffer-manager sense of *something prevents this from being reclaimed*, is exactly the relationship, and it stays accurate across all three reasons.
+A single counter is still the right shape, because a `Size` holds `A` and `F` simultaneously and no consumer ever asks which kind a pin is; two fields would encode a distinction that is never read.
 
 This is the draft's `(id, offset) → Option<Address>` B-tree and its `(id, offset) → Statement` B-tree collapsed into one structure: the fragment map *is* the resolved view of [[#conflict resolution across epochs]], computed once during the bulk read and maintained incrementally afterwards, so epochs never need to be consulted again at run time.
 Content queries resolve `(id, offset)` in one lookup, `O(log F)` for `F` live fragments; sequential reads iterate from there.
 
-**2. The allocation map**: a hash map `id → AllocationMeta { size, fragment_count, statement_bytes, mentions, size_statement, suppressors }`.
+**2. The allocation map**: a hash map `id → AllocationMeta { size, fragment_count, statement_bytes, mentions, size_statement, tombstone }`.
 `size` answers size queries in `O(1)`.
 `fragment_count` and `statement_bytes` measure the allocation's *description overhead* relative to `size`, which drives defragmentation in [[#Maintenance]].
 `mentions` counts the statements naming this id that are **physically present** in live address-table pages — *not* the ones that are live in the resolution sense.
 That distinction is the whole point: a statement shadowed into irrelevance still sits in its page, and still resurrects if the thing shadowing it disappears, so it must keep being counted until a page rewrite actually drops it.
-`mentions` is incremented when a statement naming the id is written or read at open, and decremented when one is dropped during consolidation or when its page is reclaimed; it initializes suppressors' denial pins ([[#What counts as a live byte]]) and decides id recycling.
-`size_statement` holds the id's size authority so it can be pinned and re-pinned as it changes hands, and `suppressors` lists the id's live `Tombstone` and `Size` statements — a list rather than a single pointer because dropping one statement may release pins on several of them.
+`mentions` is incremented when a statement naming the id is written or read at open, and decremented when one is dropped during consolidation or when its page is reclaimed; it initializes a new `Tombstone`'s `D` count — where it is exact, since a tombstone denies everything — and decides id recycling.
+`size_statement` holds the id's size authority so the `A` pin can be moved as it changes hands, and `tombstone` holds the id's newest `Tombstone`, which is the single statement to decrement when one naming the id is physically dropped.
+A single pointer suffices for the latter because only the *newest* tombstone carries pins: a newer tombstone subsumes an older one entirely, so older ones are droppable on sight.
+See [[address-table-walkthrough#Preliminaries]] for a field-by-field account of when each of these is written and read.
 
 **3. Page tables**: for every page its kind, epoch, and live-byte counter (`Data`: referenced bytes; `AddressTable`: per [[#What counts as a live byte]] below).
 Pages are bucketed by live fraction (a handful of buckets suffices) together with an age mark, making victim selection `O(1)` rather than a priority queue's `O(log P)`, with `O(1)` bucket moves as counters change.
@@ -152,51 +158,52 @@ For a `Ref`, partial shadowing strands only ~10 bytes of framing in the address-
 For an `Inline` there is no data page: the payload *is* the content, so charging it all-or-nothing would let shadowing half of a 200-byte inline strand 100 bytes that no counter in the system ever notices, and a page holding sixty mostly-shadowed inlines would report itself nearly full and never be cleaned.
 Routing the charge through `fragment.source` avoids that without treating inlines specially at all.
 
-**Framing is released when the statement's `pins` reach zero**, and the three kinds of pin are what the rest of this section is about.
+**Framing is released when the statement's `pins` reach zero**, and which pins a statement can hold is what the rest of this section is about.
 
 | Statement kind | Can be pinned by | Content bytes, and where charged |
 | --- | --- | --- |
-| `Ref` | fragments | a `Data` page; released per fragment |
-| `Inline` | fragments | its own `AddressTable` page; released per fragment |
-| `Undefined` | fragments | none |
-| `Size` | fragments, denials, **and** size authority | none |
-| `Tombstone` | denials | none |
+| `Ref` | fragments (`F`) | a `Data` page; released per fragment |
+| `Inline` | fragments (`F`) | its own `AddressTable` page; released per fragment |
+| `Undefined` | fragments (`F`) | none |
+| `Size` | fragments (`F`) **and** size authority (`A`) | none |
+| `Tombstone` | denials (`D`) | none |
 
 **Content statements need only fragment pins**, because a content statement's denial is exactly co-extensive with what it defines.
 If a `Ref` covering `[a, b)` has lost every fragment, then every byte of `[a, b)` is covered by something strictly newer, and that newer thing also outranks everything the `Ref` was denying — so dropping it can resurrect nothing.
 The size formula is safe too: covering `[a, b)` requires some newer statement to reach offset `b`, so the id's size cannot shrink when the `Ref` goes.
 
-**Suppressors take denial pins.**
-A `Tombstone` or `Size` exists to stop *older* statements from showing through, so it is pinned once per physically-present older statement naming that id — initialized when it is written, decremented whenever one of those is dropped by a page rewrite.
-Note this counts *physically present* statements, not resolution-live ones: a statement with zero pins that has not yet been swept out of its page will still resurrect if its suppressor vanishes first.
+**A `Size` needs no denial pins either**, which is the least obvious entry in the table.
+A `Size(id, n)` may be dropped iff it is **not the authority and owns no fragment**:
 
-**A `Size` statement can hold all three kinds of pin simultaneously**, which is the interesting case and the reason a single counter is the right shape rather than two fields.
-Three claims, each with a witness:
+- it cannot affect the size, since a non-authority `Size` has an epoch below `size_epoch` and the `max` term ranges only over `Ref`/`Undefined`/`Inline` extents;
+- it cannot affect content, since it wins exactly the probes in `[n, size)` that nothing newer covers, and those are precisely its `F` pins;
+- and a later *grow* cannot expose anything either, because the newest `Size` always has `n_new <= size` and so already denies every probe from `size` upward.
 
-- *It can own fragments.*
-  With `Ref(id, 0, 1000)` at epoch 3, `Size(id, 10)` at epoch 5, and `Ref(id, 50, 10)` at epoch 9, the id's size is 60, and the range `[10, 50)` resolves through the `Size` statement to `Undefined` — a live fragment whose owner is the `Size`.
-  (So the earlier claim in this document that suppressors "produce no fragments at all" was wrong for `Size`; it holds only for `Tombstone`.)
-- *It can simultaneously owe denials.*
-  In that same example, dropping the `Size` would move `size_epoch` back past epoch 3, so the old `Ref`'s extent of 1000 would set the size again and resurrect content in `[60, 1000)`.
-  It must therefore stay pinned by that older `Ref` as long as the `Ref` is physically present.
-- *And neither of those covers being the size authority.*
-  With `Size(id, 100)` at epoch 5 and `Ref(id, 0, 10)` at epoch 9 and nothing older, `[10, 100)` resolves to `Undefined` by *default* rather than through the `Size` (a `Size(id, n)` only matches probes `>= n`), so the statement owns no fragment and denies nothing — yet dropping it would shrink the id from 100 to 10.
+The `A` pin then carries the whole burden for the case that matters, and it is not substitutable.
+With `Size(id, 100)` at epoch 5 and `Ref(id, 0, 10)` at epoch 9 and nothing older, `[10, 100)` resolves to `Undefined` *by default* rather than through the `Size` — a `Size(id, n)` only matches probes `>= n` — so the statement owns no fragment and denies nothing, yet dropping it would shrink the id from 100 to 10.
+More starkly: an allocation created and never written has `Size(id, n)` as the *only evidence it exists*, and when `n` is 0 there is not even a default-`Undefined` range to appeal to.
 
-So the question "is there a case needing both counters?" has the answer *yes, `Size` is that case* — and that is precisely the argument for collapsing them.
+**A `Size` still holds two kinds of pin at once**, which is what keeps a single counter the right shape.
+With `Ref(id, 0, 1000)` at epoch 3, `Size(id, 10)` at epoch 5 and `Ref(id, 50, 10)` at epoch 9, the id's size is 60 and the range `[10, 50)` resolves *through* the `Size` — so it holds `F` and `A` together.
 Nothing in the design ever asks **which kind** of pin a statement holds; every consumer asks only whether any remain.
 Two fields would therefore encode a distinction that is never read, at two bytes per live statement, while inviting the bug where a predicate checks one field and forgets the other.
 
-**Multiple suppressors can pin the same statement**, so `AllocationMeta.suppressors` is a small list rather than a single newest pointer: with `Ref`(3), `Size(id, 10)`(5) and `Size(id, 5)`(8) all present, both `Size` statements are pinned by the `Ref`, and dropping it must decrement both.
-Dropping a statement therefore decrements every suppressor for that id with a higher epoch — `O(k)` for a `k` that consolidation keeps at zero or one, since resolved truth contains at most one `Size` per id and no redundant tombstones.
+**Tombstones take denial pins, and only the newest one does.**
+A `Tombstone` claims *every* probe and denies existence outright, so it is genuinely denied-by nothing and denies everything: pinned once per physically-present statement naming that id, initialized from `mentions` and decremented whenever one of those is dropped by a page rewrite.
+This is why `mentions` is exact here and would be a mere upper bound for anything else — a `Size(id, n)` would deny only statements reaching past `n`, which no allocation-level counter can express.
+Note the count is over *physically present* statements, not resolution-live ones: a statement with zero pins that has not yet been swept out of its page will still resurrect if its tombstone vanishes first.
+And a newer tombstone subsumes an older one entirely, so older tombstones are droppable on sight and `AllocationMeta.tombstone` is a single pointer rather than a list.
 
 This produces a cascade that clears itself without any special pass.
 Statements shadowed by a tombstone contribute no content bytes, so their pages sink toward zero live fraction and become victims; consolidating those pages drops the statements, which decrements the tombstone's pins; when they reach zero the tombstone goes dead, sinking *its* page's live fraction, which eventually recycles it too.
 Nothing has to reason about epochs to make this happen — only about counters.
 
 Two limits worth stating rather than hiding.
-A `Size` statement that still holds denial pins is counted live conservatively: deciding exactly whether it still denies anything reachable would need per-offset reasoning about older extents.
-The over-count is bounded and tiny — a `Size` is about three bytes, and an allocation accumulates one per resize — and such statements die by rewrite anyway, since consolidation emits resolved truth.
+A `Size` that *is* the authority can still be redundant — with `Size(id, 100)`@5 and `Ref(id, 0, 100, X)`@9, dropping it would leave the size at 100 either way — and the `A` pin keeps it alive regardless.
+That over-count is bounded at one statement per allocation, since non-authority `Size` statements no longer linger, and it is correctable during consolidation by comparing the authority's bound against the largest extent among content statements newer than it.
 And the counters are policy, not correctness: an over-count only delays cleaning, an under-count only cleans a page earlier than ideal, and neither can make a resolved read wrong.
+
+[[address-table-walkthrough]] traces all of this through a concrete allocation and stress-tests it against sequences designed to break it.
 
 ## Maintenance
 
