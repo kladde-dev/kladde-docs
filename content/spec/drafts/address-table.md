@@ -13,9 +13,10 @@ Statements from all live pages are merged, resolving conflicts by recency, see [
 | ----------------------------------- | ----------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Ref(id, offset, size, address)`    | exists            | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` equals `file[address, address + size)`. | `[address, address + size)` must be within a single `Data` page. As a *writer invariant* (readers never depend on it), every byte in a `Data` page is referenced by at most one live `Ref`; this is not needed for correctness but keeps data-page coverage a plain counter instead of a refcount. Relaxing it later would enable `O(1)` allocation clones and is a format-compatible policy change, see [[#Design directions and trade-offs]].                                                                                                                                                                  |
 | `Undefined(id, offset, size)`       | exists            | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` is `Undefined`.                         | Kladde is allowed to hand out arbitrary data for `Undefined` regions, and consolidation may rewrite `Undefined` regions with `Ref` or `Inline` with arbitrary data (useful for data types that have long sequences of repeated small `[data] [undefined] [data] [undefined] ...` patches, which could happen for arrays of enums with slightly unbalanced payload sizes per variant). |
-| `Size(id, size)`                    | exists            | `size`                                                           | Anything beyond `size` is `Undefined`.                                             | Only has an effect if an older live page states a different size or some non-`Undefined` content beyond `size` that is not overwritten by a newer live statement.                                                                                                                                                                                                                     |
+| `Shrink(id, n)`                     | exists            | `>= n`, and **anchors** the size: extents below this statement's epoch drop out | Anything at or beyond `n` is `Undefined`.                                          | The size-reducing half of the old `Size` statement. Its content claim is dormant while the allocation stays at `n`, and activates if the allocation later grows past `n` — which is exactly what stops a truncated tail from resurfacing.                                                                                                                                              |
+| `Grow(id, n)`                       | exists            | `>= n`                                                           | **Nothing.** Matches no probe.                                                     | The size-increasing half of the old `Size` statement, carrying no content claim. Growing never needs to deny anything: every statement that could cover a probe at or past the old size has an epoch below the anchor and is therefore already denied by it. `Grow(id, 0)` is how an existent zero-sized allocation is stated.                                                        |
 | `Tombstone(id)`                     | does not exist    | `0`                                                              | All bytes are `Undefined`.                                                         | Only has an effect if an older live page states existence of `id` and no newer live page states existence of `id` and fully overwrites any size and content remaining from the old incarnation.                                                                                                                                                                                       |
-| `Inline(id, offset, size, payload)` | exists            | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` equals `payload`.                       | Small-size optimization. Requires `1 <= size  <= 252`.                                                                                                                                                                                                                                                                                                                                |
+| `Inline(id, offset, size, payload)` | exists            | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` equals `payload`.                       | Small-size optimization. Requires `1 <= size <= 251` — one less than before the `Grow`/`Shrink` split, since the payload length is encoded as an offset past the last statement tag. Zero-sized payloads stay unrepresentable, and nothing needs them: `Grow(id, 0)` states an existent zero-sized allocation.                                                                        |
 
 #### No conflicts within each epoch
 
@@ -23,11 +24,12 @@ Statements in the same `epoch` must not conflict with each other:
 
 - no two statements in the same `epoch` may make contradicting statements about the existence of an `id`;
 - no two statements in the same `epoch` may name any byte of content twice, not even if the two statements assign the same value to that byte.
-  This includes `Undefined`: an assignment of `Undefined` to a given byte — whether by an `Undefined`, `Size`, or `Tombstone` statement — conflicts with any other assignment to the same byte, including a second `Undefined` assignment.
-- At most one `Size` statement per `id` is allowed per epoch.
+  This includes `Undefined`: an assignment of `Undefined` to a given byte — whether by an `Undefined`, `Shrink`, or `Tombstone` statement — conflicts with any other assignment to the same byte, including a second `Undefined` assignment.
+- At most one `Shrink` and at most one `Grow` statement per `id` is allowed per epoch, and never both: a flush knows whether it is growing or shrinking.
 - Multiple `Ref`, `Undefined`, and `Inline` statements for pairwise disjoint ranges within the same allocation are allowed.
   They don't conflict in regards of the size of the allocation because they all merely bound the size of the allocation from below.
-- However, a `Ref`, `Undefined`, or `Inline` statement conflicts with a `Size(size)` statement in the same `epoch` if its lower bound `offset + size` is larger than `size`, and this is not allowed in a single `epoch`.
+- However, a `Ref`, `Undefined`, or `Inline` statement conflicts with a `Shrink(n)` statement in the same `epoch` if its lower bound `offset + size` is larger than `n`, and this is not allowed in a single `epoch`.
+  A `Grow` never conflicts with anything, since it claims no content and only bounds the size from below.
 
 #### Conflict resolution across epochs
 
@@ -35,21 +37,24 @@ Two statements with different `epoch` are allowed to contradict each other.
 In this case, the newer statement (the one with the higher `epoch`) takes precedence, but only as far as it contradicts the older statement.
 Any part of the older statement that doesn't contradict the newer statement survives, and this is resolved at the granularity of the allocations existence, its size, and the value of each of its content bytes:
 
-- **Existence:** allocation `id` exists if the statement with highest `epoch` that mentions `id` is `Ref`, `Undefined`, `Size`, or `Inline`.
+- **Existence:** allocation `id` exists if the statement with highest `epoch` that mentions `id` is `Ref`, `Undefined`, `Shrink`, `Grow`, or `Inline`.
   It does not exist if the statement with highest `epoch` that mentions `id` is `Tombstone(id)` or if no statement mentions `id`.
 - **Size:** `0` if the allocation does not exist (note: this is only to simplify the rules; we still distinguish *existent* zero-sized allocations from *non-existent* allocations).
-  Otherwise, let `tombstone_epoch` be the largest `epoch` of any `Tombstone(id)` statement (or `tombstone_epoch = -1` if no `Tombstone(id)` exists), and let `size_epoch` be the largest `epoch > tombstone_epoch` of any `Size(id, ...)` statement (or `size_epoch = tombstone_epoch` if no `Size(id, ...)` statement exists).
+  Otherwise, let `tombstone_epoch` be the largest `epoch` of any `Tombstone(id)` statement (or `tombstone_epoch = -1` if no `Tombstone(id)` exists), and let `anchor_epoch` be the largest `epoch > tombstone_epoch` of any `Shrink(id, ...)` statement (or `anchor_epoch = tombstone_epoch` if no `Shrink(id, ...)` statement exists).
   The size of allocation `id` is then the maximum over:
-	- the `size` field of the `Size(id, size)` statement at `size_epoch`, if this statement exists; and
-	- all values `offset + size` of all `Ref(id, offset, size, ...)`, `Undefined(id, offset, size)` and `Inline(id, offset, size, ...)` statements with `epoch > size_epoch`.
-  At least one matching `Size`, `Ref`, `Undefined`, or `Inline` statement must exist because otherwise the allocation does not exist.
+	- the `n` field of the `Shrink(id, n)` statement at `anchor_epoch`, if this statement exists;
+	- the `n` field of every `Grow(id, n)` statement with `epoch > anchor_epoch`; and
+	- all values `offset + size` of all `Ref(id, offset, size, ...)`, `Undefined(id, offset, size)` and `Inline(id, offset, size, ...)` statements with `epoch > anchor_epoch`.
+  At least one matching `Shrink`, `Grow`, `Ref`, `Undefined`, or `Inline` statement must exist because otherwise the allocation does not exist.
+  Note that only `Shrink` anchors the epoch; a `Grow` contributes a lower bound and nothing else, which is why dropping one can never readmit older extents.
 - **Content at a given offset `probe`:** defined by the latest statement that sets the value of this content, i.e., the statement with highest `epoch` that matches any of the following patterns:
 	- `Tombstone(id)`;
-	- `Size(id, size)` where `size <= probe`; or
+	- `Shrink(id, n)` where `n <= probe`; or
 	- `Ref(id, offset, size, ...)`, `Undefined(id, offset, size)`, or `Inline(id, offset, size, ...)` where `offset <= probe < offset + size`.
+  A `Grow` statement never matches, which is the whole of the difference between the two halves of the old `Size`.
   There must be at most one winner because at most one statement matching the above criteria is allowed per `epoch` (see [[#no conflicts within each epoch]]).
   Given the winning statement, the content of allocation `id` at offset `probe` is defined as follows:
-	- If there is no matching statement or if the winning statement is of type `Tombstone`, `Size`, or `Undefined`: the content of allocation `id` at offset `probe` is `Undefined`.
+	- If there is no matching statement or if the winning statement is of type `Tombstone`, `Shrink`, or `Undefined`: the content of allocation `id` at offset `probe` is `Undefined`.
 	- if the winning statement is `Inline(id, offset, size, payload)`: the content of allocation `id` at offset `probe` is `payload[probe - offset]`.
 	- If the winning statement is `Ref(id, offset, size, address)`: the content of allocation `id` at offset `probe` is `file[address + (probe - offset)]`.
 
@@ -63,15 +68,17 @@ References between `AddressTable` pages form a tree rooted at the header page.
 ```
 address_table_page := num_children:varint child_ref{num_children} num_statements:varint statements:statement{num_statements}
 child_ref          := page_number:varint  ; the page number (not the start address of the page)
-statement          := id_delta (tagged_ref | tagged_undefined | tagged_size | tagged_tombstone | inline)
+statement          := id_delta (tagged_ref | tagged_undefined | tagged_shrink | tagged_tombstone | tagged_grow | inline)
 id_delta           := varint              ; increment from id of last statement (for first statement in page: id)
 tagged_ref         := 0:byte offset:varint size:varint address:varint
 tagged_undefined   := 1:byte offset:varint size:varint
-tagged_size        := 2:byte size:varint
+tagged_shrink      := 2:byte n:varint
 tagged_tombstone   := 3:byte              ; tombstones have no payload apart from the id
+tagged_grow        := 4:byte n:varint
 
-; inline is optimized for lots of small payloads. size_tag = size + 3 >= 4 can't clash.
-inline             := size_tag:byte offset:varint payload:byte{size_tag - 3}
+; inline is optimized for lots of small payloads. size_tag = size + 4 >= 5 can't clash.
+; size >= 1, so zero-sized Inline payloads stay unrepresentable; max size is 255 - 4 = 251.
+inline             := size_tag:byte offset:varint payload:byte{size_tag - 4}
 ```
 
 Notes on the physical format:
@@ -108,11 +115,11 @@ Content bytes are deliberately *not* counted here; [[#What counts as a live byte
 Three things take a pin, and which of them a statement can hold depends on its kind:
 
 1. **`F`** — each **fragment** resolving to the statement. Any kind.
-2. **`A`** — being the id's **size authority**, i.e. the newest `Size` above `tombstone_epoch`. `Size` only.
+2. **`A`** — the resolved size depends on this statement. Held by the **anchor** (the newest `Shrink` above `tombstone_epoch`), because dropping it moves `anchor_epoch` and readmits older extents; and by a `Grow(id, n)` with `n == size`, because it may be the sole witness of that size.
 3. **`D`** — each physically-present statement naming the id that this one **denies**. The newest `Tombstone` only.
 
-So a content statement holds only `F`, a `Size` holds `A` and `F`, and a `Tombstone` holds only `D`.
-[[#What counts as a live byte]] derives the asymmetry; the short version is that a `Tombstone` denies *every* probe, so `D` is exact and cheap, whereas a `Size(id, n)` denies only statements reaching past `n` — a count no allocation-level counter can produce, and one it turns out never to need.
+So a content statement holds only `F`, a `Shrink` holds `A` and `F`, a `Grow` holds only `A`, and a `Tombstone` holds only `D`.
+[[#What counts as a live byte]] derives the asymmetry; the short version is that a `Tombstone` denies *every* probe, so `D` is exact and cheap, whereas a `Shrink(id, n)` denies only statements reaching past `n` — a count no allocation-level counter can produce, and one it turns out never to need.
 
 **A tombstone is an epoch floor, not a matcher.**
 The resolution rules of [[#Conflict resolution across epochs]] describe a `Tombstone` as a statement that matches every probe and yields `Undefined`, but the in-memory resolver represents it the other way round: when resolving an id, discard every statement at or below `tombstone_epoch` and take the highest of what remains, defaulting to `Undefined` when nothing does.
@@ -122,18 +129,19 @@ Ranges left uncovered above the floor are the ordinary unowned-default case, exa
 
 The name is deliberate: this is a refcount whose holders are of different kinds, so `liveness` would read as a boolean or an enum, and `refcount` would say nothing about what is doing the referring.
 "Pin", in the buffer-manager sense of *something prevents this from being reclaimed*, is exactly the relationship, and it stays accurate across all three reasons.
-A single counter is still the right shape, because a `Size` holds `A` and `F` simultaneously and no consumer ever asks which kind a pin is; two fields would encode a distinction that is never read.
+A single counter is still the right shape, because a `Shrink` holds `A` and `F` simultaneously and no consumer ever asks which kind a pin is; two fields would encode a distinction that is never read.
 
 This is the draft's `(id, offset) → Option<Address>` B-tree and its `(id, offset) → Statement` B-tree collapsed into one structure: the fragment map *is* the resolved view of [[#conflict resolution across epochs]], computed once during the bulk read and maintained incrementally afterwards, so epochs never need to be consulted again at run time.
 Content queries resolve `(id, offset)` in one lookup, `O(log F)` for `F` live fragments; sequential reads iterate from there.
 
-**2. The allocation map**: a hash map `id → AllocationMeta { size, fragment_count, statement_bytes, mentions, size_statement, tombstone }`.
+**2. The allocation map**: a hash map `id → AllocationMeta { size, fragment_count, statement_bytes, mentions, anchor, grow_witness, tombstone }`.
 `size` answers size queries in `O(1)`.
 `fragment_count` and `statement_bytes` measure the allocation's *description overhead* relative to `size`, which drives defragmentation in [[#Maintenance]].
 `mentions` counts the statements naming this id that are **physically present** in live address-table pages — *not* the ones that are live in the resolution sense.
 That distinction is the whole point: a statement shadowed into irrelevance still sits in its page, and still resurrects if the thing shadowing it disappears, so it must keep being counted until a page rewrite actually drops it.
 `mentions` is incremented when a statement naming the id is written or read at open, and decremented when one is dropped during consolidation or when its page is reclaimed; it initializes a new `Tombstone`'s `D` count — where it is exact, since a tombstone denies everything — and decides id recycling.
-`size_statement` holds the id's size authority so the `A` pin can be moved as it changes hands, and `tombstone` holds the id's newest `Tombstone` — the epoch floor for resolution, and the single statement to decrement when one naming the id is physically dropped.
+`anchor` holds the id's newest `Shrink` and `grow_witness` the `Grow` with `n == size`, if any, so the `A` pin can be moved as either changes hands; the two are separate slots because both can be pinned at once, for different reasons — the anchor because dropping it readmits older extents, the witness because it may be the sole statement achieving the size.
+`tombstone` holds the id's newest `Tombstone` — the epoch floor for resolution, and the single statement to decrement when one naming the id is physically dropped.
 A single pointer suffices for the latter because only the *newest* tombstone carries pins: a newer tombstone subsumes an older one entirely, so older ones are released outright and droppable on sight.
 Both fields can be occupied at once, since an id may be allocated again while its tombstone still stands ([[#Tombstones and id recycling]]).
 See [[address-table-walkthrough#Preliminaries]] for a field-by-field account of when each of these is written and read.
@@ -172,32 +180,39 @@ Routing the charge through `fragment.source` avoids that without treating inline
 | `Ref` | fragments (`F`) | a `Data` page; released per fragment |
 | `Inline` | fragments (`F`) | its own `AddressTable` page; released per fragment |
 | `Undefined` | fragments (`F`) | none |
-| `Size` | fragments (`F`) **and** size authority (`A`) | none |
+| `Shrink` | fragments (`F`) **and** anchor (`A`) | none |
+| `Grow` | size witness (`A`) only — never fragments | none |
 | `Tombstone` | denials (`D`) | none |
 
 **Content statements need only fragment pins**, because a content statement's denial is exactly co-extensive with what it defines.
 If a `Ref` covering `[a, b)` has lost every fragment, then every byte of `[a, b)` is covered by something strictly newer, and that newer thing also outranks everything the `Ref` was denying — so dropping it can resurrect nothing.
 The size formula is safe too: covering `[a, b)` requires some newer statement to reach offset `b`, so the id's size cannot shrink when the `Ref` goes.
 
-**A `Size` needs no denial pins either**, which is the least obvious entry in the table.
-A `Size(id, n)` may be dropped iff it is **not the authority and owns no fragment**:
+**A `Shrink` needs no denial pins either**, which is the least obvious entry in the table.
+A `Shrink(id, n)` may be dropped iff it is **not the anchor and owns no fragment**:
 
-- it cannot affect the size, since a non-authority `Size` has an epoch below `size_epoch` and the `max` term ranges only over `Ref`/`Undefined`/`Inline` extents;
+- it cannot affect the size, since a non-anchor `Shrink` has an epoch below `anchor_epoch` and the `max` term ranges only over `Grow` bounds and `Ref`/`Undefined`/`Inline` extents above the anchor;
 - it cannot affect content, since it wins exactly the probes in `[n, size)` that nothing newer covers, and those are precisely its `F` pins;
-- and a later *grow* cannot expose anything either, because the newest `Size` always has `n_new <= size` and so already denies every probe from `size` upward.
+- and a later *grow* cannot expose anything either, because the anchor always has `n <= size` and so already denies every probe from `size` upward.
 
-The `A` pin then carries the whole burden for the case that matters, and it is not substitutable.
-With `Size(id, 100)` at epoch 5 and `Ref(id, 0, 10)` at epoch 9 and nothing older, `[10, 100)` resolves to `Undefined` *by default* rather than through the `Size` — a `Size(id, n)` only matches probes `>= n` — so the statement owns no fragment and denies nothing, yet dropping it would shrink the id from 100 to 10.
-More starkly: an allocation created and never written has `Size(id, n)` as the *only evidence it exists*, and when `n` is 0 there is not even a default-`Undefined` range to appeal to.
+**A `Grow` is simpler still: it holds only `A`, and its liveness is locally decidable.**
+Matching no probe, it can never own a fragment, so it never becomes a fragment-pinned stray.
+It is dead as soon as `size > n`, since some other term then achieves the maximum, and dead as soon as it falls below `anchor_epoch`; both tests are `O(1)` against `AllocationMeta`.
+Because a `Grow`'s bound strictly exceeded the size at emission, bounds are distinct and **at most one `Grow` per allocation can be alive** — the one with `n == size`.
+Dropping a `Grow` also carries no [[address-table-walkthrough#(v) Consolidate `L2`, the leaf holding the size authority — break 1]] hazard, because it does not anchor the epoch and so can only lower the `max`, never readmit older extents.
 
-**A `Size` still holds two kinds of pin at once**, which is what keeps a single counter the right shape.
-With `Ref(id, 0, 1000)` at epoch 3, `Size(id, 10)` at epoch 5 and `Ref(id, 50, 10)` at epoch 9, the id's size is 60 and the range `[10, 50)` resolves *through* the `Size` — so it holds `F` and `A` together.
+The `A` pin carries the whole burden for the case that matters, and it is not substitutable.
+With `Grow(id, 100)` at epoch 5 and `Ref(id, 0, 10)` at epoch 9 and nothing older, `[10, 100)` resolves to `Undefined` *by default*, so the statement owns no fragment and denies nothing, yet dropping it would shrink the id from 100 to 10.
+More starkly: an allocation created and never written has `Grow(id, n)` as the *only evidence it exists*, and when `n` is 0 there is not even a default-`Undefined` range to appeal to — `Grow(id, 0)` is precisely how an existent zero-sized allocation is stated.
+
+**A `Shrink` still holds two kinds of pin at once**, which is what keeps a single counter the right shape.
+With `Ref(id, 0, 1000)` at epoch 3, `Shrink(id, 10)` at epoch 5 and `Ref(id, 50, 10)` at epoch 9, the id's size is 60 and the range `[10, 50)` resolves *through* the `Shrink` — so it holds `F` and `A` together.
 Nothing in the design ever asks **which kind** of pin a statement holds; every consumer asks only whether any remain.
 Two fields would therefore encode a distinction that is never read, at two bytes per live statement, while inviting the bug where a predicate checks one field and forgets the other.
 
 **Tombstones take denial pins, and only the newest one does.**
 A `Tombstone` claims *every* probe and denies existence outright, so it is genuinely denied-by nothing and denies everything: pinned once per physically-present statement naming that id, initialized from `mentions` and decremented whenever one of those is dropped by a page rewrite.
-This is why `mentions` is exact here and would be a mere upper bound for anything else — a `Size(id, n)` would deny only statements reaching past `n`, which no allocation-level counter can express.
+This is why `mentions` is exact here and would be a mere upper bound for anything else — a `Shrink(id, n)` would deny only statements reaching past `n`, which no allocation-level counter can express.
 Note the count is over *physically present* statements, not resolution-live ones: a statement with zero pins that has not yet been swept out of its page will still resurrect if its tombstone vanishes first.
 And a newer tombstone subsumes an older one entirely, so older tombstones are released outright and droppable on sight, which is why `AllocationMeta.tombstone` is a single pointer rather than a list.
 
@@ -209,11 +224,16 @@ This produces a cascade that clears itself without any special pass.
 Statements shadowed by a tombstone contribute no content bytes, so their pages sink toward zero live fraction and become victims; consolidating those pages drops the statements, which decrements the tombstone's pins; when they reach zero the tombstone goes dead, sinking *its* page's live fraction, which eventually recycles it too.
 Nothing has to reason about epochs to make this happen — only about counters.
 
-Two limits worth stating rather than hiding.
-A `Size` that *is* the authority can still be redundant — with `Size(id, 100)`@5 and `Ref(id, 0, 100, X)`@9, dropping it would leave the size at 100 either way — and the `A` pin keeps it alive regardless.
-Non-authority `Size` statements can be redundant and alive too, whenever they own a fragment over a range that would read `Undefined` anyway — so the over-count is *not* bounded at one per allocation, and a monotonically increasing sequence of resizes strands one per resize.
-What bounds it is that the live set is the running-minimum-bound chain read newest-first: a `Size` can own a fragment only if its bound is strictly below every newer `Size`'s, so any shrink to bound `b` permanently retires every `Size` with bound `>= b`, and a later grow never revives one.
-Detecting a stray means asking whether anything older is left to deny, which no in-memory structure can answer cheaply — the fragment map indexes only live fragments and `mentions` is a count, not a list — so strays are tolerated rather than detected, and a flush simply always emits a `Size` when it resizes.
+**When to emit, and the residual.**
+A **grow** emits a `Grow(id, S_new)` only when nothing the flush itself writes reaches offset `S_new` — an exact, `O(1)` test, since everything not written by this flush is bounded by the old size.
+The common append pattern, growing *and* writing at the new end, therefore emits nothing at all.
+A **shrink** always emits a `Shrink(id, S_new)`: old extents above the anchor may exceed the target, and deciding whether any survives would need the id's *physically present* statements, which no structure reaches — the fragment map indexes only live fragments, `StatementRecord` exists only for statements with a reason to live, and `mentions` is a count rather than a list.
+
+The residual is confined to `Shrink`.
+An anchor can be redundant — with `Shrink(id, 100)`@5 and `Ref(id, 0, 100, X)`@9, dropping it would leave the size at 100 either way — and the `A` pin keeps it alive regardless.
+Non-anchor `Shrink` statements can be redundant and alive too, whenever they own a fragment over a range that would read `Undefined` anyway, so the over-count is not bounded at one per allocation.
+What bounds it is that the live set is the running-minimum-bound chain read newest-first: a `Shrink` can own a fragment only if its bound is strictly below every newer one's, so any shrink to bound `b` permanently retires every `Shrink` with bound `>= b`, and a later grow never revives one.
+Building such a chain now requires *alternating* shrinks and grows rather than a run of plain resizes, because grows no longer plant content claims — which is the main thing the `Grow`/`Shrink` split buys.
 See [[address-table-walkthrough#How stray `Size` statements accumulate and are pruned]] for the derivation.
 And the counters are policy, not correctness: an over-count only delays cleaning, an under-count only cleans a page earlier than ideal, and neither can make a resolved read wrong.
 
@@ -298,7 +318,7 @@ The floor is exactly what keeps a smaller re-allocation from exposing the tail o
 Three obligations come with recycling this early:
 
 - **A new tombstone releases the previous one's pins outright**, rather than letting them drain.
-  The newer floor subsumes the older completely, so an older tombstone that kept its pins would be stranded for exactly the reason a redundant `Size` used to be.
+  The newer floor subsumes the older completely, so an older tombstone that kept its pins would be stranded for exactly the reason a redundant `Shrink` is.
 - **The latest tombstone must be pinned by every earlier mention, earlier tombstones included.**
   With `Ref`@3, `Tombstone`@5, `Ref`@7 and `Tombstone`@9, dropping `Tombstone`@9 would drop the floor back to epoch 5 and readmit `Ref`@7's bytes; initialising from `mentions` gets this right, since every earlier statement is counted.
 - **`AllocationMeta` for a recycled id is updated, not freshly inserted**, since `mentions` and `tombstone` carry across the boundary while `size`, `fragment_count` and `statement_bytes` restart.
