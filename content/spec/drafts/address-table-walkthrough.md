@@ -3,7 +3,7 @@
 A step-by-step trace of the bookkeeping structures of [[address-table]] through one allocation's life, followed by an adversarial search for sequences that break the accounting.
 
 This version assumes the **adopted pin model**, in which a `Size` statement takes only `A` (size authority) and `F` (fragment) pins and never a `D` (denial) pin.
-That change was derived in an earlier revision of this document and is summarised in [[#Preliminaries]]; it eliminates the unbounded over-count that the previous model suffered from, and it makes one earlier claim obsolete — a `Size` can no longer hold all three pin kinds at once, only two ([[#Findings]], item 6).
+That change was derived in an earlier revision of this document and is summarised in [[#Preliminaries]]; it eliminates the unbounded over-count that the previous model suffered from, and it makes one earlier claim obsolete — a `Size` can no longer hold all three pin kinds at once, only two ([[#Findings]], item 7).
 
 One correctness requirement survives the change (scenario (v)) and one bounded over-count remains (scenario (vii)).
 
@@ -24,7 +24,13 @@ A `Size(id, n)` claims only `[n, ∞)`, so it denies an older statement only whe
 Nor can a later grow expose anything: the newest `Size` always has `n_new <= size`, so it already denies every probe from `size` upward.
 
 Only the **newest** suppressor of each kind carries pins.
-For tombstones this is exact for the same reason: a newer tombstone subsumes an older one entirely, so older tombstones are droppable on sight, and `AllocationMeta` needs a single `tombstone` pointer rather than the list of suppressors the previous model required.
+For tombstones this is exact for the same reason: a newer tombstone subsumes an older one entirely, so older tombstones are released outright and droppable on sight, and `AllocationMeta` needs a single `tombstone` pointer rather than the list of suppressors the previous model required.
+
+**A tombstone is an epoch floor, not a matcher.**
+The on-disk rules describe a `Tombstone` as matching every probe and yielding `Undefined`; the in-memory resolver inverts that, discarding every statement at or below `tombstone_epoch` and taking the highest of what remains, defaulting to `Undefined` when nothing does.
+The two are equivalent, since a statement can only win by outranking every matcher and the tombstone matches all of them.
+The framing matters here for one reason: **a tombstone never owns a fragment**, because it is never anything's winner — ranges left uncovered above the floor are ordinary unowned defaults.
+That is what lets `Tombstone` hold `D` alone even when its id has been allocated again beneath it, and hence what lets an id be recycled the moment its tombstone is committed, with no condition on `mentions` at all ([[address-table#Tombstones and id recycling]]).
 
 **`StatementRecord`.**
 
@@ -57,14 +63,17 @@ struct AllocationMeta {
 }
 ```
 
-| Field | Updated when | Value | Read for |
-| --- | --- | --- | --- |
-| `size` | any flush that resizes the id, writes past its end, frees it, or re-allocates it | `0` if the id does not exist; otherwise `max(authority's n, extents of content statements with epoch > size_epoch)` — maintained incrementally rather than recomputed | answering `size()` in `O(1)`; bounding reads; deciding which probes are in range, hence which fragments exist at all |
-| `fragment_count` | on every fragment created or destroyed for this id | count of the id's live fragments | defragmentation ranking — description overhead relative to `size` |
-| `statement_bytes` | when a statement for this id is created, or when one's pins reach zero | sum of `framing_len` over the id's **live** statements | defragmentation ranking, paired with `fragment_count` |
-| `mentions` | `+1` per statement naming the id written or read at open; `−1` when one is physically dropped | count of statements naming the id that are **physically present** in live address-table pages — *not* the resolution-live ones | initialising a new `Tombstone`'s `D` count, where it is exact; deciding id recycling (`mentions == 1` makes the tombstone droppable, `== 0` frees the id) |
-| `size_statement` | when a `Size` is written, when the id is tombstoned (cleared), or when it is re-allocated | the id's current size authority, i.e. the newest `Size` above `tombstone_epoch` | moving the `A` pin from the old authority to the new one; telling a consolidator that a victim page holds an authority it must replace (scenario (v)) |
-| `tombstone` | when a `Tombstone` is written (the new one takes the `D` pins, the old one is released outright) or when the tombstone dies | the id's newest `Tombstone`, if any | finding the single statement to decrement when a statement naming the id is physically dropped |
+**Note:** we should measure how many allocations have a `Some` value for `size_statement` or `tombstone`.
+If this is rare in practice, we should outsource `size_statement` and/or `tombstone` to a side table.
+
+| Field             | Updated when                                                                                                                | Value                                                                                                                                                                 | Read for                                                                                                                                                  |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `size`            | any flush that resizes the id, writes past its end, frees it, or re-allocates it                                            | `0` if the id does not exist; otherwise `max(authority's n, extents of content statements with epoch > size_epoch)` — maintained incrementally rather than recomputed | answering `size()` in `O(1)`; bounding reads; deciding which probes are in range, hence which fragments exist at all                                      |
+| `fragment_count`  | on every fragment created or destroyed for this id                                                                          | count of the id's live fragments                                                                                                                                      | defragmentation ranking — description overhead relative to `size`                                                                                         |
+| `statement_bytes` | when a statement for this id is created, or when one's pins reach zero                                                      | sum of `framing_len` over the id's **live** statements                                                                                                                | defragmentation ranking, paired with `fragment_count`                                                                                                     |
+| `mentions`        | `+1` per statement naming the id written or read at open; `−1` when one is physically dropped                               | count of statements naming the id that are **physically present** in live address-table pages — *not* the resolution-live ones                                        | initialising a new `Tombstone`'s `D` count, where it is exact; deciding when the tombstone itself becomes droppable (`mentions == 1`, the tombstone alone). It does **not** gate id recycling, which needs only a committed tombstone |
+| `size_statement`  | when a `Size` is written, when the id is tombstoned (cleared), or when it is re-allocated                                   | the id's current size authority, i.e. the newest `Size` above `tombstone_epoch`                                                                                       | moving the `A` pin from the old authority to the new one; telling a consolidator that a victim page holds an authority it must replace (scenario (v))     |
+| `tombstone`       | when a `Tombstone` is written (the new one takes the `D` pins, the old one is released outright) or when the tombstone dies | the id's newest `Tombstone`, if any                                                                                                                                   | finding the single statement to decrement when a statement naming the id is physically dropped                                                            |
 
 **Epochs belong to pages, not to statements.**
 A statement inherits the epoch of the page it currently sits in, so moving a statement re-stamps it.
@@ -160,6 +169,17 @@ Each scenario branches from the end of Step 3 unless stated otherwise.
 `L1` is rewritten as resolved truth at epoch 10.
 `Ref@3` owns exactly one fragment, `[0, 10)`, so it is re-emitted narrowed as `Ref(7, 0, 10, P1)`@10, `framing_len` 6.
 
+The consolidator finds out that `Ref@3` owns only fragment `[0, 10)` as follows: it decodes the victim page and, for each statement it finds, range-scans the fragment map.
+For `Ref`/`Inline`/`Undefined` the scan is `(id, offset) .. (id, offset + size)`; for a `Size(id, n)` it is `(id, n) .. (id, size)`, since those are the only probes it can win.
+Within that window it keeps the fragments whose `statement` matches.
+
+It can also stop early, because `pins` already says how many to expect: for a content statement `F == pins` exactly, and for a `Size`, `F == pins − 1` when it is the id's `size_statement` and `== pins` otherwise.
+In this step, `Ref@3.pins == 1` tells the consolidator to expect exactly one fragment before it looks.
+
+The deeper point is that this is not an implementation tax at all — it is the consolidation algorithm.
+A page is rewritten as resolved truth, and you cannot emit resolved truth without first determining which parts of it this page is responsible for.
+The walk *is* that determination, and its cost is predictable in advance from `AllocationMeta.fragment_count`, which lets the ratio ranking in [[address-table#Goals, and the one currency behind them]] price a candidate before committing to it.
+
 | Structure | Change |
 | --- | --- |
 | `Ref@3` | fragment re-owned by the new statement → pins **1 → 0** → framing released; then physically dropped with the page |
@@ -175,22 +195,105 @@ Previously this drop had to decrement a suppressor in an unrelated page; now dro
 
 ### (ii) Resize to 55 bytes
 
-Flush 10 writes `Size(7, 55)` into the header.
-The header also carries `Ref(7,50,10,PB)` forward, but at epoch 10 its extent (60) would exceed the new size, which [[address-table#No conflicts within each epoch]] forbids within one epoch — so the resolved-truth discipline narrows it on the way out to `Ref(7, 50, 5, PB)`.
+Flush 10 resizes allocation 7 to 55 bytes.
+The header carries `Ref(7,50,10,PB)` forward, but at epoch 10 its extent (60) would exceed the new size, which [[address-table#No conflicts within each epoch]] forbids within one epoch — so the resolved-truth discipline narrows it on the way out to `Ref(7, 50, 5, PB)`.
+No new `Size` statement is written, for the reason worked out below the table.
 
-| Structure | Change |
-| --- | --- |
-| `Ref@3` | pins **1** (`F`, still owns `[0,10)`) |
-| `Size(7,10)`@5 | loses `A` to the newer `Size`; keeps `F` (still owns `[10,50)`, since `Size(7,55)` matches only probes `>= 55`) → pins **2 → 1** |
-| `Ref(7,50,10,PB)`@9 | superseded by its narrowed self; record dropped |
-| `Size(7,55)`@10 (new) | pins **1** = `A`. It owns no fragment, since probes `>= 55` are outside the allocation, and it takes no denials |
-| `Ref(7,50,5,PB)`@10 (new) | pins **1** (`F`) |
-| `AllocationMeta[7]` | `size` 55, `fragment_count` 3, `statement_bytes` 19, `mentions` 4, `size_statement` `Size@10`, `tombstone` None |
-| `coverage[PB]` | **−5** — bytes `[PB+5, PB+10)` are now garbage |
+| Structure                 | Change                                                                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Ref@3`                   | pins **1** (`F`, still owns `[0,10)`)                                                                                                                                    |
+| `Size(7,10)`@5            | keeps `A` (still the only `Size` for the id, hence still the authority) and keeps `F` (still owns the `Undefined` fragment `[10,50)`, which nothing newer covers) → pins stays at **2** |
+| `Ref(7,50,10,PB)`@9       | superseded by its narrowed self; record dropped                                                                                                                          |
+| `Ref(7,50,5,PB)`@10 (new) | pins **1** (`F`)                                                                                                                                                         |
+| `AllocationMeta[7]`       | `size` 55, `fragment_count` 3, `statement_bytes` 16, `mentions` 3, `size_statement` `Size@5`, `tombstone` None                                                            |
+| `coverage[PB]`            | **−5** — bytes `[PB+5, PB+10)` are now garbage                                                                                                                           |
 
-`Size@5` survives here on its `F` pin alone, and correctly so: it is the statement making `[10, 50)` read as `Undefined` rather than exposing `Ref@3`'s bytes.
-Under the previous model it would have shown pins 2, with the extra pin contributing nothing, and `Size@10` would have shown 3 instead of 1.
-The previous model also needed `suppressors` to become a two-element list at this point; the adopted model keeps `tombstone` at `None`.
+**Why no new `Size` statement is necessary:**
+an earlier version of this document stated that the new state has an extra statement `Size(7,55)`@10, which turns out to be unnecessary.
+Work out the size *without* it, from `Ref(7,0,1000,P1)`@3, `Size(7,10)`@5 and `Ref(7,50,5,PB)`@10.
+`size_epoch` stays 5, so `size = max(10, extents of content statements with epoch > 5) = max(10, 50 + 5) = 55` — the target, reached with no new `Size` at all.
+Content resolves identically too: `[0,10)` through `Ref@3`, `[10,50)` through `Size@5`, `[50,55)` through the narrowed `Ref@10`.
+The narrowing that [[address-table#No conflicts within each epoch]] forced on the tail is what makes the `Size` redundant: it created a statement ending exactly at the new size.
+
+**When a resize does need an explicit `Size`: in principle, and in practice.**
+In principle, exactly when the target size is not already implied — when it differs from the maximum of the current authority's `n` and the extents of every **physically present** content statement above `size_epoch`, those this flush is writing included.
+Physical presence rather than liveness is the operative condition, for the reason worked out in (b) below: a statement that wins no probe is invisible in the fragment map yet still contributes its extent to the `max`.
+
+**That check is not implementable, so a flush should simply always emit the `Size`.**
+No structure reaches an id's physically present statements.
+The fragment map indexes only *live* fragments, so it reaches exactly the statements with `F > 0`; `StatementRecord` exists only for statements that still have a reason to live, so a dead one has no record at all and survives purely as bytes in its page; and `mentions` is a count, not a list.
+Enumerating them would mean decoding every live address-table page — acceptable for consolidation, which decodes its victim anyway, absurd for a per-resize decision.
+
+Always emitting is sound, because an explicit `Size(id, T)` fixes the size at `T` whatever extents lurk in leaves; the cost is three bytes that are sometimes superfluous.
+The example below is kept because it shows *why* the emission is sometimes unnecessary, not because a flush is expected to detect it.
+Contrast a resize of 60 → **30**: `Ref(7,50,10,PB)`@9 falls entirely outside the new size, so it is dropped rather than narrowed, leaving nothing above epoch 5, and the size would come out as `max(10) = 10`.
+There an explicit `Size(7,30)` is required.
+
+This is the same redundant-authority residual as [[#(vii) The immortal redundant suppressor — break 2]], caught at write time instead of at consolidation time, and the check is the same comparison.
+Beware the near-miss version of it: "the authority is redundant whenever `size > n`" is **false**, because dropping an authority also moves `size_epoch` and lets *older* extents back into the `max` — dropping `Size@5` here would expose `Ref@3`'s extent of 1000 and yield 1000, not 55.
+That is break 1, and it is why the test has to be run against the authority that would remain, not against the one being considered.
+
+**How long an old `Size` survives:**
+@Claude: walk through the following subsequent scenarios, focusing on what happens to `Size(7,10)`@5:
+
+- (a) `Ref(7,50,5,PB)`@10 gets evicted to a non-header page at flush 11, then the allocation gets resized to 53 bytes at flush 12 (by only writing a `Size(7,53)` to the header page).
+  How does kladde know that `Size(7,10)`@5 is still necessary although it is no longer the id's `AllocationMeta::size_statement`?
+- (b) continuing from (a), now the the content of the entire allocation (i.e., range `[0, 53)`) is overwritten.
+  How does kladde know that `Size(7,10)@5` is now no longer necessary (but `Size(7,53)` is, to deny the bytes >= 53)?
+
+> **Short answer: in (a) nothing special happens — the `F` pin alone keeps it alive; in (b) nothing special happens either — losing its last fragment kills it.**
+> Neither case needs a rule beyond [[#Findings]] item 2, and walking them through shows why that rule is a *conjunction*.
+>
+> Starting state, per the correction above (no `Size(7,55)`, so `Size@5` is still the authority):
+> `Ref(7,0,1000,P1)`@3 in `L1`, pins 1 (`F`, owns `[0,10)`);
+> `Size(7,10)`@5 in `L2`, pins 2 (`A` + `F`, owns `[10,50)`);
+> `Ref(7,50,5,PB)`@10 in `H`, pins 1 (`F`, owns `[50,55)`); `size` 55.
+>
+> **(a) Eviction at flush 11, then resize to 53 at flush 12.**
+> Eviction re-stamps: `Ref(7,50,5,PB)` lands in a leaf `L3`@11, still pins 1.
+> The resize writes `Size(7, 53)` into the header at epoch 12, and that statement is genuinely required — without it `size_epoch` stays 5 and `size = max(10, 55) = 55`, not 53.
+>
+> | Statement | After flush 12 |
+> | --- | --- |
+> | `Ref(7,0,1000,P1)`@3 | pins **1** (`F`, `[0,10)`) |
+> | `Size(7,10)`@5 | loses `A` to `Size@12`; keeps `F` (`[10,50)`) → pins **2 → 1** |
+> | `Ref(7,50,5,PB)`@11 | fragment narrows `[50,55) → [50,53)`; pins **1**; `coverage[PB]` **−2** |
+> | `Size(7,53)`@12 (new) | pins **1** = `A`; owns no fragment, since probes `>= 53` are outside the allocation |
+>
+> **How kladde knows `Size@5` is still needed: it still owns a fragment, so `pins > 0`.**
+> That is the whole mechanism, and it needs no reference to authority at all.
+> `Size(7,53)` matches only probes `>= 53`, so writing it re-resolved nothing in `[10, 50)`; that fragment's `statement` back-pointer still names `Size@5`, and its `F` pin was never touched.
+> Only the `A` pin moved, via `size_statement`, taking the count from 2 to 1.
+>
+> Substantively it *must* survive: drop it and `[10, 50)` falls through to `Ref@3`, re-exposing P1's bytes from the original 1000-byte write — the content the truncation at flush 5 destroyed.
+> This is exactly why item 2 reads "not the authority **and** owns no fragment".
+> Losing authority is not evidence of anything; the two conjuncts are independent, and here they disagree.
+>
+> **(b) Overwrite all of `[0, 53)` at flush 13** — into a fresh data page `PE`, emitting `Ref(7, 0, 53, PE)`@13 in the header.
+>
+> | Statement | After flush 13 |
+> | --- | --- |
+> | `Ref(7,0,1000,P1)`@3 | `[0,10)` shadowed → pins **1 → 0**, dead; `coverage[L1]` −7, `coverage[P1]` −10 |
+> | `Size(7,10)`@5 | `[10,50)` shadowed → pins **1 → 0**, dead; `coverage[L2]` **−3** |
+> | `Ref(7,50,5,PB)`@11 | `[50,53)` shadowed → pins **1 → 0**, dead; `coverage[L3]` −6, `coverage[PB]` −3 |
+> | `Ref(7,0,53,PE)`@13 (new) | pins **1** (`F`, owns `[0,53)`) |
+> | `Size(7,53)`@13 | carried in the header and re-stamped from 12; pins **1** = `A` |
+>
+> **How kladde knows `Size@5` is no longer needed: its last fragment was destroyed.**
+> Writing `Ref(7,0,53,PE)`@13 re-resolved `[0, 53)`, which re-owned the `(7,10)` fragment; that destruction decremented `Size@5` from 1 to 0, and the `1 → 0` transition released its three framing bytes from `coverage[L2]` and removed it from `statement_bytes`.
+> No test was run and no authority consulted — the count simply reached zero.
+>
+> **Why `Size(7,53)` survives is the more interesting half, and it is not because of the live bytes.**
+> After this flush *every* older statement for id 7 is dead, so one might expect the size to be implied by `Ref(7,0,53,PE)`'s own extent of 53.
+> It is not, because `Ref(7,50,5,PB)`@11 is **dead but still physically present** in `L3`, with extent 55 — and the size formula's `max` ranges over physically present statements, not resolution-live ones.
+> Drop `Size(7,53)` and `size_epoch` falls back to 5, admitting that extent and yielding `size = max(10, 55, 53) = 55`.
+> Its `A` pin is therefore doing real work, and stays until `L3` is cleaned.
+>
+> That carries a correction to the test stated earlier in this scenario: "the largest extent among content statements above `size_epoch`" must be read over **physically present** statements.
+> Reading it over live ones is the same blind spot as [[#(v) Consolidate `L2`, the leaf holding the size authority — break 1]] — a statement that wins no probe is invisible in the fragment map yet still sets the size — and it makes the check cost a walk of the id's statements (bounded by `mentions`) rather than a glance at `size`.
+>
+> One bookkeeping detail visible in the last row: because the header is rewritten every flush, a `Size` carried in it becomes a *new* statement record at the new epoch each time, so `size_statement` re-points and the `A` pin moves on every flush.
+> That is routine rather than churn — header pages are rewritten unconditionally and exempt from victim selection — but it is why the `A` pin has to be a movable pin rather than a flag baked into the statement.
 
 ### (iii) Overwrite bytes `[0, 20)`
 
@@ -232,7 +335,11 @@ Existence is decided by the highest-epoch statement mentioning the id, so the al
 The cascade then clears itself with no special pass:
 consolidating `L1` drops `Ref@3` → `Tombstone` pins 2 → 1;
 consolidating `L2` drops `Size@5` → `Tombstone` pins 1 → 0;
-the tombstone is then omitted by the next rewrite of its page → `mentions` 0 → id 7 is recyclable.
+the tombstone is then omitted by the next rewrite of its page, and `AllocationMeta[7]` can go.
+
+Note that **id 7 is reusable from flush 11**, before any of that happens.
+Recycling waits only on the tombstone being committed, not on `mentions` falling, because the tombstone is an epoch floor: whatever of the old incarnation still sits physically in `L1` and `L2` is below the floor and unreachable.
+The cascade above is therefore about reclaiming *bytes*, on its own schedule, and never about holding an id out of circulation.
 
 The `coverage[L2]` row is a second, quieter win from the model change.
 Previously `Size@5` retained a denial pin on `Ref@3` and stayed "live" until `L1` happened to be cleaned, so `L2` looked fuller than it was and was correspondingly less likely to be chosen; now it drops to zero at the moment of the free, when the information that it is garbage first exists.
@@ -282,12 +389,16 @@ Its continued presence costs 7 wasted bytes in `L1` and a `mentions` count that 
 
 The effect survives only on the **free path**, and in narrowed form.
 After scenario (iv), `Tombstone@10` holds `D` pins on `Ref@3` and `Size@5`, so it cannot retire until both are physically dropped — which for `Ref@3` means cleaning `L1`.
-The observation that motivated this scenario therefore still applies, but only to tombstones and only until the id is recycled:
+The observation that motivated this scenario therefore still applies, but only to tombstones:
 
 > Victim selection ranked purely by live fraction cannot see the benefit of cleaning a page whose dead statements are pinning a tombstone elsewhere.
 > A benefit term counting "dead statements whose removal would decrement a tombstone" makes that visible.
 
-The blast radius is much smaller than before: previously *any* dead content statement could strand a `Size` indefinitely, on any allocation, live or freed.
+What is *not* at stake any more is the id.
+An earlier draft gated recycling on `mentions == 0`, which put the id space itself behind this hostage: one dead seven-byte `Ref` in a page that is never chosen could hold an id out of circulation for the life of the file, and a workload that churns allocations would leak ids at the rate its cold pages resist cleaning.
+Recycling now waits only on a committed tombstone, so the stake is two bytes of tombstone framing rather than an id.
+
+The blast radius is much smaller than before in two independent ways: previously *any* dead content statement could strand a `Size` indefinitely on any allocation, live or freed, and the ids of freed allocations were hostage as well.
 
 ### (vii) The immortal redundant suppressor — break 2
 
@@ -311,9 +422,37 @@ The residual, and it is worth being precise that one remains.
 A `Size` that **is** the authority can still be redundant: with `Size(7, 100)`@5 and `Ref(7, 0, 100, X)`@9, dropping the `Size` would leave `size = max(100) = 100`, unchanged — yet `A` keeps it alive.
 Three things distinguish this from the old break:
 
-1. It is **bounded** — at most one such statement per allocation, since non-authority `Size` statements no longer linger — where the old one was unbounded in the number of resizes.
+1. It is **not** bounded at one per allocation, as an earlier version of this section claimed.
+   That claim assumed non-authority `Size` statements no longer linger, and they can: a `Size` lingers whenever it owns a fragment, and it can own one *while being redundant* — namely when the range it wins would resolve to `Undefined` anyway, because nothing older matches it.
+   With `Size(7,10)`@5, `Size(7,20)`@7, `Size(7,30)`@8 and then `Ref(7,50,10,PX)`@9 growing the id to 60, the three `Size` statements own `[10,20)`, `[20,30)` and `[30,50)` respectively; the first two are removable with no observable effect, and `N` such resizes strand `Θ(N)`.
+   What *does* bound it is derived in [[#How stray `Size` statements accumulate and are pruned]] below.
 2. It is **cheaply correctable**: when consolidating a page holding an authority, compare the authority's bound against the largest extent among content statements newer than it, and emit no replacement when the bound does not exceed it.
-3. It is **not self-reinforcing at scale**: three bytes per allocation does not meaningfully shift a page's live fraction, whereas the old pathology accumulated.
+3. It is **not self-reinforcing at scale**: three bytes per stray does not meaningfully shift a page's live fraction, whereas the old pathology compounded through the coverage counter.
+
+### How stray `Size` statements accumulate and are pruned
+
+Continuing the example above with a shrink and a later grow — `Size(7,15)`@11, then `Ref(7,70,10,PY)`@13 — settles what the bound actually is.
+Assume each statement is evicted to a leaf in the flush that writes it, so epochs stay put.
+
+**The shrink kills strays, permanently.**
+`Size(7,15)`@11 retracts the size below the bounds of `Size@7` (20) and `Size@8` (30), so the ranges they were winning stop existing and their fragments are destroyed; `Size@8` loses its `A` pin to the newer `Size` in the same flush, so both of its pins go at once.
+`Ref(7,50,10,PX)`@9 dies the same way.
+`Size@5` survives, because its bound of 10 leaves it the window `[10,15)` that `Size@11` does not match.
+
+**The later grow does not revive them.**
+`Ref(7,70,10,PY)`@13 takes the id back to 80, yet `Size@7`, `Size@8` and `Ref@9` all stay at zero pins: `Size@11` has a *lower* bound and a *higher* epoch, so it matches and outranks them at every probe `>= 15`.
+What it does instead is hand `Size@11` a fragment over `[15,70)`, taking it from 1 pin to 2 — another instance of pins rising after creation.
+
+**The rule, and hence the bound.**
+A dead `Size(n)` can only revive if some probe `>= n` becomes winnable, which requires every newer `Size` to have a bound strictly greater than that probe.
+Order an id's physically present `Size` statements newest-first: one can hold an `F` pin only if its bound is strictly below the minimum bound among all newer ones, so **the live set is exactly the running-minimum chain**.
+Here that chain is `Size@11` (15) → `Size@5` (10), and the other two are permanently dead.
+A monotonically *increasing* sequence of resizes therefore strands one stray per resize, while **any shrink to bound `b` permanently kills every `Size` with bound `>= b`**.
+The stray count is the length of the decreasing-bound chain, pruned by every shrink — a precise characterisation rather than a constant.
+
+**Not every surviving `Size` is a stray**, and the same example shows the difference.
+`Size@11` is load-bearing: drop it and `size_epoch` falls to `Size@8` (bound 30), so `[50,60)` resolves through `Ref(7,50,10,PX)`@9 — dead, but still physically present in its leaf — re-exposing stale bytes from `PX`.
+Distinguishing the two cases is exactly the "is there anything older to deny" predicate that [[#(ii) Resize to 55 bytes]] shows we cannot evaluate cheaply, which is why strays are tolerated rather than detected.
 
 ## Findings
 
@@ -323,16 +462,27 @@ Three things distinguish this from the old break:
 2. **A `Size` may be dropped iff it is not the authority and owns no fragment.**
    Its denials are subsumed by the newest `Size` (which always denies from `size` upward) together with whatever newer content statements cover the rest, so `D` pins on `Size` are redundant — the result adopted here.
 3. **Only the newest suppressor of each kind carries pins.**
-   For tombstones this is exact, since a newer tombstone subsumes an older one entirely; older tombstones are droppable on sight.
+   For tombstones this is exact, since a newer tombstone subsumes an older one entirely; older tombstones have their pins released **outright** when the new one is written, rather than being left to drain, and are then droppable on sight.
    `AllocationMeta` therefore needs a single `tombstone` pointer, not the list of suppressors the previous model required.
-4. **`mentions` is exact for tombstones and would be an over-count for anything else.**
+   Tombstone chains are reachable, because recycling does not wait for the old tombstone to die, so the latest tombstone must be pinned by every earlier mention including earlier tombstones — initialising from `mentions` gets that right.
+4. **A tombstone is an epoch floor, not a matcher**, which is what keeps it holding `D` alone.
+   Represented as a matcher it would acquire `F` pins the moment its id was allocated again beneath it, and `mentions == 1` would stop being an exact droppability test.
+   Represented as a floor, the ranges a new incarnation leaves uncovered are ordinary unowned defaults.
+   This is also what makes an id reusable as soon as its tombstone is committed, with **no condition on `mentions`**: everything below the floor is unreachable however much of it survives physically, so leftover statements can never consume the id space.
+   Freeing and re-allocating within a *single* flush is the one case needing care — a tombstone and the new incarnation would make contradicting existence claims in one epoch — and is handled by emitting statements that fully cover the new extent instead of a tombstone.
+5. **`mentions` is exact for tombstones and would be an over-count for anything else.**
    A tombstone denies every probe, so every physically-present statement naming the id is genuinely denied.
    A `Size(id, n)` would deny only statements reaching past `n`, which no allocation-level counter can express — and under the adopted model nothing needs it to.
-5. **Cleaning should be ranked by pins released as well as bytes reclaimed** (scenario vi), but the case is now confined to pages whose dead statements pin a *tombstone*, rather than any dead statement anywhere.
-6. **A `Size` holds at most two pin kinds, `A` and `F`, never three.**
+6. **Cleaning should be ranked by pins released as well as bytes reclaimed** (scenario vi), but the case is now confined to pages whose dead statements pin a *tombstone*, rather than any dead statement anywhere.
+7. **A `Size` holds at most two pin kinds, `A` and `F`, never three.**
    [[address-table#What counts as a live byte]] argues for a single `pins` counter using a worked example in which a `Size` holds all three at once; that example is obsolete and the section needs updating.
    The argument itself survives unharmed — `Size@5` holds `A` and `F` together in Step 3, no consumer ever asks which kind a pin is, and two fields would still encode a distinction that is never read.
-7. **One bounded over-count remains** (scenario vii): a redundant *authority*, at most one per allocation, correctable by a cheap extent comparison during consolidation.
-8. **Confirmed sound:** the pin graph is acyclic — `F` and `A` point from the resolved view into statements, and `D` points strictly from a newer tombstone to older statements — so no set of statements can mutually pin itself alive.
-9. **Confirmed sound:** content statements need no denial pins, because a content statement's denial is co-extensive with what it defines, and covering a range requires some newer statement to reach its far end, so the size cannot shrink when one is dropped.
-10. **Ordering rule:** a flush applies its own drops before initialising a new tombstone's pins, so a statement replaced within a flush is never counted as something the replacement must deny.
+8. **A residual over-count remains, and it is not bounded at one per allocation** (scenario vii).
+   Redundant `Size` statements survive on `F` pins over ranges that would read `Undefined` anyway, so a monotonically increasing sequence of resizes strands one per resize.
+   The live set is the running-minimum-bound chain read newest-first, and any shrink to bound `b` permanently kills every `Size` with bound `>= b`; growth never revives one, since the newest `Size` outranks it everywhere at or above its own bound.
+9. **A flush should always emit a `Size` on resize**, rather than testing whether one is needed.
+   The test requires the id's *physically present* statements, and nothing reaches them: the fragment map indexes only live fragments, `StatementRecord` exists only for statements with a reason to live, and `mentions` is a count rather than a list.
+   Always emitting can only be superfluous, never wrong, at three bytes a time.
+10. **Confirmed sound:** the pin graph is acyclic — `F` and `A` point from the resolved view into statements, and `D` points strictly from a newer tombstone to older statements — so no set of statements can mutually pin itself alive.
+11. **Confirmed sound:** content statements need no denial pins, because a content statement's denial is co-extensive with what it defines, and covering a range requires some newer statement to reach its far end, so the size cannot shrink when one is dropped.
+12. **Ordering rule:** a flush applies its own drops before initialising a new tombstone's pins, so a statement replaced within a flush is never counted as something the replacement must deny.

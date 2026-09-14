@@ -114,6 +114,12 @@ Three things take a pin, and which of them a statement can hold depends on its k
 So a content statement holds only `F`, a `Size` holds `A` and `F`, and a `Tombstone` holds only `D`.
 [[#What counts as a live byte]] derives the asymmetry; the short version is that a `Tombstone` denies *every* probe, so `D` is exact and cheap, whereas a `Size(id, n)` denies only statements reaching past `n` — a count no allocation-level counter can produce, and one it turns out never to need.
 
+**A tombstone is an epoch floor, not a matcher.**
+The resolution rules of [[#Conflict resolution across epochs]] describe a `Tombstone` as a statement that matches every probe and yields `Undefined`, but the in-memory resolver represents it the other way round: when resolving an id, discard every statement at or below `tombstone_epoch` and take the highest of what remains, defaulting to `Undefined` when nothing does.
+The two are equivalent — a statement can only win a probe by outranking every matcher, and the tombstone matches all of them, so "wins" already implies "above `tombstone_epoch`" — but the floor framing has two practical consequences.
+The resolver walks each id's statements newest-first and stops at the first tombstone, needing no pre-pass and no per-probe comparison; and **a tombstone never owns a fragment**, because it is never anything's winner.
+Ranges left uncovered above the floor are the ordinary unowned-default case, exactly as in a never-written allocation, which is why `Tombstone` can hold `D` alone even when its id has been allocated again beneath it.
+
 The name is deliberate: this is a refcount whose holders are of different kinds, so `liveness` would read as a boolean or an enum, and `refcount` would say nothing about what is doing the referring.
 "Pin", in the buffer-manager sense of *something prevents this from being reclaimed*, is exactly the relationship, and it stays accurate across all three reasons.
 A single counter is still the right shape, because a `Size` holds `A` and `F` simultaneously and no consumer ever asks which kind a pin is; two fields would encode a distinction that is never read.
@@ -127,15 +133,16 @@ Content queries resolve `(id, offset)` in one lookup, `O(log F)` for `F` live fr
 `mentions` counts the statements naming this id that are **physically present** in live address-table pages — *not* the ones that are live in the resolution sense.
 That distinction is the whole point: a statement shadowed into irrelevance still sits in its page, and still resurrects if the thing shadowing it disappears, so it must keep being counted until a page rewrite actually drops it.
 `mentions` is incremented when a statement naming the id is written or read at open, and decremented when one is dropped during consolidation or when its page is reclaimed; it initializes a new `Tombstone`'s `D` count — where it is exact, since a tombstone denies everything — and decides id recycling.
-`size_statement` holds the id's size authority so the `A` pin can be moved as it changes hands, and `tombstone` holds the id's newest `Tombstone`, which is the single statement to decrement when one naming the id is physically dropped.
-A single pointer suffices for the latter because only the *newest* tombstone carries pins: a newer tombstone subsumes an older one entirely, so older ones are droppable on sight.
+`size_statement` holds the id's size authority so the `A` pin can be moved as it changes hands, and `tombstone` holds the id's newest `Tombstone` — the epoch floor for resolution, and the single statement to decrement when one naming the id is physically dropped.
+A single pointer suffices for the latter because only the *newest* tombstone carries pins: a newer tombstone subsumes an older one entirely, so older ones are released outright and droppable on sight.
+Both fields can be occupied at once, since an id may be allocated again while its tombstone still stands ([[#Tombstones and id recycling]]).
 See [[address-table-walkthrough#Preliminaries]] for a field-by-field account of when each of these is written and read.
 
 **3. Page tables**: for every page its kind, epoch, and live-byte counter (`Data`: referenced bytes; `AddressTable`: per [[#What counts as a live byte]] below).
 Pages are bucketed by live fraction (a handful of buckets suffices) together with an age mark, making victim selection `O(1)` rather than a priority queue's `O(log P)`, with `O(1)` bucket moves as counters change.
 A free list tracks reusable pages, under the two-generation quarantine of the CoW design (a page freed by commit `E` becomes writable in flush `E + 2`).
 
-Two derived structures complete the picture, both rebuilt at open and never persisted: the **id allocator** (next fresh id, plus recyclable ids — those with `mentions == 0` that do not exist, the same condition that lets their tombstones drop), and the **eviction clock** over the statements currently buffered in the header page ([[#Maintenance]]), which records how many flushes each has gone untouched.
+Two derived structures complete the picture, both rebuilt at open and never persisted: the **id allocator** (next fresh id, plus recyclable ids — those that do not exist and have a committed tombstone, per [[#Tombstones and id recycling]]), and the **eviction clock** over the statements currently buffered in the header page ([[#Maintenance]]), which records how many flushes each has gone untouched.
 
 Maintenance of all of the above costs `O(log F)` per fragment created or destroyed, and a flush creates or destroys at most a small multiple of the statements it writes.
 
@@ -192,7 +199,11 @@ Two fields would therefore encode a distinction that is never read, at two bytes
 A `Tombstone` claims *every* probe and denies existence outright, so it is genuinely denied-by nothing and denies everything: pinned once per physically-present statement naming that id, initialized from `mentions` and decremented whenever one of those is dropped by a page rewrite.
 This is why `mentions` is exact here and would be a mere upper bound for anything else — a `Size(id, n)` would deny only statements reaching past `n`, which no allocation-level counter can express.
 Note the count is over *physically present* statements, not resolution-live ones: a statement with zero pins that has not yet been swept out of its page will still resurrect if its tombstone vanishes first.
-And a newer tombstone subsumes an older one entirely, so older tombstones are droppable on sight and `AllocationMeta.tombstone` is a single pointer rather than a list.
+And a newer tombstone subsumes an older one entirely, so older tombstones are released outright and droppable on sight, which is why `AllocationMeta.tombstone` is a single pointer rather than a list.
+
+A tombstone holds `D` and nothing else, **including when its id has been allocated again beneath it**.
+That follows from the floor framing above: the tombstone is never a winner, so ranges the new incarnation leaves uncovered are unowned defaults rather than fragments it owns.
+Were it treated as a matcher instead, it would acquire `F` pins the moment the id was re-used, and `mentions` would stop being an exact droppability test for it.
 
 This produces a cascade that clears itself without any special pass.
 Statements shadowed by a tombstone contribute no content bytes, so their pages sink toward zero live fraction and become victims; consolidating those pages drops the statements, which decrements the tombstone's pins; when they reach zero the tombstone goes dead, sinking *its* page's live fraction, which eventually recycles it too.
@@ -200,7 +211,10 @@ Nothing has to reason about epochs to make this happen — only about counters.
 
 Two limits worth stating rather than hiding.
 A `Size` that *is* the authority can still be redundant — with `Size(id, 100)`@5 and `Ref(id, 0, 100, X)`@9, dropping it would leave the size at 100 either way — and the `A` pin keeps it alive regardless.
-That over-count is bounded at one statement per allocation, since non-authority `Size` statements no longer linger, and it is correctable during consolidation by comparing the authority's bound against the largest extent among content statements newer than it.
+Non-authority `Size` statements can be redundant and alive too, whenever they own a fragment over a range that would read `Undefined` anyway — so the over-count is *not* bounded at one per allocation, and a monotonically increasing sequence of resizes strands one per resize.
+What bounds it is that the live set is the running-minimum-bound chain read newest-first: a `Size` can own a fragment only if its bound is strictly below every newer `Size`'s, so any shrink to bound `b` permanently retires every `Size` with bound `>= b`, and a later grow never revives one.
+Detecting a stray means asking whether anything older is left to deny, which no in-memory structure can answer cheaply — the fragment map indexes only live fragments and `mentions` is a count, not a list — so strays are tolerated rather than detected, and a flush simply always emits a `Size` when it resizes.
+See [[address-table-walkthrough#How stray `Size` statements accumulate and are pruned]] for the derivation.
 And the counters are policy, not correctness: an over-count only delays cleaning, an under-count only cleans a page earlier than ideal, and neither can make a resolved read wrong.
 
 [[address-table-walkthrough]] traces all of this through a concrete allocation and stress-tests it against sequences designed to break it.
@@ -270,13 +284,28 @@ Nothing breaks as this degrades; consolidation restores it.
 ### Tombstones and id recycling
 
 A `Tombstone(id)` is needed exactly as long as some *physically present* statement in a live address-table page still names `id` — otherwise the freed allocation would resurrect — and it can be dropped by any rewrite of the page holding it once that stops being true.
-That is its `pins` reaching zero ([[#What counts as a live byte]]) — a tombstone can only ever hold denial pins — equivalently `mentions == 1` (the tombstone alone).
-An id becomes recyclable at the same moment, and by the same counter.
+That is its `pins` reaching zero ([[#What counts as a live byte]]) — a tombstone can only ever hold denial pins — equivalently `mentions == 1`, the tombstone alone.
 Neither condition is persisted; both are properties of the physically present statement set, re-derived at open from the same bulk read that builds the fragment map, and maintained in `O(1)` per statement written or dropped thereafter.
 
-Re-allocating a tombstoned id does **not** by itself retire the tombstone, which is worth stating because the opposite is the intuitive guess.
-Under [[#conflict resolution across epochs]] a tombstone matches every probe, so it goes on denying any offset that the new incarnation's statements do not cover — precisely the floor that keeps a smaller re-allocation from exposing the tail of the old one.
-It retires only once nothing older is left to deny, which its denial pins already express; the `mentions > 1` test is therefore conservative in exactly one direction, keeping a tombstone that a fully covering re-allocation would have made redundant, and that is the safe direction.
+**Recycling an id does not wait for that.**
+An id becomes reusable as soon as a tombstone for it is committed, whatever `mentions` says, so a handful of dead statements stranded in cold pages can never consume the id space.
+This is safe because the tombstone is an epoch floor: the new incarnation's statements are written above it, resolution discards everything at or below it, and the old incarnation is therefore unreachable no matter how much of it survives physically.
+An earlier draft required `mentions == 0` before recycling, which coupled id availability to the cleaning of unrelated pages — the hostage effect — for no correctness benefit.
+
+Re-allocating a tombstoned id does **not** retire the tombstone, which is worth stating because the opposite is the intuitive guess.
+The floor is exactly what keeps a smaller re-allocation from exposing the tail of the old one, so the tombstone retires only once nothing older is left to deny — which its denial pins already express.
+
+Three obligations come with recycling this early:
+
+- **A new tombstone releases the previous one's pins outright**, rather than letting them drain.
+  The newer floor subsumes the older completely, so an older tombstone that kept its pins would be stranded for exactly the reason a redundant `Size` used to be.
+- **The latest tombstone must be pinned by every earlier mention, earlier tombstones included.**
+  With `Ref`@3, `Tombstone`@5, `Ref`@7 and `Tombstone`@9, dropping `Tombstone`@9 would drop the floor back to epoch 5 and readmit `Ref`@7's bytes; initialising from `mentions` gets this right, since every earlier statement is counted.
+- **`AllocationMeta` for a recycled id is updated, not freshly inserted**, since `mentions` and `tombstone` carry across the boundary while `size`, `fragment_count` and `statement_bytes` restart.
+
+One case needs no tombstone at all: freeing and re-allocating an id **within a single flush**.
+A tombstone and the new incarnation's statements would make contradicting existence claims in one epoch, which [[#No conflicts within each epoch]] forbids.
+The flush should instead emit statements that fully cover the new extent, which denies the old incarnation on its own — a bare `Undefined(id, 0, n)` suffices when no content is written.
 
 ## Design directions and trade-offs
 
