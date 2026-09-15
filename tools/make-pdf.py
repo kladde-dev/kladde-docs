@@ -1012,6 +1012,70 @@ def executed(line):
     return line if m is None else line[:m.start()]
 
 
+# latexdiff replaces a deleted `}` with `\MBLOCKRIGHTBRACE` inside a
+# `%DIFDELCMD <` comment, where it never executes, and emits a compensating `}`
+# further on in the added branch.  Everything between the two is then inside
+# the argument that the brace was supposed to close.  Usually that is merely
+# wrong -- deleted prose set in the font of whatever command it landed in --
+# but a paragraph break in there is fatal: `\texttt` and friends are not
+# `\long`, so the compile dies on "Paragraph ended before \text@command was
+# complete".
+#
+# `\MBLOCKRIGHTBRACE` is never defined, so it is pure residue.  Putting a live
+# `}` back where latexdiff commented it out and dropping the compensating one
+# leaves the brace count unchanged and returns the deleted text to the outside
+# of the argument, which is where both versions of the document had it.
+MBLOCK_BRACE = re.compile(r"%DIFDELCMD <\s*\\MBLOCKRIGHTBRACE")
+
+
+def executed_braces(tex):
+    """Yield (offset, brace) for every brace TeX acts on, skipping comments."""
+    pos = 0
+    for line in tex.splitlines(keepends=True):
+        escaped = False
+        for i, ch in enumerate(executed(line)):
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch in "{}":
+                yield pos + i, ch
+        pos += len(line)
+
+
+def compensating_brace(tex, after):
+    """Offset of the `}` closing the group left open at `after`, if any."""
+    depth = 0
+    for offset, ch in executed_braces(tex):
+        if offset < after:
+            continue
+        if ch == "{":
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            return offset
+    return None
+
+
+def restore_deleted_braces(tex):
+    """Move each deleted closing brace back to where latexdiff commented it out."""
+    at = 0
+    while True:
+        m = MBLOCK_BRACE.search(tex, at)
+        if not m:
+            return tex
+        close = compensating_brace(tex, m.end())
+        if close is None:
+            # Nothing left open, so latexdiff balanced this one some other way.
+            at = m.end()
+            continue
+        # Later offset first, so the earlier insertion does not shift it.
+        tex = tex[:close] + tex[close + 1:]
+        tex = tex[:m.start()] + "}" + tex[m.start():]
+        at = m.end() + 1
+
+
 def drop_orphan_items(tex):
     """Remove the `\\item`s latexdiff leaves outside any list."""
     out, depth = [], 0
@@ -1110,7 +1174,8 @@ def latexdiff(old_tex, new_tex, out_tex):
         if f"\\providecommand{{\\{command}}}{{}}" not in tex:
             sys.exit(f"latexdiff no longer defines \\{command} as empty; "
                      "NOALIGN_CLASH would now be dropping visible markup")
-    tex = drop_orphan_items(NOALIGN_CLASH.sub("", EMPTY_DIF_LINE.sub("", tex)))
+    tex = restore_deleted_braces(
+        drop_orphan_items(NOALIGN_CLASH.sub("", EMPTY_DIF_LINE.sub("", tex))))
     out_tex.write_text(tex)
     return out_tex
 
