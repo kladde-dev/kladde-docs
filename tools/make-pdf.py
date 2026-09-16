@@ -1076,6 +1076,62 @@ def restore_deleted_braces(tex):
         at = m.end() + 1
 
 
+# A deleted table row gets the same treatment as a deleted list: latexdiff
+# comments out the row's `&`s and its `\\` but keeps the cell text live.  If
+# the commented `\\` was the one that ended the row, that text is stranded
+# between the previous row and `\bottomrule`, where only `\noalign` material is
+# legal -- "Misplaced \noalign" again, but with real content this time rather
+# than the empty brackets NOALIGN_CLASH removes.
+#
+# Giving the row its `\\` back makes it a row again.  Its `&`s are revived with
+# it, but only within the span the recovered row covers: those are that row's
+# own separators, so the cell count is the one the table was built for, whereas
+# outside that span the deleted text merges into a surviving row whose cells
+# are already accounted for and more would overrun the columns.
+TABLE_OPEN = re.compile(r"\\begin\{(?:longtable|tabular[xy*]?)\}")
+TABLE_CLOSE = re.compile(r"\\end\{(?:longtable|tabular[xy*]?)\}")
+ROW_RULE = re.compile(
+    r"\\(?:bottomrule|midrule|toprule|endhead|endfirsthead|endfoot|endlastfoot)\b")
+TABLE_TOKEN = re.compile(
+    r"\\\\|\\begin\{(?:longtable|tabular[xy*]?)\}"
+    r"|\\end\{(?:longtable|tabular[xy*]?)\}"
+    r"|\\(?:bottomrule|midrule|toprule|endhead|endfirsthead|endfoot|endlastfoot)\b"
+    r"|\S")
+DEAD_TAB = re.compile(r"%DIFDELCMD <[ \t]*&")
+
+
+def revive_tabs(text):
+    """`%DIFDELCMD < &` -> `&%DIFDELCMD <`, leaving the comment itself intact."""
+    return DEAD_TAB.sub(lambda m: "&" + m.group(0)[: m.group(0).index("&")], text)
+
+
+def close_dangling_rows(tex):
+    """Give back the `\\\\` to a deleted table row latexdiff left without one."""
+    out, depth, pending, row_start = [], 0, False, 0
+    for line in tex.splitlines(keepends=True):
+        insert_at = None
+        for tok in TABLE_TOKEN.finditer(executed(line)):
+            token = tok.group(0)
+            if TABLE_OPEN.match(token):
+                depth, pending, row_start = depth + 1, False, len(out)
+            elif TABLE_CLOSE.match(token) or ROW_RULE.match(token):
+                if depth and pending and insert_at is None:
+                    insert_at = tok.start()
+                    for i in range(row_start, len(out)):
+                        out[i] = revive_tabs(out[i])
+                if TABLE_CLOSE.match(token):
+                    depth = max(depth - 1, 0)
+                pending, row_start = False, len(out)
+            elif token == "\\\\":
+                pending, row_start = False, len(out)
+            elif depth:
+                pending = True
+        if insert_at is not None:
+            line = revive_tabs(line[:insert_at]) + "\\\\ " + line[insert_at:]
+        out.append(line)
+    return "".join(out)
+
+
 def drop_orphan_items(tex):
     """Remove the `\\item`s latexdiff leaves outside any list."""
     out, depth = [], 0
@@ -1174,8 +1230,10 @@ def latexdiff(old_tex, new_tex, out_tex):
         if f"\\providecommand{{\\{command}}}{{}}" not in tex:
             sys.exit(f"latexdiff no longer defines \\{command} as empty; "
                      "NOALIGN_CLASH would now be dropping visible markup")
-    tex = restore_deleted_braces(
-        drop_orphan_items(NOALIGN_CLASH.sub("", EMPTY_DIF_LINE.sub("", tex))))
+    # NOALIGN_CLASH first: it strips the empty brackets that would otherwise
+    # look like stranded row content to `close_dangling_rows`.
+    tex = restore_deleted_braces(drop_orphan_items(close_dangling_rows(
+        NOALIGN_CLASH.sub("", EMPTY_DIF_LINE.sub("", tex)))))
     out_tex.write_text(tex)
     return out_tex
 
