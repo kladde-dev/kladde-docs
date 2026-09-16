@@ -47,6 +47,7 @@ Any part of the older statement that doesn't contradict the newer statement surv
 	- all values `offset + size` of all `Ref(id, offset, size, ...)`, `Undefined(id, offset, size)` and `Inline(id, offset, size, ...)` statements with `epoch > anchor_epoch`.
   At least one matching `Shrink`, `Grow`, `Ref`, `Undefined`, or `Inline` statement must exist because otherwise the allocation does not exist.
   Note that only `Shrink` anchors the epoch; a `Grow` contributes a lower bound and nothing else, which is why dropping one can never readmit older extents.
+  Also note that, under the "[[#no conflicts within each epoch]]" rule, the predicates `epoch > anchor_epoch` above could be relaxed to `epoch >= anchor_epoch` without changing semantics; we choose the stricter formulation `epoch > anchor_epoch` here to be more robust to buggy writers that violate the "non conflict within each epoch" rule.
 - **Content at a given offset `probe`:** defined by the latest statement that sets the value of this content, i.e., the statement with highest `epoch` that matches any of the following patterns:
 	- `Tombstone(id)`;
 	- `Shrink(id, n)` where `n <= probe`; or
@@ -197,9 +198,10 @@ A `Shrink(id, n)` may be dropped iff it is **not the anchor and owns no fragment
 
 **A `Grow` is simpler still: it holds only `A`, and its liveness is locally decidable.**
 Matching no probe, it can never own a fragment, so it never becomes a fragment-pinned stray.
-It is dead as soon as `size > n`, since some other term then achieves the maximum, and dead as soon as it falls below `anchor_epoch`; both tests are `O(1)` against `AllocationMeta`.
-Because a `Grow`'s bound strictly exceeded the size at emission, bounds are distinct and **at most one `Grow` per allocation can be alive** — the one with `n == size`.
-Dropping a `Grow` also carries no [[address-table-walkthrough#(v) Consolidate `L2`, the leaf holding the size authority — break 1]] hazard, because it does not anchor the epoch and so can only lower the `max`, never readmit older extents.
+It is dead as soon as `size > n`, since some other term then achieves the maximum; as soon as `n <= anchor.n`, since the anchor's own term then achieves it; and as soon as it falls below `anchor_epoch`, which tombstoning also causes, since the floor moves above it.
+All three tests are `O(1)` against `AllocationMeta`.
+Because a `Grow`'s bound strictly exceeded the size at emission, and any later decrease moves the anchor above it, the bounds of the `Grow` statements above the anchor are distinct and **at most one `Grow` per allocation can be alive** — the one with `n == size`.
+Dropping a `Grow` also carries no [[address-table-walkthrough#(v) Consolidate `L2`, the leaf holding the anchor — break 1]] hazard, because it does not anchor the epoch and so can only lower the `max`, never readmit older extents.
 
 The `A` pin carries the whole burden for the case that matters, and it is not substitutable.
 With `Grow(id, 100)` at epoch 5 and `Ref(id, 0, 10)` at epoch 9 and nothing older, `[10, 100)` resolves to `Undefined` *by default*, so the statement owns no fragment and denies nothing, yet dropping it would shrink the id from 100 to 10.
@@ -228,11 +230,20 @@ Nothing has to reason about epochs to make this happen — only about counters.
 A **grow** emits a `Grow(id, S_new)` only when nothing the flush itself writes reaches offset `S_new` — an exact, `O(1)` test, since everything not written by this flush is bounded by the old size.
 The common append pattern, growing *and* writing at the new end, therefore emits nothing at all.
 A **shrink** always emits a `Shrink(id, S_new)`: old extents above the anchor may exceed the target, and deciding whether any survives would need the id's *physically present* statements, which no structure reaches — the fragment map indexes only live fragments, `StatementRecord` exists only for statements with a reason to live, and `mentions` is a count rather than a list.
+A superfluously emitted `Shrink` has a short life: it becomes the anchor, holds `A` and nothing else, and dies at the next shrink, which takes `A` from it — unless an intervening grow handed it fragments over `[n, size)`, in which case it was not superfluous for long.
+
+**A `Shrink` can raise the size, not only lower it.**
+`Shrink(id, n)` asserts `size >= n` — as anchor it contributes `n` to the `max` — as well as denying content at or past `n`.
+Relative to its absence it lowers the size by excluding older extents and raises it through its own bound, and which effect dominates depends on what else is physically present.
+Consolidation can remove the older extents it was excluding while the statement itself stays, after which only the raising effect remains: with `Shrink(id, 30)`@10 as anchor and `Ref(id, 0, 10, P)`@11 as the only other content statement, the size is 30 with the `Shrink` and 10 without it, so an otherwise identical file lacking the statement holds a *smaller* allocation.
+This is not a defect — the statement then behaves exactly as a `Grow(id, 30)` would — but a consolidator cannot rewrite it as one, since it cannot verify that nothing older still reaches past 30; the name records the operation that emitted the statement, not its steady-state role.
+The same blindness has a mirror image: a dead, superfluous `Shrink` still sitting in a leaf beneath the current anchor makes that anchor load-bearing, because dropping the anchor would re-anchor at the dead one and readmit its bound into the `max` ([[address-table-walkthrough#(ii) Resize to 55 bytes]]).
 
 The residual is confined to `Shrink`.
 An anchor can be redundant — with `Shrink(id, 100)`@5 and `Ref(id, 0, 100, X)`@9, dropping it would leave the size at 100 either way — and the `A` pin keeps it alive regardless.
 Non-anchor `Shrink` statements can be redundant and alive too, whenever they own a fragment over a range that would read `Undefined` anyway, so the over-count is not bounded at one per allocation.
-What bounds it is that the live set is the running-minimum-bound chain read newest-first: a `Shrink` can own a fragment only if its bound is strictly below every newer one's, so any shrink to bound `b` permanently retires every `Shrink` with bound `>= b`, and a later grow never revives one.
+What bounds it is that the live set is contained in the running-minimum-bound chain read newest-first: a `Shrink` can own a fragment only if its bound is strictly below every newer one's, so any shrink to bound `b` permanently retires every `Shrink` with bound `>= b`, and a later grow never revives one.
+Whether a given link of that chain is a stray or load-bearing depends on whether anything older still reaches its window — the same question the emission test cannot answer.
 Building such a chain now requires *alternating* shrinks and grows rather than a run of plain resizes, because grows no longer plant content claims — which is the main thing the `Grow`/`Shrink` split buys.
 See [[address-table-walkthrough#How stray `Size` statements accumulate and are pruned]] for the derivation.
 And the counters are policy, not correctness: an over-count only delays cleaning, an under-count only cleans a page earlier than ideal, and neither can make a resolved read wrong.
