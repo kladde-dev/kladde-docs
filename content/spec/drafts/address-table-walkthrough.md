@@ -54,16 +54,21 @@ A `Grow` is simpler than either — matching no probe, it can never own a fragme
 The fragment map is the resolved-content view: one ordered map keyed by `(id, offset)`, holding one entry per maximal range of an allocation that resolves the same way.
 
 ```rust
-struct Fragment {
-    source: Source,                   // where the bytes are
-    statement: Option<StatementRef>,  // who is responsible for them; None = nobody is
-}
+enum Fragment {
+    /// Resolves through a `Ref` or `Inline`; `offset` points at the data,
+    /// never at the framing of an `Inline` statement.
+    Bytes { page: u32, offset: PageOffset, statement: StatementRef },
 
-enum Source {
-    Bytes { page: PageNumber, offset: u16 },  // a data page, or the address-table page holding an `Inline` payload
-    Undefined,
+    /// Resolves through an `Undefined`, `Shrink`, or `Tombstone`.
+    UndefinedExplicitly { statement: StatementRef },
+
+    /// Resolves to `Undefined` because nothing matches these probes.
+    UndefinedByDefault,
 }
 ```
+
+The three variants answer two questions at once — what the bytes *are*, and who is *responsible* for them — and the third variant is where those answers come apart: a range that resolves by default has a definite answer to the first and none at all to the second.
+See [[address-table#Microoptimizations]] for a packed representation of this enum.
 
 **A fragment stores no length**; its extent runs from its key to the next key for the same id, or to `AllocationMeta::size` for the last one.
 That keeps a fragment small and a split cheap, and it is what makes the next rule mandatory rather than merely tidy.
@@ -73,41 +78,41 @@ A hole is not representable: omitting an entry does not describe a gap, it exten
 That is a wrong-bytes bug rather than a missing-data bug, so a range that resolves to `Undefined` *by default* sits in the map like any other.
 The only allocation with no fragments at all is a zero-sized one, where `[0, 0)` is empty and `Grow(id, 0)` is the allocation's only trace, in memory as on disk.
 
-**`statement: None` marks a range that resolves by default**, because no statement matches those probes — the state a bare `Grow` leaves behind, or a `Ref` or `Inline` with `offset > previous_size`, which leaves `[previous_size, offset)` uncovered; in both cases only if the id has no anchor that would own the range (and it is the reason a `Grow` never owns a fragment).
-Your rephrasing is correct, and the condition on the anchor is not just necessary but decisive: if an anchor exists it *always* owns such a range, and if none exists the range is *always* `None`.
+**`UndefinedByDefault` marks a range that resolves by default**, because no statement matches those probes — the state a bare `Grow` leaves behind, or a `Ref` or `Inline` with `offset > previous_size`, which leaves `[previous_size, offset)` uncovered; in both cases only if the id has no anchor that would own the range (and it is the reason a `Grow` never owns a fragment).
+The condition on the anchor is not just necessary but decisive: if an anchor exists it *always* owns such a range, and if none exists the range is *always* `UndefinedByDefault`.
 An anchor `Shrink(id, n)` or `Tombstone` matches every probe `>= n`, hence every probe in the exposed range, and it outranks everything below it; nothing above it reaches there, since content above the anchor is bounded by the size the allocation had before this flush.
 And if the id has no anchor, its size has never decreased, so every content statement it has is bounded by `previous_size` and none of them reaches into the gap either.
 
-`None` fragments also arise away from any grow, wherever a range was simply never written: write `[0, 10)` and then `[20, 35)`, and `[10, 20)` is matched by nothing.
-What an anchor does is put a floor under where such a hole can survive, since `Shrink(id, n)` matches every probe from `n` upward — so `None` fragments live only in `[0, n)`, and a `Tombstone`, anchoring at `n = 0`, leaves none at all.
+`UndefinedByDefault` fragments also arise away from any grow, wherever a range was simply never written: write `[0, 10)` and then `[20, 35)`, and `[10, 20)` is matched by nothing.
+What an anchor does is put a floor under where such a hole can survive, since `Shrink(id, n)` matches every probe from `n` upward — so they live only in `[0, n)`, and a `Tombstone`, anchoring at `n = 0`, leaves none at all.
 That is why a tombstoned id's fragments are always owned, and why a re-allocated id's tombstone holds real `F` pins.
 
-The two fields answer different questions: `source` says what the bytes *are*, `statement` says who is *responsible* for them, and a default range has a definite answer to the first and none at all to the second.
-`None` is also what makes the pin arithmetic come out right, since such a fragment must pin nothing: a range that resolves by default depends on no statement staying alive.
-Given a niche in `StatementRef`, the `Option` costs no memory.
+Having no statement is also what makes the pin arithmetic come out right, since such a fragment must pin nothing: a range that resolves by default depends on no statement staying alive.
 
 | Field | Updated when | Value | Read for |
 | --- | --- | --- | --- |
-| `source` | when the range is resolved anew, and on either side of a split | the page and offset the bytes live at, or `Undefined` | serving reads; charging content bytes to the page that physically holds them, which is what accounts `Inline` payloads per byte without a per-statement counter |
-| `statement` | on the same events, plus whenever a newer statement re-owns the range | the winning statement for this range, or `None` when nothing matches it | the `F` pin — creating the fragment takes one, destroying or re-owning it releases one; and telling a consolidator which fragments its victim's statements own |
+| the variant, and `page`/`offset` with it | when the range is resolved anew, and on either side of a split | where the bytes live, or which flavour of `Undefined` this is | serving reads; charging content bytes to the page that physically holds them, which is what accounts `Inline` payloads per byte without a per-statement counter |
+| `statement` | on the same events, plus whenever a newer statement re-owns the range | the winning statement for this range; absent on `UndefinedByDefault` | the `F` pin — creating the fragment takes one, destroying or re-owning it releases one; and telling a consolidator which fragments its victim's statements own |
 
-Four consequences of the `Option`, all of which the implementation has to honour:
+Four consequences of the statement-less variant, all of which the implementation has to honour:
 
-- **Coalescing compares both fields.** Adjacent fragments merge only when `source` *and* `statement` agree, so two `None` ranges merge, but a `Shrink`-owned `Undefined` and a `None` must not — they differ in exactly the thing that carries a pin.
+- **Coalescing compares the whole value, not just the resolved content.** Adjacent fragments merge only when their variant *and* every field agree, so two `UndefinedByDefault` ranges merge, but an `UndefinedExplicitly` and an `UndefinedByDefault` must not, and neither must two `UndefinedExplicitly` naming different statements — they read alike but differ in exactly the thing that carries a pin.
 - **A size increase adds at most one fragment, a write past the end at most two.** Raising `size` either extends the last fragment, when the exposed range resolves the way that fragment already does, or adds one entry for it. A `Ref` or `Inline` at `offset > size` adds that entry *and* its own, which is the only way a single statement adds two.
-- **The blow-up is bounded.** `None` fragments are separated by owned ones, so they at most double an id's entry count. `fragment_count` counts them, since they are real entries with real memory cost; the defragmentation ranking pairs it with `statement_bytes`, so an id heavy in `None` fragments reads as many fragments for few statement bytes — correctly, since there is nothing on disk to reclaim there.
-- **Every dereference of `statement` must handle `None`.** Re-owning a range decrements the previous owner's pins, and a `None` fragment has nothing to decrement; the consolidator's "keep the fragments whose `statement` matches" skips them for free, which is right, because no page holds a statement responsible for them and consolidation has nothing to re-emit.
-- **Growth into default territory is free.** If the last fragment is already `None`, raising `size` extends it with no new entry at all, since its end is implied by `size` — the in-memory counterpart of a grow that emits nothing on disk.
+- **The blow-up is bounded.** `UndefinedByDefault` fragments are separated by owned ones, so they at most double an id's entry count. `fragment_count` counts them, since they are real entries with real memory cost; the defragmentation ranking pairs it with `statement_bytes`, so an id heavy in them reads as many fragments for few statement bytes — correctly, since there is nothing on disk to reclaim there.
+- **Every path that reads a fragment's `statement` must handle its absence.** Re-owning a range decrements the previous owner's pins, and an `UndefinedByDefault` fragment has nothing to decrement; the consolidator's "keep the fragments whose `statement` matches" skips them for free, which is right, because no page holds a statement responsible for them and consolidation has nothing to re-emit.
+- **Growth into default territory is free.** If the last fragment is already `UndefinedByDefault`, raising `size` extends it with no new entry at all, since its end is implied by `size` — the in-memory counterpart of a grow that emits nothing on disk.
 
 **`StatementRecord`.**
 
 ```rust
 struct StatementRecord {
-    page: PageNumber,
-    framing_len: u16,
-    pins: u16, // Could be NonZeroU16 since the transition to `pins == 0` makes the statement dead
+    page_or_next: u32, // the free-list link while `pins == 0`
+    pins: u32,         // `pins == 0` makes the statement dead, and the slot free
 }
 ```
+
+`framing_len` is not in the record: it sits in a parallel array of the slab, since it is read only when a statement dies while `pins` is touched on every fragment gained or lost.
+[[address-table#In-memory representation]] gives the slab in full, including why slot 0 is never handed out.
 
 A `StatementRecord` is held *only for live statements*.
 A record exists exactly while `pins > 0`; at the `1 → 0` transition its framing is released from the page's coverage, it is removed from `statement_bytes`, and the record is freed.
@@ -116,8 +121,8 @@ This is the concrete reason an id's physically present statements are unreachabl
 
 | Field | Updated when | Value | Read for |
 | --- | --- | --- | --- |
-| `page` | at creation only; a statement never moves (relocation means a *new* statement) | the page the flush writes it into | knowing whose `coverage` to decrement when the framing dies, and whether a consolidation victim holds this statement |
-| `framing_len` | at creation only | the statement's encoded size **excluding** any `Inline` payload, since payload bytes are charged per byte through `fragment.source` instead | the amount subtracted from `coverage[page]` at the `1 → 0` pin transition; summed into `AllocationMeta.statement_bytes` |
+| `page_or_next` | at creation only while the statement is live; reused as the free-list link once it dies | the page the flush writes it into | knowing whose `coverage` to decrement when the framing dies, and whether a consolidation victim holds this statement. A statement never moves — relocation means a *new* statement — so the page is fixed for the record's life. Read it *before* overwriting it with the free-list link |
+| `framing_len` | at creation only | the statement's encoded size **excluding** any `Inline` payload, since payload bytes are charged per byte through the page and offset each `Bytes` fragment names instead | the amount subtracted from `coverage[page]` at the `1 → 0` pin transition; summed into `AllocationMeta.statement_bytes` |
 | `pins` | on every fragment gain or loss, whenever the anchor or grow-witness changes hands, and — tombstone anchors only — when `mentions` falls to 1 | at creation: one per fragment it wins, plus 1 if it becomes the anchor or the grow witness | the liveness test `pins > 0`; the `1 → 0` transition releases `framing_len` from `coverage[page]` and removes the statement from `statement_bytes` |
 
 Note that `pins` can *rise* after creation: growing an allocation can bring a range into existence that an existing `Shrink` wins, as Step 3 shows.
@@ -135,6 +140,8 @@ struct AllocationMeta {
 }
 ```
 
+Both `Option`s are four bytes, not eight: `StatementRef` is a `NonZeroU32` because the slab never hands out slot 0.
+
 **Note:** we should measure how many allocations have a `Some` value for `anchor` or `grow_witness`.
 If this is rare in practice, we should outsource them to a side table.
 
@@ -148,7 +155,7 @@ struct RecyclableId {
 }
 ```
 
-Everything else is meaningless for a non-existent id and is reconstructed if the id is allocated again: `size` is 0, `fragment_count` is 0, `grow_witness` is `None`, and `statement_bytes` is the tombstone's own two bytes, already recorded in its `StatementRecord`.
+Everything else is meaningless for a non-existent id and is reconstructed if the id is allocated again: `size` is 0, `fragment_count` is 0, `grow_witness` is `None`, and `statement_bytes` is the tombstone's own two bytes, already recorded in the slab.
 The two that remain are the two that are read.
 `mentions` still has to be decremented as statements naming the id are physically dropped, and still releases the tombstone's `A` pin at 1 — so a page rewrite that decodes a statement looks the id up in `AllocationMeta` first and in the pool if it is not there.
 `tombstone` is what that release has to reach, what a consolidator consults to decide whether to re-emit a tombstone it has decoded, and what becomes `anchor` if the id is allocated again.
@@ -169,7 +176,7 @@ A statement inherits the epoch of the page it currently sits in, so moving a sta
 The header is rewritten every flush and states resolved truth, so everything in the header always carries the current epoch, and multi-epoch disagreement can exist only between the header and evicted leaves, or between two leaves.
 This is why the example below needs evictions to arise at all.
 
-**Framing sizes**, from the grammar in [[address-table#Physical level]], assuming a one-byte `id_delta` and two-byte addresses:
+**Framing sizes**, from the grammar in [[address-table#Physical format]], assuming a one-byte `id_delta` and two-byte addresses:
 
 | Statement | Encoding | `framing_len` |
 | --- | --- | --- |
@@ -276,7 +283,7 @@ The walk *is* that determination, and its cost is predictable in advance from `A
 | `Ref@3` | fragment re-owned by the new statement → pins **1 → 0** → framing released; then physically dropped with the page |
 | `Shrink(7,10)`@5 | **unchanged at 2** — under the adopted model it never held a pin on `Ref@3`, so the drop does not reach it |
 | `Ref(7,0,10,P1)`@10 (new) | pins **1** (`F`) |
-| Fragment map | `(7,0)`'s `statement` re-pointed; `source` unchanged |
+| Fragment map | `(7,0)`'s `statement` re-pointed; its `page` and `offset` unchanged |
 | `AllocationMeta[7]` | `statement_bytes` 16 → 15; `mentions` 3 → 3 (one dropped, one added) |
 | `coverage[L1]` | → 0; reusable after the two-epoch quarantine |
 | `coverage[P1]` | **unchanged** — consolidating the address table moves no data |
@@ -608,7 +615,7 @@ Three things distinguish this from the old break:
 
 1. It is **not** bounded at one per allocation, as an earlier version of this section claimed.
    A non-anchor `Shrink` lingers whenever it owns a fragment, and it can own one *while being redundant* — when the range it wins would resolve to `Undefined` anyway, because nothing older matches it.
-   In fragment-map terms the redundancy is sharp: dropping such a statement would turn its `Some(Shrink)` fragment into a `None` fragment covering the same range with the same resolved content, and the only thing standing in the way of doing so is that nothing can prove no older statement matches.
+   In fragment-map terms the redundancy is sharp: dropping such a statement would turn its `UndefinedExplicitly` fragment into an `UndefinedByDefault` one covering the same range with the same resolved content, and the only thing standing in the way of doing so is that nothing can prove no older statement matches.
    Building such a chain now requires *alternating* shrinks and grows, though, which is what the `Grow`/`Shrink` split of [[#Preliminaries]] buys: a run of plain grows plants no content claims at all.
    Take an allocation created empty and grown three times without writing: under the old single `Size`, `Size(7,10)`@5, `Size(7,20)`@7 and `Size(7,30)`@8 followed by `Ref(7,50,10,PX)`@9 left three fragment-owning strays over `[10,20)`, `[20,30)` and `[30,50)`; with `Grow(7,10)`@5, `Grow(7,20)`@7 and `Grow(7,30)`@8 the same history leaves **none**, since `[0,50)` is then unowned default and all three are dead the moment `size` exceeds their bounds.
    What still bounds the alternating case is derived in [[#How stray `Size` statements accumulate and are pruned]] below.
@@ -698,7 +705,7 @@ Distinguishing the two cases is exactly the "is there anything older to deny" pr
     As anchor it contributes its own `n` to the `max`, so once consolidation has removed the older extents it excluded, an otherwise identical file *without* it holds a smaller allocation; the statement is then functionally a `Grow`, but cannot be rewritten as one, since no consolidator can verify that nothing older still reaches past `n`.
 14. **A dead predecessor makes an anchor load-bearing** (scenario (ii), case (b)).
     With every statement above the anchor dead, dropping the anchor still re-anchors at the newest physically present `Shrink` beneath it — possibly one that is itself dead and superfluous — and readmits *its* bound; break 1 from the other side, and a second reason the `A` pin is not substitutable by any test on live state.
-15. **`None` fragments are never-written holes that no anchor reaches** ([[#Preliminaries]]).
-    An anchor matches every probe from its own bound upward, so it owns whatever a grow or an out-of-range write exposes and `None` fragments can survive only in `[0, n)`; an id with no anchor has never decreased in size, so nothing reaches into an exposed range there and the whole of it is `None`.
+15. **`UndefinedByDefault` fragments are never-written holes that no anchor reaches** ([[#Preliminaries]]).
+    An anchor matches every probe from its own bound upward, so it owns whatever a grow or an out-of-range write exposes and such holes can survive only in `[0, n)`; an id with no anchor has never decreased in size, so nothing reaches into an exposed range there and the whole of it resolves by default.
     A `Tombstone` anchors at `n = 0` and therefore leaves no such hole at all, which is why a re-allocated id's tombstone holds genuine `F` pins.
-    This is also why a `Grow` can never own a fragment, and why the `Option` in `Fragment::statement` is not a loose end but the exact shape of the model.
+    This is also why a `Grow` can never own a fragment, and why a fragment variant that names no statement is not a loose end but the exact shape of the model.

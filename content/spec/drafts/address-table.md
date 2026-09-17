@@ -9,14 +9,14 @@ Statements from all live pages are merged, resolving conflicts by recency, see [
 
 #### Statement types
 
-| Statement                           | Existence of `id` | Size of `id`                                                     | Content of `id`                                                                    | Usage note                                                                                                                                                                                                                                                                                                                                                                            |
-| ----------------------------------- | ----------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Ref(id, offset, size, address)`    | exists            | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` equals `file[address, address + size)`. | `[address, address + size)` must be within a single `Data` page. As a *writer invariant* (readers never depend on it), every byte in a `Data` page is referenced by at most one live `Ref`; this is not needed for correctness but keeps data-page coverage a plain counter instead of a refcount. Relaxing it later would enable `O(1)` allocation clones and is a format-compatible policy change, see [[#Design directions and trade-offs]].                                                                                                                                                                  |
-| `Undefined(id, offset, size)`       | exists            | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` is `Undefined`.                         | Kladde is allowed to hand out arbitrary data for `Undefined` regions, and consolidation may rewrite `Undefined` regions with `Ref` or `Inline` with arbitrary data (useful for data types that have long sequences of repeated small `[data] [undefined] [data] [undefined] ...` patches, which could happen for arrays of enums with slightly unbalanced payload sizes per variant). |
-| `Shrink(id, n)`                     | exists            | `>= n`, and **anchors** the size: extents below this statement's epoch drop out | Anything at or beyond `n` is `Undefined`.                                          | The size-reducing half of the old `Size` statement. Its content claim is dormant while the allocation stays at `n`, and activates if the allocation later grows past `n` — which is exactly what stops a truncated tail from resurfacing.                                                                                                                                              |
-| `Grow(id, n)`                       | exists            | `>= n`                                                           | **Nothing.** Matches no probe.                                                     | The size-increasing half of the old `Size` statement, carrying no content claim. Growing never needs to deny anything: every statement that could cover a probe at or past the old size has an epoch below the anchor and is therefore already denied by it. `Grow(id, 0)` is how an existent zero-sized allocation is stated.                                                        |
-| `Tombstone(id)`                     | does not exist    | `0`                                                              | All bytes are `Undefined`.                                                         | Only has an effect if an older live page states existence of `id` and no newer live page states existence of `id` and fully overwrites any size and content remaining from the old incarnation.                                                                                                                                                                                       |
-| `Inline(id, offset, size, payload)` | exists            | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` equals `payload`.                       | Small-size optimization. Requires `1 <= size <= 251` — one less than before the `Grow`/`Shrink` split, since the payload length is encoded as an offset past the last statement tag. Zero-sized payloads stay unrepresentable, and nothing needs them: `Grow(id, 0)` states an existent zero-sized allocation.                                                                        |
+| Statement                           | Existence of `id` | Size of `id`                                                                    | Content of `id`                                                                    | Usage note                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------- | ----------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Ref(id, offset, size, address)`    | exists            | `>= offset + size`, smallest compatible with all live statements                | Content in range `[offset, offset + size)` equals `file[address, address + size)`. | `[address, address + size)` must be within a single `Data` page. As a *writer invariant* (readers never depend on it), every byte in a `Data` page is referenced by at most one live `Ref`; this is not needed for correctness but keeps data-page coverage a plain counter instead of a refcount. Relaxing it later would enable `O(1)` allocation clones and is a format-compatible policy change, see [[#Design directions and trade-offs]]. |
+| `Undefined(id, offset, size)`       | exists            | `>= offset + size`, smallest compatible with all live statements                | Content in range `[offset, offset + size)` is `Undefined`.                         | Kladde is allowed to hand out arbitrary data for `Undefined` regions, and consolidation may rewrite `Undefined` regions with `Ref` or `Inline` with arbitrary data (useful for data types that have long sequences of repeated small `[data] [undefined] [data] [undefined] ...` patches, which could happen for arrays of enums with slightly unbalanced payload sizes per variant).                                                           |
+| `Shrink(id, n)`                     | exists            | `>= n`, and **anchors** the size: extents below this statement's epoch drop out | Anything at or beyond `n` is `Undefined`.                                          | The size-reducing half of the old `Size` statement. Its content claim is dormant while the allocation stays at `n`, and activates if the allocation later grows past `n` — which is exactly what stops a truncated tail from resurfacing.                                                                                                                                                                                                       |
+| `Grow(id, n)`                       | exists            | `>= n`                                                                          | **Nothing.** Matches no probe.                                                     | The size-increasing half of the old `Size` statement, carrying no content claim. Growing never needs to deny anything: every statement that could cover a probe at or past the old size has an epoch below the anchor and is therefore already denied by it. `Grow(id, 0)` is how an existent zero-sized allocation is stated.                                                                                                                  |
+| `Tombstone(id)`                     | does not exist    | `0`                                                                             | All bytes are `Undefined`.                                                         | Similar to `Shrink(id, 0)` except that it also asserts non-existence. If a statement in a later epoch asserts existence again, the `Tombstone`'s effect on content remains: some `UndefinedExplicitly` fragments may resolve through the `Tombstone`, just as they may resolve through a `Shrink`.                                                                                                                                              |
+| `Inline(id, offset, size, payload)` | exists            | `>= offset + size`, smallest compatible with all live statements                | Content in range `[offset, offset + size)` equals `payload`.                       | Small-size optimization. Requires `1 <= size <= 251` — one less than before the `Grow`/`Shrink` split, since the payload length is encoded as an offset past the last statement tag. Zero-sized payloads stay unrepresentable, and nothing needs them: `Grow(id, 0)` states an existent zero-sized allocation.                                                                                                                                  |
 
 #### No conflicts within each epoch
 
@@ -45,7 +45,7 @@ Any part of the older statement that doesn't contradict the newer statement surv
 	- the `n` field of every `Grow(id, n)` statement with `epoch > anchor_epoch`; and
 	- all values `offset + size` of all `Ref(id, offset, size, ...)`, `Undefined(id, offset, size)` and `Inline(id, offset, size, ...)` statements with `epoch > anchor_epoch`.
   The maximum is over a non-empty set whenever the allocation exists, since existence requires at least one statement mentioning `id` and forbids the newest of them from being a `Tombstone`.
-  A **non-existent** allocation falls out of the same rule with size `0` and needs no separate case: its newest statement is a `Tombstone`, which is therefore its anchor, and nothing lies above it.
+  A **non-existent** allocation falls out of the same rule with size `0` and needs no separate case: its newest statement (if a statement mentioning its `id` exists) is a `Tombstone`, which is therefore its anchor, and nothing lies above it; and if no statement mentions the `id` at all, the maximum is over the empty set, which is `0` by convention.
   (Existent zero-sized allocations are still distinguished from non-existent ones — by the **Existence** rule above, not by this one.)
   Note that only `Shrink` and `Tombstone` anchor the epoch; a `Grow` contributes a lower bound and nothing else, which is why dropping one can never readmit older extents.
   A `Tombstone` anchors at `n = 0` and denies every probe, so a re-allocated id is described entirely by the statements above its tombstone.
@@ -61,7 +61,7 @@ Any part of the older statement that doesn't contradict the newer statement surv
 	- if the winning statement is `Inline(id, offset, size, payload)`: the content of allocation `id` at offset `probe` is `payload[probe - offset]`.
 	- If the winning statement is `Ref(id, offset, size, address)`: the content of allocation `id` at offset `probe` is `file[address + (probe - offset)]`.
 
-### Physical level
+### Physical format
 
 There is only a single `kind` for address table pages: `kind == AddressTable`.
 The header page is always an `AddressTable` page.
@@ -69,52 +69,131 @@ Every `AddressTable` page contains zero or more references to other `AddressTabl
 References between `AddressTable` pages form a tree rooted at the header page.
 
 ```
-address_table_page := num_children:varint child_ref{num_children} num_statements:varint statements:statement{num_statements}
-child_ref          := page_number:varint  ; the page number (not the start address of the page)
-statement          := id_delta (tagged_ref | tagged_undefined | tagged_shrink | tagged_tombstone | tagged_grow | inline)
-id_delta           := varint              ; increment from id of last statement (for first statement in page: id)
-tagged_ref         := 0:byte offset:varint size:varint address:varint
-tagged_undefined   := 1:byte offset:varint size:varint
-tagged_shrink      := 2:byte n:varint
-tagged_tombstone   := 3:byte              ; tombstones have no payload apart from the id
-tagged_grow        := 4:byte n:varint
+address_table_page := num_children:varint child_ref{num_children}
+                      num_statements:varint statements:statement{num_statements}
+child_ref          := page_number_delta:varint  ; see "Delta encoding" below
+statement          := id_delta (tagged_ref | tagged_undefined | tagged_shrink
+                                | tagged_tombstone | tagged_grow | inline)
+id_delta           := varint                    ; see "Delta encoding" below
+tagged_ref         := 0:byte offset_delta:varint size:varint address:varint
+tagged_undefined   := 1:byte offset_delta:varint size:varint
+tagged_shrink      := 2:byte offset_delta:varint
+tagged_grow        := 3:byte offset_delta:varint
+tagged_tombstone   := 4:byte
+offset_delta       := varint                    ; see "Delta encoding" below
 
-; inline is optimized for lots of small payloads. size_tag = size + 4 >= 5 can't clash.
-; size >= 1, so zero-sized Inline payloads stay unrepresentable; max size is 255 - 4 = 251.
-inline             := size_tag:byte offset:varint payload:byte{size_tag - 4}
+; Inline is optimized for lots of small payloads. Max size is 255 - 4 = 251.
+; size >= 1: zero-sized Inline payloads are deliberately unrepresentable.
+; size_tag = size + 4 >= 5, so it can't clash with any of the above tagged_*.
+inline             := size_tag:byte offset_delta:varint payload:byte{size_tag - 4}
 ```
 
-Notes on the physical format:
+#### Delta encoding
 
-- Statements within a page are sorted by `(id, offset)`, so `id_delta` is never negative; a further statement about the same id has `id_delta == 0`.
+Child refs within a page are sorted by their page number, and statements within a page are sorted lexicographically by `(id, offset)` (this is well defined even for `Tombstone` statements, which carry no `offset`, because no other statement mentioning the same `id` can coexist with a `Tombstone(id)` by the [[#No conflicts within each epoch]] rule).
+To save encoding space by exploiting the compactness of `varint`s, page numbers, ids, and offsets are delta-encoded as follows.
+When starting to decode an address table page, a reader initializes a `page_cursor`, an `id_cursor`, and an `offset_cursor` to `0`.
+It then decodes the page in reading order.
+
+- For each `child_ref`, the reader increments `page_cursor` by `page_number_delta`; the resulting `page_cursor` is the number of the referenced page.
+- For each `statement`, the reader performs the following steps in this order:
+	1. Increment `id_cursor` by `id_delta`.
+	2. Read off the statement's `id` from `id_cursor`.
+	3. If `id_delta != 0`: set `offset_cursor = 0`.
+	4. If the statement isn't a tombstone: increment `offset_cursor` by `offset_delta`.
+	5. If the statement isn't a tombstone: read off `offset` (or `n` for `Shrink` or `Grow`) from `offset_cursor`.
+	6. If the statement is a `Ref`, `Undefined`, or `Inline`: increment `offset_cursor` by `size` (where `size = size_tag - 4` in case of `Inline`).
+
+Since `offset_delta` is a `varint` and therefore non-negative, `offset_cursor` must never need to move backwards, which is a **writer invariant** the format now depends on for decodability.
+For `Ref`, `Undefined` and `Inline` it follows from [[#No conflicts within each epoch]]: their ranges within one epoch are disjoint, so sorting by `offset` already leaves the cursor at or below the next statement's offset.
+For `Shrink(id, n)` it follows too, since a content statement in the same epoch may not reach past `n`.
+For `Grow(id, n)` it does **not** follow, because a `Grow` conflicts with nothing: a writer must simply never put a `Grow(id, n)` in a page whose content for `id` reaches past `n`.
+That costs nothing, since such a `Grow` would be dead on arrival anyway — content reaching past `n` means `size > n`, which is the `Grow`'s first death test.
+
+#### Notes on the physical format
+
 - The root `AddressTable` page *is* the current header slot (pages 0/1, alternating per the CoW design), so before the payload described by this grammar it carries the file-header fields — magic, format version, page size, epoch, journal-segment pointer — all covered by the header CRC.
-- A `child_ref` deliberately stores only a page number.
+- A `child_ref` deliberately stores only a (delta-encoded) page number and no epoch.
   The child's own framing carries its epoch, and invariant I1 of the CoW design guarantees that a page referenced by a valid header is present and intact, so a per-child expected-epoch field would only duplicate the end-to-end assertion that the child's own `epoch` field already provides.
 - Nothing in the format constrains *which* page a statement lives in or how the tree is shaped; those are writer policies, specified in [[#Maintenance]].
+- The `child_ref`s between address table pages must form a tree, and a reader should verify this to avoid getting trapped in an infinite loop (for cyclic `child_ref`s) or parsing the same address table page twice (which can happen even in a DAG if it is not a tree).
+
+#### Bounds
+
+- **Allocation IDs** are 32 bit.
+  This decision is visible to data type implementations, which may serialize a 32 bit `Pointer` type into one allocation to point to another allocation.
+  Varint encoding of ids may therefore take up to `⌈32/7⌉ = 5` bytes.
+  Note that, once `Segment`s land, each `Segment` will likely have its own id space, so a file may then contain more than `2^32` allocations.
+- **Page sizes** are uniform throughout a single kladde file, and are either 4, 8, 16, 32, or 64 KiB, specified by a header field (4 KiB pages is probably most useful, 16 KiB pages might be useful on Mac and iOS, larger page sizes are unlikely to ever be useful but reserved just in case).
+  Therefore, offsets into a page (that don't point to the exact end of the page) always fit into 16 bit.
+- **Payload sizes** of `Ref` or `Inline` (and thus **fragment sizes**) are bounded by `MAX_PAGE_CONTENT`, the page size minus the page framing of [[cow]] — kind and content size, epoch, and CRC, 14 bytes in total — thus at most `2^16 - 14`.
+  Their varint encoding can take up to `⌈16/7⌉ = 3` bytes.
+- **Page numbers** are 32 bit.
+  Therefore, **addresses** fit into `32 + 16 = 48` bit (49 bit to point at EOF), their varint encoding takes up at most `⌈49/7⌉ = 7` bytes, and the maximum **file size** is `2^(32+12) bytes ≈ 17.6 TB` with 4 KiB pages and `2^(32+14) bytes ≈ 70.4 TB` with 16 KiB pages.
+- **Allocation sizes** are bounded by `2^32 bytes ≈ 4.3 GB`.
+  Thus, a varint-encoded offset into an allocation uses up to `⌈32/7⌉ = 5` bytes.
+- The **number of statements** in a file must not exceed `2^32 ≈ 4.3 billion`, and an implementation may limit it further.
+  This is so that we can keep track of statements with 32 bit indices.
+  Even with an optimistic estimate of an average of only 3 bytes per statement, this bound would still allow 13 GB of address table pages alone.
+- The **framing** of a statement in the physical layout (i.e., the encoded length without `payload` of an `Inline` statement) can take up to 21 bytes:
+  the longest possible framing is for a `Ref` statement with 5 bytes for `id_delta` + 1 byte for the tag + 5 bytes for `offset_delta` + 3 bytes for `size` + 7 bytes for `address` = 21 bytes of framing.
+  This is the most extreme case; most statements are expected to have much shorter framing.
 
 ## In-memory representation
 
 The in-memory state after a bulk read is the page images themselves plus three indexes over them.
 Content is never copied out of the page images: `Ref` and `Inline` content both have a file address (an `Inline` payload lives inside an address-table page, but it is bytes at a known address all the same), so every resolved fragment points into the in-memory copy of the file, and `Undefined` needs no bytes at all.
 
-**1. The fragment map**, which everything else hangs off: a B-tree `(id, offset) → Fragment`, where each entry describes the resolved content from `offset` up to the next key with the same `id`:
+**1. The fragment map**, which everything else hangs off: a B-tree `(id: Id, offset: AllocationOffset) → Fragment`, where each entry describes the resolved content from `offset` up to the next key with the same `id`:
 
 ```rust
-struct Fragment {
-    source: Source,                  // address into a Data or AddressTable page, or Undefined
-    statement: Option<StatementRef>, // the live statement this fragment survives from;
-                                     // None when the range resolves to Undefined by default
+/// Note: see Section "Microoptimizations" for a memory-saving variant of `Fragment`
+enum Fragment {
+	/// The fragment resolves to `Ref` or `Inline`. In both cases, `offset`
+	/// points to the *data*, never to the *framing* of an `Inline` statement.
+	Bytes { page: u32, offset: PageOffset, statement: StatementRef },
+
+	/// The fragment resolves to `Undefined`, `Shrink`, or `Tombstone`.
+	UndefinedExplicitly { statement: StatementRef },
+	
+	/// The fragment doesn't resolve to any statement.
+	UndefinedByDefault,
 }
 
-struct StatementRecord {     // one per statement that still has a reason to live
-    page: PageNumber,        // where its encoding lives
-    framing_len: u16,        // encoded size, excluding any Inline payload
-    pins: u16,               // reasons this statement must stay; see below
+struct PageOffset(u16);       // offset into a *page*, used in the *value* of the fragment map, see above
+struct AllocationOffset(u32); // offset into an *allocation*, used in the *key* of the fragment map
+struct StatementRef(NonZeroU32); // index into the slab below; slot 0 is never handed out
+
+/// Slab of statement records, indexed by `StatementRef`.
+/// Two parallel arrays rather than one array of 9-byte packed records: this keeps the
+/// hot array 8 bytes wide and naturally aligned, since `pins` is touched on every
+/// fragment gained or lost while `framing_len` is read only when a statement dies.
+struct StatementSlab {
+    records: Vec<StatementRecord>, // 8 bytes per slot
+    framing_len: Vec<u8>,          // <= 21, see Section "Bounds" above
+    free_head: u32,                // first free slot, or 0 for "none"
+}
+
+struct StatementRecord {      // one per live statement
+	/// Address table page where the encoding of the statement lives
+	/// (not the Data page where the payload of a `Ref` statement lives).
+	/// If `pins == 0` then index of the next free slot instead, or 0 to end the list.
+	/// Note the ordering obligation this union imposes: on the `1 -> 0` transition,
+	/// read the page number and release `coverage[page]` *before* overwriting this
+	/// field with the free-list link.
+    page_or_next: u32,
+
+	/// Number of reasons why this statement must stay, see below.
+	/// Nonzero for live statements, zero for empty slots.
+	/// Needs up to 32 bit since a `Shrink` or `Tombstone` wins the gaps
+	/// *between* newer statements, anywhere in `[n, size)`, which can be
+	/// up to 2^31 + up to 1 `A` pin.
+    pins: u32,
 }
 ```
 
 A fragment stores no length — its extent runs to the next key for the same id, or to `size` for the last one — so a hole in the map would not describe a gap but silently extend the preceding fragment, and the "greatest key `<= probe`" lookup would answer with a neighbour's bytes.
-The fragments of an existing id therefore **exactly partition `[0, size)`**, ranges that resolve to `Undefined` by default included; those are the entries whose `statement` is `None`, and they pin nothing, which is exactly right, since a range that resolves by default depends on no statement staying alive.
+The fragments of an existing id therefore **exactly partition `[0, size)`**, ranges that resolve to `Undefined` by default included; those are the `UndefinedByDefault` entries, and they name no statement and pin nothing, which is exactly right, since a range that resolves by default depends on no statement staying alive.
 [[address-table-walkthrough#Preliminaries]] specifies the map in full.
 
 Content bytes are deliberately *not* counted here; [[#What counts as a live byte]] charges them to whichever page physically holds them, which is what makes `Inline` payloads accounted per byte without any per-statement counter.
@@ -125,8 +204,18 @@ Two things take a pin, and which of them a statement can hold depends on its kin
 1. **`F`** — each **fragment** resolving to the statement. Any kind.
 2. **`A`** — the resolved size depends on this statement. Held by the **anchor** (the newest `Shrink` or `Tombstone`), because dropping it moves `anchor_epoch` and readmits older extents; and by a `Grow(id, n)` with `n == size`, because it may be the sole witness of that size.
 
-So a content statement holds only `F`, a `Grow` holds only `A`, and a `Shrink` or `Tombstone` holds `A` and `F`.
+So a content statement (`Ref`, `Inline`, or `Undefined`) holds only `F`, a `Grow` holds only `A`, and a `Shrink` or `Tombstone` holds `A` and `F`.
 One rule governs both of the latter: **a `Shrink` or `Tombstone` may be dropped iff it is not the anchor and owns no fragment**, derived in [[#What counts as a live byte]].
+
+`StatementRecord`s are stored in a slab indexed by `StatementRef`, with dead slots threaded into a free list through `page_or_next` — unambiguous because a slot is free exactly when `pins == 0`.
+
+**Slot 0 is never handed out**, which costs nine bytes once and buys two things.
+It gives the free list a terminator, which nothing else could: page numbers and slot indices both use the whole `u32` range, so no value is spare.
+And it makes `StatementRef` a `NonZeroU32`, so `Option<StatementRef>` is four bytes rather than eight — twelve bytes saved per allocation, across `AllocationMeta`'s `anchor` and `grow_witness` and the recyclable set's `tombstone`.
+
+Stale refs cannot arise: every holder of a `StatementRef` — a fragment, `anchor`, `grow_witness`, or a recyclable id's tombstone — gives it up as part of the same event that removes the statement's last pin.
+The argument rests on every release site being correct, so a debug-only parallel `Vec<u32>` of generations is worth keeping in mind: it turns a violation into an assertion rather than silent corruption, at no cost in release builds.
+No reverse `(page, offset) -> StatementRef` index is needed either: a consolidator reaches its victim's statements through the fragment map and `AllocationMeta`, per [[#Maintenance]].
 
 **A tombstone is a matcher, and therefore an ordinary anchor.**
 It is a `Shrink(id, 0)` that also denies existence, and the in-memory resolver represents it exactly as [[#Conflict resolution across epochs]] does: it matches every probe, so it wins — and owns as fragments — whatever ranges a re-allocated incarnation leaves uncovered.
@@ -135,12 +224,9 @@ An earlier draft inverted this into an epoch floor, discarding every statement a
 The two framings resolve identically — a statement can only win by outranking every matcher, and the tombstone matches all of them — but the matcher framing is what lets one droppability rule cover `Shrink` and `Tombstone` alike, and it costs no fragment-map entry, only a pin, since an uncovered range has an entry either way.
 A resolver may still walk each id's statements newest-first and stop at the first tombstone; that is an implementation shortcut now, not a separate model.
 
-The name is deliberate: this is a refcount whose holders are of different kinds, so `liveness` would read as a boolean or an enum, and `refcount` would say nothing about what is doing the referring.
+The name `pins` is deliberate: this is a refcount whose holders are of different kinds, so `liveness` would read as a boolean or an enum, and `refcount` would say nothing about what is doing the referring.
 "Pin", in the buffer-manager sense of *something prevents this from being reclaimed*, is exactly the relationship, and it stays accurate across both reasons.
-A single counter is still the right shape, because a `Shrink` or a re-allocated id's `Tombstone` holds `A` and `F` simultaneously and no consumer ever asks which kind a pin is; two fields would encode a distinction that is never read.
-
-This is the draft's `(id, offset) → Option<Address>` B-tree and its `(id, offset) → Statement` B-tree collapsed into one structure: the fragment map *is* the resolved view of [[#conflict resolution across epochs]], computed once during the bulk read and maintained incrementally afterwards, so epochs never need to be consulted again at run time.
-Content queries resolve `(id, offset)` in one lookup, `O(log F)` for `F` live fragments; sequential reads iterate from there.
+A single counter that combines `A + F` is the right shape, because a `Shrink` or a re-allocated id's `Tombstone` holds `A` and `F` simultaneously and no consumer ever asks which kind a pin is; keeping track of two separate counters for `A` and `F` would encode a distinction that is never read.
 
 **2. The allocation map**: a hash map `id → AllocationMeta { size, fragment_count, statement_bytes, mentions, anchor, grow_witness }`.
 `size` answers size queries in `O(1)`.
@@ -175,10 +261,11 @@ A page's live-byte counter — its `coverage`, in the vocabulary of [[cow#Covera
 `AddressTable` pages need no separate mechanism for this: **one rule covers both page kinds**, and it is the rule data pages already follow.
 
 **Content bytes are charged to the page that physically holds them.**
-Every fragment names a `source` address, so when a fragment is destroyed, decrement the coverage of the page that address falls in, by the fragment's length.
-A `Ref`'s fragments point into a `Data` page; an `Inline`'s fragments point into the `AddressTable` page carrying the payload; an `Undefined` fragment points nowhere and costs nothing.
+Every `Bytes` fragment names a page and an offset, so when a fragment is destroyed, decrement the coverage of the page that address falls in, by the fragment's length.
+A `Bytes` fragment can stem from either a `Ref` statement (in which case its page and and offset point into a `Data` page) or an `Inline` statement (in which case its page and and offset point into an `AddressTable` page).
 An inline payload is therefore just content that happens to live in a table page, and it gets per-byte accounting for free — no per-statement payload counters, no special case, the same line of code.
-Splitting a fragment changes nothing, since both halves still cover the same bytes.
+The two `Undefined` variants of `Fragment` point nowhere and cost nothing.
+Splitting a fragment changes nothing, since both halves together still cover the same bytes.
 
 **Framing bytes are charged to the statement's own page, and released in one step** when the statement loses its last reason to live.
 The two charges cover disjoint byte ranges of the encoding, so they cannot double-count.
@@ -186,7 +273,7 @@ The two charges cover disjoint byte ranges of the encoding, so they cannot doubl
 Per-byte accounting for inline payloads is what the design actually needs, and it is worth saying why, because statement-granularity liveness looks adequate until it isn't.
 For a `Ref`, partial shadowing strands only ~10 bytes of framing in the address-table page, while the content bytes it no longer reaches are tracked exactly in the data page's counter, which duly falls.
 For an `Inline` there is no data page: the payload *is* the content, so charging it all-or-nothing would let shadowing half of a 200-byte inline strand 100 bytes that no counter in the system ever notices, and a page holding sixty mostly-shadowed inlines would report itself nearly full and never be cleaned.
-Routing the charge through `fragment.source` avoids that without treating inlines specially at all.
+Routing the charge through the fragment's own page and offset avoids that without treating inlines specially at all.
 
 **Framing is released when the statement's `pins` reach zero**, and which pins a statement can hold is what the rest of this section is about.
 
@@ -395,6 +482,84 @@ This is what makes small allocations first-class: below the threshold, an alloca
 **The single ranked queue.**
 One budget with ratio-greedy ranking is the simplest policy that is not obviously wrong, and it inherits the known failure mode of ratio-greedy cleaners: costs that current ratios cannot see get starved — e.g., description debt on a cold allocation that will be read forever but never written again never looks urgent.
 If that bites, the established fix is to fold the invisible cost into the ranking (LFS's cost-benefit policy does the analogous thing with segment age); the queue structure stays.
+
+## Microoptimizations
+
+Unmeasured, but recorded here as possible optimizations that a change in the design should not needlessly break.
+
+### More compact `Fragment`
+
+```rust
+use std::mem::MaybeUninit;
+
+/// Safe facade that is easy to work with but wastes memory: `size_of::<Fragment> == 12`
+enum Fragment {
+	Bytes { offset: PageOffset, statement: StatementRef, page: u32 },
+	UndefinedExplicitly { statement: StatementRef },
+	UndefinedByDefault,
+}
+
+/// Compact internal representation for the `BTreeMap`: `size_of::<CompactFragment> == 10`
+#[repr(packed(2))]
+struct CompactFragment {
+    tag_or_offset: u16,
+    statement: MaybeUninit<u32>,
+    page: MaybeUninit<u32>,
+}
+
+struct Id(std::num::NonZeroU32);
+struct StatementRef(std::num::NonZeroU32); // slot 0 is never handed out, see above
+
+/// Invariant: never takes value 0xffff or 0xfffe (those offsets can't hold data due to the CRC)
+struct PageOffset(u16);
+
+impl From<CompactFragment> for Fragment {
+    fn from(cf: CompactFragment) -> Self {
+        match cf.tag_or_offset {
+            0xffff => Fragment::UndefinedByDefault,
+            0xfffe => Fragment::UndefinedExplicitly {
+                statement: unsafe {
+                    StatementRef(NonZeroU32::new_unchecked(cf.statement.assume_init()))
+                }
+            },
+            offset => Fragment::Bytes {
+                offset: PageOffset(offset),
+                page: unsafe { cf.page.assume_init() },
+                statement: unsafe {
+                    StatementRef(NonZeroU32::new_unchecked(cf.statement.assume_init()))
+                }
+            },
+        }
+    }
+}
+
+impl From<Fragment> for CompactFragment {
+    fn from(f: Fragment) -> Self {
+        match f {
+            Fragment::Bytes { page, offset, statement } => CompactFragment {
+                tag_or_offset: offset.0,
+                statement: MaybeUninit::new(statement.0.get()),
+                page: MaybeUninit::new(page),
+            },
+            Fragment::UndefinedExplicitly { statement } => CompactFragment {
+                tag_or_offset: 0xfffe,
+                statement: MaybeUninit::new(statement.0.get()),
+                page: MaybeUninit::uninit(),
+            },
+            Fragment::UndefinedByDefault => CompactFragment {
+                tag_or_offset: 0xffff,
+                statement: MaybeUninit::uninit(),
+                page: MaybeUninit::uninit(),
+            },
+        }
+    }
+}
+
+fn main() {
+    assert_eq!(std::mem::size_of::<Fragment>(), 12);
+    assert_eq!(std::mem::size_of::<CompactFragment>(), 10);
+}
+```
 
 ## Related work
 
