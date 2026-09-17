@@ -27,18 +27,24 @@ Placement, compaction, and fold timing are all free, so two implementations will
   Refuse to open a file whose minimum reader version exceeds the implementation's own.
 - **Fail closed.** Never interpret a file whose [root fingerprint](schema/fingerprints.md) differs from the expected one unless resolution actually succeeded.
   Silent misinterpretation is a conformance failure, not a quality-of-implementation issue.
-- **Stable ids.** Preserve every allocation's id across folds and across compaction.
+- **Stable ids.** Preserve every allocation's id across flushes and across consolidation.
 - **Ownership.** Maintain exactly one owning pointer per allocation.
-- **Journal framing.** Frame every record with a length prefix and a checksum, and recover a torn tail by truncation.
+- **The reuse rule.** Write only to pages unreachable from both on-disk headers, or extend the file ([I2](durability.md#the-two-invariants)).
+- **One `fsync` before the header.** Issue a header only after an `fsync` that covered everything it references and the previous header ([I1](durability.md#the-two-invariants)); treat a failed `fsync` as fatal for the session.
+- **Page framing.** Write the `kind`, `content_size`, `epoch` and `crc` on every non-header page, and ignore any page whose CRC does not validate.
+- **Journal framing.** Frame every transaction with a length prefix and a chained, epoch-salted CRC, and recover a torn tail by truncating to the longest valid prefix — without skipping a hole.
+- **Transaction atomicity.** Replay every transaction completely or not at all.
 - **Prefix validity.** Order the records of a single mutation so that any prefix replays to a valid state.
+- **Bounds.** Support the [stated bounds](address-table.md#bounds), and fail cleanly rather than wrap when an application exceeds them.
 - **Descriptor encoding.** Produce byte-identical output to the [canonical encoding](schema/canonical-encoding.md) for the same type graph.
 - **Fingerprints.** Produce bit-identical output to [the fingerprint computation](schema/fingerprints.md), including on recursive types.
 - **Crash consistency.** Ensure that a crash at any instant leaves a file that opens.
 
 ## May
 
-- Choose any placement policy.
-- Compact, or not compact, by any strategy.
+- Choose any placement policy — which reusable page a flush writes to, and how content is cut across pages.
+- Consolidate, or not consolidate, by any strategy.
+- Group application operations into transactions however it likes, including not at all.
 - Fold at any time, and optimize the fold arbitrarily, so long as the result is indistinguishable from an in-order replay given that [unwritten bytes are unspecified](allocations.md#content-semantics).
 - Assign, reuse, and recycle ids however it likes.
 - Expose any API shape at all.
@@ -46,7 +52,9 @@ Placement, compaction, and fold timing are all free, so two implementations will
 
 ## Must not
 
-- Change an allocation's id, size, or content during compaction.
+- Change an allocation's id, size, or content during consolidation.
+- Overwrite a page reachable from either on-disk header.
+- Continue a session after a failed `fsync`.
 - Assume that unwritten bytes hold any particular value.
 - Depend on the descriptor table's index assignment for any semantic purpose.
 - Emit a fingerprint that depends on table layout, traversal order, or any runtime-incidental state.
@@ -65,8 +73,15 @@ The conformance suite should have three parts.
 Every implementation must reproduce the manifest from the file.
 Files written by each implementation are added to the corpus, so that the suite grows to cover the cross product.
 
-**Crash tests** — for each of a set of mutation sequences, truncate the resulting file at every byte offset, open it, and assert that it opens successfully and yields a state that is a valid prefix of the intended one.
-This is the only mechanical check on the [ordering discipline](journal.md#ordering), which is otherwise a matter of implementer care.
+**Crash tests** — two kinds, checking different things.
+
+- *Journal prefix.* For each of a set of mutation sequences, truncate the resulting journal at every byte offset, open it, and assert that it opens successfully and yields a state that is a valid prefix of the intended one.
+  This is the only mechanical check on the [ordering discipline](journal.md#ordering), which is otherwise a matter of implementer care.
+- *Flush interruption.* For each of a set of flushes, simulate a power cut after every individual page write — including reordering the writes, since write-back is not ordered — and assert that the file opens and lands on either the previous committed state or the new one, never in between.
+  This is the mechanical check on [I1 and I2](durability.md#the-two-invariants).
+
+A complementary check is a **leak detector**: walk every allocation reachable from the root via the type structure, compare against the set the address table says is live, and assert they match.
+That checks the "clean up" half of the ordering discipline, which the prefix test does not.
 
 ## Open questions
 

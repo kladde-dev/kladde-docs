@@ -27,7 +27,7 @@ It requires a preservation or overflow area and fights the fixed-offset model di
 ## What is settled
 
 **Detection is mandatory.**
-The [header](../file-format.md#header) carries a magic number, a format version, and the root [fingerprint](fingerprints.md), and a reader that finds a mismatch it cannot resolve **must fail closed**.
+The [header](../file-format.md#header-pages) carries a magic number, a format version, and the root [fingerprint](fingerprints.md), and a reader that finds a mismatch it cannot resolve **must fail closed**.
 Silent misinterpretation is the one outcome the format does not permit.
 This is a correctness property, not a feature.
 

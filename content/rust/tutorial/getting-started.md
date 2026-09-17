@@ -9,7 +9,7 @@ A backed data structure lives in two places at once.
 **In memory**, it is an ordinary Rust value: a `PersistableVec<T>` really does hold a `Vec<T>`, and reading from it is a plain memory access.
 Nothing about reading touches the file.
 
-**In the file**, it is a compact binary representation that lags slightly behind — the *snapshot* — plus a *journal* of changes not yet folded into it.
+**In the file**, it is a compact binary representation that lags slightly behind, plus a *journal* of changes not yet folded into it.
 A mutation updates the in-memory value immediately and appends to the journal before returning.
 
 So: reads are as fast as the non-backed equivalent, writes cost one small append, and the bulk representation is brought up to date periodically rather than on every change.

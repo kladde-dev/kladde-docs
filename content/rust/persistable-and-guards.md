@@ -114,6 +114,20 @@ The interior mutability this requires lives in the concrete backend, never in th
 The two traits are also split like `Read`/`Write` in `std`: `ReadBackend` has *no* write or allocation surface at all, so `&mut impl ReadBackend` genuinely cannot mutate.
 That is what enforces the journaled backend's phase separation — a shared `&Backend` could not, because it would still carry `&self` write methods.
 
+## Why an auto-flush cannot tear a mutation
+
+A guard borrows the root value.
+A flush needs access to the root.
+So while any guard is alive, no flush can run — the code does not compile.
+
+Since a multi-record mutation is only ever in flight while a guard is alive, an automatic flush can fire only *between* complete mutations.
+
+This is a genuinely nice property, obtained for free from Rust's borrow checker, and it is one of the places where the language earns its keep in this design.
+It is also the reason the [ordering discipline](../spec/journal.md#ordering) only has to hold *within* a mutation: nothing can interleave with one.
+
+Note that it holds only as long as flushing is never reachable through a path that has just a shared reference to the backend, which is what a guard holds.
+The [auto-checkpoint](../impl/transactions-and-batches.md#checkpoint-versus-commit) deliberately *is* such a path, and the argument there has to be remade on other grounds.
+
 ## The chain, end to end
 
 ```rust
@@ -135,5 +149,5 @@ Honest accounting.
 - **No partial borrows.** You cannot hold guards on two different fields at once, because each reborrows the root.
 
 The first is inherent to Rust.
-The second is a feature disguised as a cost — it is what makes the [auto-flush safety argument](../journal/crash-consistency.md#why-an-auto-flush-cannot-tear-a-mutation) work.
+The second is a feature disguised as a cost — it is what makes the [auto-flush safety argument](#why-an-auto-flush-cannot-tear-a-mutation) work.
 The third is a real limitation with no current answer.

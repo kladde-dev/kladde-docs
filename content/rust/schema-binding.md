@@ -1,8 +1,8 @@
 ---
-title: Schema
+title: Schema binding
 ---
 
-The Rust binding of the [language-independent schema model](../../../spec/schema/).
+The Rust binding of the [language-independent schema model](../spec/schema/).
 
 **Status:** implemented.
 
@@ -15,7 +15,7 @@ The descriptor types, the canonical encoding, the fingerprint computation, and a
 Depends on nothing but the varint crate.
 
 It has **no** connection to the heap, to `Persistable`, or to any Rust type system machinery.
-That is what makes it portable and testable on its own: the conformance vectors for [encoding](../../../spec/schema/canonical-encoding.md) and [fingerprints](../../../spec/schema/fingerprints.md) exercise this layer and nothing else.
+That is what makes it portable and testable on its own: the conformance vectors for [encoding](../spec/schema/canonical-encoding.md) and [fingerprints](../spec/schema/fingerprints.md) exercise this layer and nothing else.
 
 **The binding — where Rust types meet the model.**
 A `Persistable` type declares its own descriptor, and the derive macro generates that declaration.
@@ -31,7 +31,7 @@ The important properties:
 - **Descriptors are deduplicated** by structure, so a type used in twenty places occupies one table entry.
 - **The table is built once**, not per value.
 
-From a type's descriptor and the reachable graph, the fingerprint is computed by the [white/grey/black traversal](../../../spec/schema/fingerprints.md#cycles).
+From a type's descriptor and the reachable graph, the fingerprint is computed by the [white/grey/black traversal](../spec/schema/fingerprints.md#cycles).
 
 ## What a derived type declares
 
@@ -40,10 +40,10 @@ An enum declares an `Enum` with its variants canonically ordered by discriminant
 
 A hand-written implementation declares **whatever descriptor matches the bytes it actually reads and writes** — which is the rule that most often trips people up.
 A hand-written implementation of a plain field-sum declares `Struct`, not `Opaque`.
-"Hand-written" and "opaque" are different axes; see [the guiding principle](../../../spec/schema/index.md#the-guiding-principle).
+"Hand-written" and "opaque" are different axes; see [the guiding principle](../spec/schema/index.md#the-guiding-principle).
 
 The containers declare `Opaque`, carrying their library name, type name, version, inline size, and element type as a parameter.
-Whether they *should* — as opposed to declaring structural descriptors so that tools can walk them — is [an open format question](../../../spec/tooling.md#the-container-problem).
+Whether they *should* — as opposed to declaring structural descriptors so that tools can walk them — is [an open format question](../spec/tooling.md#the-container-problem).
 
 ## Where it is used, and where it is not
 
@@ -74,5 +74,5 @@ Worth keeping in mind when changing anything here:
 
 - The **Array** and **Pointer** kinds are reserved and unimplemented.
 - **Resolution** — reading at a writer's offsets — does not exist, and it constrains the shape of `load`.
-  See [Evolution](../../../spec/schema/evolution.md).
+  See [Evolution](../spec/schema/evolution.md).
 - The descriptor table is never written to or read from a file.

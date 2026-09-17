@@ -31,7 +31,7 @@ That is the decisive advantage of putting the hook on the type rather than deriv
 
 ### Ordering
 
-The free walk must respect the [prefix-replay discipline](../journal/crash-consistency.md#the-ordering-discipline): **publish, then free.**
+The free walk must respect the [prefix-replay discipline](../spec/journal.md#ordering): **publish, then free.**
 
 Overwriting a map entry must write the new value's pointer *before* freeing the old value's allocation.
 A crash in between then leaks — which is recoverable — rather than dangling, which is not.
@@ -64,7 +64,7 @@ When it is built, arrays should be modelled as length-bounded and optional slots
 
 A tool that does not link the application cannot use a type-driven hook, so a language-independent garbage collector or leak checker would need the schema to say which fields are owning pointers.
 
-That is what the reserved [`Pointer` descriptor kind](../../../spec/schema/type-descriptors.md#pointer-reserved) is for.
+That is what the reserved [`Pointer` descriptor kind](../spec/schema/type-descriptors.md#pointer-reserved) is for.
 
 **Deferred** until such a tool actually exists.
 It also forces the owning/non-owning distinction into the format, which is a decision worth making deliberately rather than as a side effect.

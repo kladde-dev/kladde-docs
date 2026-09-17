@@ -50,5 +50,5 @@ A type is [Opaque](type-descriptors.md#opaque) not because its implementation is
 
 These documents define how descriptors are **modeled, serialized, and fingerprinted**.
 
-Where the descriptor table physically sits in a file is a [container-layer](../file-format.md#header) question.
+Where the descriptor table physically sits in a file is a [container-layer](../file-format.md#header-pages) question.
 How a reader *resolves* a mismatch — the compatibility policy — is [Evolution](evolution.md), and is the least settled part of the specification.

@@ -74,7 +74,7 @@ An implementation that cannot demonstrate this on the conformance vectors is not
 
 ## As a fast path
 
-The [file header](../file-format.md#header) stores the root type's fingerprint.
+The [file header](../file-format.md#header-pages) stores the root type's fingerprint.
 
 This makes the overwhelmingly common case — an application opening a file it wrote itself, with an unchanged schema — a single 16-byte comparison.
 If it matches, the reader knows its own compile-time layout is exactly the writer's, and can read at static offsets without parsing the descriptor table at all.

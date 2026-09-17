@@ -10,25 +10,25 @@ No tools exist yet.
 ## The premise
 
 A kladde file is self-describing in two independent ways.
-It describes its **storage**: every allocation carries its own id, so the heap's structure is recoverable by scanning, with no application knowledge at all.
+It describes its **storage**: the [address table](address-table.md) is reachable from the header and names every allocation, so the file's structure is recoverable without any application knowledge at all — and without a scan, since everything is rooted.
 And it describes its **types**: the embedded [descriptor table](schema/) says how every non-opaque value in the file is laid out.
 
 Together these mean a tool can be useful at three levels, each requiring strictly more than the last.
 
 ## Level 1 — storage analysis
 
-Requires: the [container](file-format.md) and [allocation](allocations.md) layers.
+Requires: the [page](file-format.md), [address-table](address-table.md) and [allocation](allocations.md) layers.
 Requires **no** schema and no application knowledge.
 
 A tool at this level can:
 
-- enumerate every live allocation with its id, address, size, and sizedness;
-- compute total live bytes, file length, and therefore **fragmentation**;
-- report the gap-size distribution and the largest contiguous free range;
-- report journal length and how far the snapshot lags behind;
-- **compact** the file, and truncate it.
+- enumerate every live allocation with its id and size, and every fragment of its content with the page it lives in;
+- compute total live bytes, file length, and therefore **garbage**;
+- report the per-page live fraction, and how much of the file is superseded pages awaiting reuse;
+- report journal length and how far the committed state lags behind it;
+- **consolidate** the file into a tight new one, and truncate it.
 
-Compaction from an external tool is safe for exactly the reason it is safe internally: it changes no id, no size, and no content, so it is invisible to any reader.
+Rewriting a file from an external tool is safe for exactly the reason it is safe internally: it changes no id, no size, and no content, so it is invisible to any reader.
 This makes a standalone `kladde compact` genuinely implementable, which is unusual for a format of this kind.
 
 What it cannot do is tell you what any of it *means* — which allocation holds what, or whether a large one is a container's backing array or a single opaque blob.

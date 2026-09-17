@@ -4,14 +4,12 @@ title: Pointers
 
 The handle types, what each is for, and the ownership discipline they enforce.
 
-## Four types, one idea
+## Two types, one idea
 
-| type | copyable? | owns? | sized? | typed? |
-| --- | --- | --- | --- | --- |
-| `Pointer<W>` | yes | no | — | no |
-| `UniquePointerResizable<P>` | no | yes | resizable | no |
-| `UniquePointerFixedSize<P>` | no | yes | fixed | no |
-| `UniquePointer<T, P>` | no | yes | fixed | yes |
+| type | copyable? | owns? | typed? |
+| --- | --- | --- | --- |
+| `Pointer<W>` | yes | no | no |
+| `UniquePointer<T, P>` | no | yes | yes |
 
 **`Pointer<W>`** is the serialized, at-rest form: a stable id and nothing else.
 It is `Copy`, it is what a `Location` anchors to, and it is what gets written into a file.
@@ -19,32 +17,9 @@ The width `W` is a type parameter, so 32- and 64-bit pointers are the same code.
 
 Every `Pointer` is **nonzero by construction** — its field is the nonzero form of `W` — so `Option<Pointer>` gets the null niche in memory for free, and the on-file null encoding is sound rather than merely conventional.
 
-**The owned handles** are single-owner and not `Copy`.
+**`UniquePointer<T, P>`** is the owned handle: single-owner, not `Copy`.
 Holding one *is* the claim to the allocation.
-The resizable and fixed variants differ only in which operations they permit, which is a typestate: `resize` takes `&UniquePointerResizable`, so resizing a fixed allocation is not expressible.
-
-**`UniquePointer<T>`** adds a phantom `T` over the fixed handle, for the typed case.
-The phantom is `PhantomData<*const T>` rather than `PhantomData<T>`, deliberately: it gives covariance in `T`, which is sound here because mutation only ever happens through an exclusive guard, without imposing the drop-check obligation that `PhantomData<T>` would — and a `UniquePointer` never runs `T`'s destructor.
-
-## Sizedness lives in the id
-
-The low bit of the raw pointer value carries the sizedness flag:
-
-```
-raw = (counter << 1) | fixed_bit
-```
-
-Two reasons.
-
-It is the **only** per-allocation fact the heap ever needs, so a separate metadata channel would carry exactly this one bit.
-And it is **placement-relevant** — see [Placement](../heap/placement.md) — so the heap has to be able to read it.
-
-The counter pool is **shared** between the two sizednesses, so the counter alone is unique.
-Ids stay dense at roughly twice the counter, which matters for any table that wants to index by id.
-A high bit would have been the alternative and is much worse: it doubles the apparent id range and is fatal to density.
-
-A consequence worth naming: because sizedness is *in* the id, a sizedness conversion cannot re-tag in place.
-It must mint a **new** id, copy the content, and free the old one.
+Its phantom is `PhantomData<*const T>` rather than `PhantomData<T>`, deliberately: it gives covariance in `T`, which is sound here because mutation only ever happens through an exclusive guard, without imposing the drop-check obligation that `PhantomData<T>` would — and a `UniquePointer` never runs `T`'s destructor.
 
 ## Why exactly one copyable type
 
@@ -52,15 +27,15 @@ An earlier design had several copyable pointer types.
 That is the wrong shape, and the reason is aliasing.
 
 If a pointer can be freely copied, a moved allocation may have arbitrarily many live references to it, which requires a registry just to find them all.
-With exactly one owned handle per allocation, moving is trivial: nothing needs finding, because the serialized value is a stable id and the in-memory owner is unique by construction.
+With exactly one owned handle per allocation, relocation is trivial: nothing needs finding, because the serialized value is a stable id and the in-memory owner is unique by construction.
 
-`Pointer` is copyable because it is *not* a claim — it is an address-like value, useful for anchoring a `Location` and for serialization, and it confers no rights.
+`Pointer` is copyable because it is *not* a claim — it is an id-like value, useful for anchoring a `Location` and for serialization, and it confers no rights.
 
 ## Ownership
 
 > **Exactly one owning handle per allocation, at all times.**
 
-This is a format-level invariant, not a Rust convention: [the value graph is a tree of ownership](../../../spec/allocations.md#ownership), and a tool may rely on it.
+This is a format-level invariant, not a Rust convention: [the value graph is a tree of ownership](../spec/allocations.md#ownership), and a tool may rely on it.
 
 Ownership **transfers** rather than duplicating.
 Taking the value out of a container moves its handle to the returned value without freeing it, so at every instant exactly one live value owns the allocation, and the transfer can neither double-free nor leak.
@@ -90,5 +65,15 @@ They also complicate [freeing](freeing.md), because a recursive free walk must f
 
 `Pointer<W>` is generic over its width, and `Persistable<P>` is generic over the pointer type, so 32- and 64-bit files use the same code with different type arguments.
 
-The width should probably be a **per-file property** rather than a compile-time choice, since it is a format guarantee.
-That is not decided.
+The format [fixes ids at 32 bit](../spec/address-table.md#bounds), so the generic is currently exercised at one width only.
+It is kept because a per-file width is a plausible future, and because parameterising costs nothing here.
+
+## What sizedness was, and why it is gone
+
+An earlier design tagged every id as **fixed-size** or **resizable**, carried in the low bit of the raw pointer value, with two distinct owned handle types enforcing the distinction as a typestate.
+
+The tag existed so that neighbours of a fixed-size allocation could rely on it not moving, which mattered when allocations were contiguous ranges in a flat address space and placement had to reason about adjacency.
+In the [page-oriented design](../spec/address-table.md) nothing is adjacent to anything — every reshape is a statement edit — so the distinction buys nothing and has been dropped.
+
+Three things went with it: the two owned handle types collapse into one, the `Convert` journal record disappears, and the low bit of the pointer value is free again.
+See [Superseded](../superseded/relocatable-heap.md#sizedness) for what it was doing and why it made sense at the time.

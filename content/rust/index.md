@@ -4,13 +4,15 @@ title: kladde-rust
 
 The Rust implementation of kladde, and the reference implementation of the [specification](../spec/).
 
+Everything here is **specific to Rust** and should be expected to differ in a port.
+The [file format](../spec/) and the [algorithms](../impl/) are shared; the trait shapes, the mutation-capture mechanism, the macros, and the memory layout are not.
+
 ## Two audiences
 
 **If you want to use kladde in an application**, start with the [tutorial](tutorial/).
-It assumes you know Rust and nothing about kladde, and it works up from a first program to writing your own persistable types.
+It assumes you know Rust and nothing about kladde, and works up from a first program to writing your own persistable types.
 
-**If you want to work on kladde**, or port it to another language, start with the [design documents](design/).
-They go top-down: the [architecture overview](design/) first, then a document per part covering the problem it solves, the algorithm, and the data structures.
+**If you want to work on kladde**, or port it, read the [specification](../spec/) and [implementation notes](../impl/) first — they carry the parts that are not about Rust — and come back here for the rest.
 
 ## What it is
 
@@ -44,47 +46,70 @@ notes.guard().lines_mut().push(PersistableString::from("wrote a doc"));
 The `push` updates the in-memory vector and records the change.
 There is no save call.
 
-## The shape of the implementation
+## The central problem
 
-Rust has no way to intercept a field assignment — no `__setattr__`, no property hooks, no message dispatch.
-Every other system in this space relies on exactly such a hook to make persistence syntactically invisible.
+Rust has no way to intercept a field assignment.
 
-So kladde-rust compensates with an explicit **guard**: a short-lived RAII wrapper, obtained from a value plus a backend, through which mutations are made.
-`notes.guard().lines_mut()` walks from the root to the field being changed, carrying the backend and the field's location along with it.
-The guard is what other languages get for free from their object systems.
+Every comparable system relies on exactly such a hook: Python has `__setattr__`, Smalltalk has message dispatch, Swift has property wrappers.
+Those systems make persistence syntactically invisible — `self.foo = bar` just works — because the language hands them a place to stand.
 
-This is the single largest thing that a port should expect to redesign.
-A Python implementation should use property hooks and have no guards at all; the layer beneath — the heap, the journal, the schema — should port far more directly.
-See [Architecture](design/) for exactly where that seam falls.
+Rust hands them nothing.
+So kladde-rust makes the recording point **explicit and unforgeable** instead: the only mutating API is the one that records, and it is reached through a `Guard`.
 
-## Crate map
+Everything idiosyncratic about this layer follows from that one constraint, and it is the single largest thing a port should expect to redesign.
+A Python implementation should use property hooks and have no guards at all.
 
-| crate | role |
+## The documents
+
+| document | contents |
 | --- | --- |
-| `kladde-heap` | the relocatable heap: pointers, allocations, placement, compaction, the journal, and the storage backends. Type-agnostic; knows nothing about serialization. |
-| `kladde-persist` | the serialization layer: `Persistable`, `Location`, the pointer byte encoding, and the typed conveniences on top of a backend. |
-| `kladde-schema` | type descriptors, their canonical encoding, and fingerprints. Depends on nothing but `kladde-varint`. |
-| `kladde-varint` | LEB128 varints. |
-| `kladde-types` | the built-in containers: vector, hash map, string, blob. The default collection, not a layer — it uses only the public API any library could. |
-| `kladde-derive` | the `#[derive(Persistable)]` macro. Reached through `kladde`'s `derive` feature; applications do not depend on it directly. |
-| `kladde` | the application-facing entry point: opening files, the root value, the default backend. Re-exports the derive macro and everything a `Persistable` impl names, so an application needs this crate and nothing below it. |
-
-The dependency direction is strictly downward, and `kladde-heap` deliberately depends on none of the others — it is usable on its own as a relocatable persistent heap, independently of anything kladde-specific.
+| [Crate layout](crates.md) | the workspace, the dependency direction, and where the seam falls |
+| [Pointers](pointers.md) | the four handle types, and the ownership discipline they enforce |
+| [Persistable and guards](persistable-and-guards.md) | the central traits, and why mutation needs a guard at all |
+| [Containers](containers.md) | how the built-in containers are laid out and why |
+| [The derive macro](derive-macro.md) | what it generates, and why guards are generated per type |
+| [Freeing](freeing.md) | recursive reclamation — designed, not built |
+| [Transactions](transactions.md) | the RAII types, and what happens on unwind |
+| [Schema binding](schema-binding.md) | how a Rust type declares its descriptor |
+| [Memory layout](memory-layout.md) | the Rust-specific half of the [in-memory structures](../impl/in-memory-state.md) |
+| [Tutorial](tutorial/) | for application authors |
 
 ## Status
 
 Not feature-complete, and the parts are at very different stages.
+The design documents describe the system as intended and mark where the implementation falls short.
 
 | area | status |
 | --- | --- |
-| Heap, placement, incremental compaction | implemented and measured |
-| Backends, storage abstraction | implemented |
 | Schema descriptors, encoding, fingerprints | implemented and specified |
+| Schema binding to Rust types | implemented |
 | Containers, derive macro, guards | implemented against an in-memory backend |
-| Journal | **known broken** — see [Journal semantics](design/journal/semantics.md) |
+| `Persistable`, `Location` | implemented |
+| Storage abstraction | implemented (in-memory only) |
+| Journal | **known broken** — see below |
+| Address table, copy-on-write pages | designed, not built |
 | Real file storage | not started |
 | Crash consistency | designed, not built |
-| Schema evolution | designed, not built |
 | Freeing / reclamation | designed, not built |
+| Schema evolution | designed, not built |
 
-The design documents describe the system as intended, and mark where the implementation currently falls short.
+The previous heap — a relocatable heap over a flat address space, with incremental compaction — *was* implemented, measured and tuned, and has since been [superseded](../superseded/) by the page-oriented design.
+
+### The journal, concretely
+
+`JournaledWriteBackend` keeps **two** records of a transaction with no order relating them: a `pending: HashMap<Pointer, Size>` state snapshot, and a `journal: Vec<(Pointer, Size, Vec<u8>)>` operation log.
+So any operation that invalidates an earlier log entry must reach into the log and repair it by hand, and exactly one does — the sizedness conversion scans the log re-anchoring writes, and nothing else repairs anything.
+
+Three failures follow, and they are symptoms of the one structural problem that [the log-as-authority model](../impl/write-phase-state.md) fixes:
+
+1. **`alloc → write → free` panics at flush.**
+   The allocate and free annihilate inside `pending`, so the id is never claimed; the buffered write survives in the other structure and its replay looks up an id the heap has never heard of.
+2. **A write followed by a shrinking resize silently corrupts a neighbour.**
+   The seek does no bounds check, so a write buffered while the allocation was large replays at an offset that now lies outside it.
+   Reproduced: allocate A at 128 bytes, write `0xAA` at offset 64, shrink A to 64, allocate B at 8 bytes; after the flush, B reads back as `[170; 8]`.
+3. **A sizedness conversion of an allocation claimed by an earlier flush loses its content.**
+   The immediate path is *mint → allocate new → copy `min(old, new)` → free old*; the deferred path performs only the mint, and the copy is not deferred or approximated but absent.
+   This one disappears outright with [sizedness](pointers.md#what-sizedness-was-and-why-it-is-gone).
+
+None of these is the fundamental problem.
+The fundamental problem is that **the log does not record every mutation**, which shows up without any annihilation at all — see the dangling-pointer case in [the record set](../spec/journal.md#record-kinds).

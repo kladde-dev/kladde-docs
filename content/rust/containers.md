@@ -18,21 +18,15 @@ The layout deliberately mirrors `Vec<T>`'s in memory: growing resizes the conten
 That falls out of storing a fixed-size inline representation rather than going through a serializer, and it is worth noting because it is unusual: a guard method serializes a value into the record while only *borrowing* it, rather than moving a copy into a semantic operation that must outlive the call.
 
 **Ordering.** A push that grows must resize and write the element *before* bumping the stored length, because the length is what makes the element reachable.
-See [Crash consistency](../journal/crash-consistency.md#the-ordering-discipline).
+See [the ordering discipline](../spec/journal.md#ordering).
 
 ### The chunked variant
 
-A chunked layout was prototyped to validate that the backend trait surface supports layouts kladde may eventually want:
+A chunked layout was prototyped to validate that the backend trait surface supports layouts kladde may eventually want: an empty state with a null inline pointer, a small state holding the elements directly, and a linked state whose head is the first chunk of a list.
 
-- **Empty** — the inline pointer is null.
-- **Small** (`len ≤ CHUNK_LEN`) — the head is a **resizable** allocation holding exactly the elements.
-- **Linked** (`len > CHUNK_LEN`) — the head is a **fixed-size** allocation, the first chunk of a linked list.
-
-Which layout is in use is discovered by asking the backend for the head's **sizedness** — no bit is stolen from the pointer.
-Chunk layout keeps data first so promoting Small to Linked never moves element bytes; only trailer bytes are added.
-
-This exercises the sizedness conversion and the "no data move" property, which is what it was built for.
-It is a prototype, not the shipping vector.
+It was built against the [superseded](../superseded/relocatable-heap.md#sizedness) sizedness distinction, using the head allocation's fixed-or-resizable tag to discover which layout was in use, and it exercised the sizedness conversion and the "no data move" property.
+With sizedness gone, so is the mechanism it was demonstrating; the layout idea itself remains available and would now discriminate on a stored tag byte instead.
+It was a prototype, not the shipping vector, either way.
 
 ## `PersistableString`
 
@@ -71,7 +65,7 @@ It is the most concrete missing piece in the container layer.
 Wraps any `T: Serialize + DeserializeOwned + Default` as an opaque payload with its own allocation.
 
 The escape hatch for foreign types that can get neither their own wrapper nor a derive.
-It is deliberately the least attractive option: rewritten in full on every change, opaque to [tooling](../../../spec/tooling.md), and the only thing in the workspace that needs a serialization dependency at all — hence the feature gate.
+It is deliberately the least attractive option: rewritten in full on every change, opaque to [tooling](../spec/tooling.md), and the only thing in the workspace that needs a serialization dependency at all — hence the feature gate.
 
 Two constructors, and the difference is about leaks:
 
@@ -84,7 +78,7 @@ The same laziness argument applies to `PersistableVec::new()`.
 
 **A rope**, for large text with efficient middle insertion.
 Designed in outline, not built.
-It is the container that would most benefit from the [fold's zero-I/O splice](../journal/fold-and-schedule.md#what-falls-out-unasked).
+It is the container that would most benefit from the [fold's zero-I/O splice](../impl/flush.md#what-falls-out-unasked).
 
 **Tombstone reclamation** for the hash map, as above.
 

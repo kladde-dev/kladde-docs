@@ -67,7 +67,7 @@ One crate. `kladde` re-exports everything a hand-written impl names, so you neve
 kladde = "0.1"
 ```
 
-If you are writing a *library* on top of `kladde-persist` and have no reason to pull the facade in, depend on `kladde-persist` directly and point the macro at it instead — see [the derive macro's path resolution](../design/persistence/derive-macro.md#path-resolution).
+If you are writing a *library* on top of `kladde-persist` and have no reason to pull the facade in, depend on `kladde-persist` directly and point the macro at it instead — see [the derive macro's path resolution](../derive-macro.md#path-resolution).
 
 ## A complete example
 
@@ -209,7 +209,7 @@ This mechanism — a type-driven recursive free hook — is **designed but not i
 Until it lands, replacing or dropping an owning value orphans its allocation.
 That is harmless against the current in-memory backend and will not be once there is a real file.
 
-See [Freeing](../design/persistence/freeing.md).
+See [Freeing](../freeing.md).
 
 ## The obligations you are taking on
 

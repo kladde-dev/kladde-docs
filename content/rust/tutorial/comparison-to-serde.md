@@ -20,7 +20,7 @@ For a 100 MB structure with a one-field edit:
 | --- | --- | --- |
 | cost of one small edit | rewrite 100 MB | append tens of bytes |
 | cost of a read | free (already in memory) | free (already in memory) |
-| cost of opening | parse 100 MB | read the snapshot, replay the journal |
+| cost of opening | parse 100 MB | read the compact form, replay the journal |
 | crash mid-edit | lose everything since the last write | lose nothing acknowledged |
 
 The interesting column is the first one, and it is the whole reason kladde exists.

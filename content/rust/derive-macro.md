@@ -91,7 +91,7 @@ This is the most-felt gap, because a generic wrapper is exactly the kind of thin
 
 **Field attributes.**
 There is no `#[kladde(skip)]` for a non-persisted field, no `#[kladde(id = ...)]` for rename-robust identity, and no way to declare a default for a field added later.
-The last two become necessary when [evolution](../../../spec/schema/evolution.md) lands.
+The last two become necessary when [evolution](../spec/schema/evolution.md) lands.
 
 **Fine-grained enum mutation**, as above.
 

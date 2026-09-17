@@ -14,10 +14,11 @@ A mutation does two things.
 1. It updates the in-memory value — immediately, synchronously, before the call returns.
 2. It appends records describing the byte-level change to the **journal**, which is durable before the call returns.
 
-Separately and later, the journal is **folded** into the snapshot: the records are applied to the compact on-disk form and the journal is discarded.
+Separately and later, the journal is **folded**: the records are applied to the file's compact form, written to fresh pages, and a new segment is started.
 
 The important consequence: durability comes from step 2, not from the fold.
-A mutation that has returned survives a crash whether or not a fold has happened.
+A mutation that has returned survives an application crash whether or not a fold has happened.
+A *power* cut is the case where the distinction matters — see [what a crash costs](#what-a-crash-costs) below.
 
 ## What a crash costs
 
@@ -75,7 +76,7 @@ The open question is whether an automatic fold triggered by journal size should 
 Today they are the same thing, which gives atomicity for free but means memory cannot be bounded inside a very long sequence of mutations.
 
 If your application does something like "rebuild the whole index in one pass," this is the question that determines whether that pass can bound its memory use.
-See [Journal semantics](../design/journal/semantics.md) for the design discussion.
+See [Transactions and batches](../../impl/transactions-and-batches.md#checkpoint-versus-commit) for the design discussion.
 
 ## What is not implemented
 
@@ -83,7 +84,8 @@ Everything on this page describes intent.
 Concretely missing:
 
 - real file storage — there is no `Kladde::open(path)`;
-- the copy-on-write fold and its commit marker;
+- the copy-on-write page protocol and the alternating header commit;
+- the address table;
 - journal framing and checksums;
 - the automatic flush trigger;
 - reclamation of freed space.
