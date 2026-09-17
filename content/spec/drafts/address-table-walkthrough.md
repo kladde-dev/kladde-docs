@@ -151,7 +151,7 @@ The entry is removed by the flush that frees the id, and two fields move into th
 ```rust
 struct RecyclableId {
     mentions: u32,                // physically present statements naming this id
-    tombstone: Option<StatementRef>,  // None once it has been swept
+    tombstone: Option<StatementRef>,  // None once the tombstone dies, i.e. at `mentions == 1`
 }
 ```
 
@@ -160,8 +160,10 @@ The two that remain are the two that are read.
 `mentions` still has to be decremented as statements naming the id are physically dropped, and still releases the tombstone's `A` pin at 1 — so a page rewrite that decodes a statement looks the id up in `AllocationMeta` first and in the pool if it is not there.
 `tombstone` is what that release has to reach, what a consolidator consults to decide whether to re-emit a tombstone it has decoded, and what becomes `anchor` if the id is allocated again.
 
-Within the pool `mentions` only ever falls, since nothing writes a statement naming a non-existent id; when it reaches 0 the tombstone has been swept, both fields are spent, and the entry is a bare recyclable id.
-Re-allocation moves it the other way: the pool entry is removed and a fresh `AllocationMeta` is inserted with `mentions` carried over and `anchor` set to the tombstone, while `size`, `fragment_count` and `statement_bytes` start from the new incarnation's statements.
+Within the pool `mentions` only ever falls, since nothing writes a statement naming a non-existent id.
+At 1 the tombstone dies and `tombstone` is cleared to `None` — at that moment, not when the tombstone is later swept, since the slab slot is freed at the `1 → 0` pin transition and a ref held past it would be the stale ref the slab's design rules out.
+At 0 the tombstone has been swept as well, both fields are spent, and the entry is a bare recyclable id.
+Re-allocation moves it the other way: the pool entry is removed and a fresh `AllocationMeta` is inserted with `mentions` carried over and `anchor` set to the tombstone if there still is one, while `size`, `fragment_count` and `statement_bytes` start from the new incarnation's statements.
 
 | Field             | Updated when                                                                                                                | Value                                                                                                                                                                 | Read for                                                                                                                                                  |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |

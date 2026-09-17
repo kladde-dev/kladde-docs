@@ -243,7 +243,7 @@ Until that point the tombstone must outlive every older statement mentioning the
 **A tombstoned id keeps no `AllocationMeta` entry.** The flush that frees an id removes it and moves the only two fields a non-existent id still reads — `mentions` and a reference to its tombstone — into the id allocator's recyclable set, which is tracking that id anyway.
 The rest is either constant (`size` 0, `fragment_count` 0, `grow_witness` `None`) or already recorded in the tombstone's own `StatementRecord` (`statement_bytes`, its two framing bytes).
 A page rewrite that decodes a statement therefore looks its id up in the allocation map first and in the recyclable set if it is not there; the tombstone reference is what the `A`-pin release has to reach, what a consolidator consults before re-emitting a tombstone it has decoded, and what becomes `anchor` if the id is allocated again.
-Within the recyclable set `mentions` only falls, since nothing writes a statement naming a non-existent id, and at 0 both fields are spent and the entry is a bare recyclable id.
+Within the recyclable set `mentions` only falls, since nothing writes a statement naming a non-existent id: at 1 the tombstone dies and the reference to it is cleared, at that moment rather than when the tombstone is later swept, since the slab slot is freed at the `1 → 0` pin transition; at 0 both fields are spent and the entry is a bare recyclable id.
 
 See [[address-table-walkthrough#Preliminaries]] for a field-by-field account of when each of these is written and read.
 
@@ -329,6 +329,10 @@ Walking the id's fragments and collecting the distinct owners therefore yields a
 For a tombstone that test is exact, by the lemma that nothing older than a tombstone is live ([[address-table-walkthrough#Findings]] item 3): if no dead mention remains then nothing older than the tombstone remains at all, so dropping it could change neither existence nor the size, and it could retire while still the anchor — which the `mentions == 1` rule above never permits for an id that has been re-allocated, since the new incarnation's own statements hold `mentions` above 1.
 For a `Shrink` the same test would be unsound, and instructively so: statements older than a `Shrink(id, n)` stay *alive* below `n` and carry their extents with them, so `Shrink(7,10)`@5 of [[address-table-walkthrough#(v) Consolidate `L2`, the leaf holding the anchor — break 1]] would pass the test while `Ref(7,0,1000,P1)`@3 is live with an extent of 1000, and dropping the anchor would take the size from 60 to 1000.
 The cost is `O(fragment_count)` per check, which is why it is left out for now; it is worth revisiting if tombstones of re-allocated ids turn out to linger in practice.
+Another option could be to trigger this counting every time a kladde file (or `Segment`) is loaded (which has to iterate over the entire address table anyway), or to trigger it when the size of the recyclable id pool grows above a certain threshold (since a 2-byte overhead per live id is fine, but a 2-byte overhead per id that ever *was* live is unbounded in relative terms).
+The two triggers do not cover the same population, and the load-time one covers strictly more.
+A tombstone frozen by re-allocation belongs to an id that is *not* in the recyclable pool, so no pool-size threshold ever notices it, and `mentions == 1` can never fire for it again; only a sweep reaches it.
+A load also needs no fragment walk at all: it decodes every physically present statement anyway, so it can count mentions per id directly and retire every tombstone that is its id's only statement, which is the same answer the walk would give, more cheaply.
 
 This produces a cascade that clears itself without any special pass.
 Statements shadowed by a tombstone contribute no content bytes, so their pages sink toward zero live fraction and become victims; consolidating those pages drops the statements, which decrements `mentions`; when it reaches 1 the tombstone goes dead, sinking *its* page's live fraction, which eventually recycles it too.
@@ -434,6 +438,13 @@ An id becomes reusable as soon as a tombstone for it is committed, whatever `men
 This is safe because the tombstone matches every probe and outranks every statement below it: the new incarnation's statements are written above it, and the old incarnation can therefore never win a probe, no matter how much of it survives physically.
 An earlier draft required `mentions == 0` before recycling, which coupled id availability to the cleaning of unrelated pages — the hostage effect — for no correctness benefit.
 
+**Recycle lowest-id-first, preferring ids whose tombstone is already dead, and never hold a recyclable id back in favour of a fresh one.**
+What decides the order is delta encoding rather than tombstones: `id_delta` costs a byte more for every factor of 128 by which the *live* id set is spread out, and it costs that once per id per page — which in the many-small-allocations regime this design targets is once per statement, against two bytes once per stale tombstone.
+Lowest-free-first keeps the live set packed and needs only a min-heap or a bitmap scanned for its lowest bit.
+Within that, ids whose tombstone is already dead (`mentions == 1`, so the pool entry's `tombstone` is already `None`) are free to recycle — no anchor carried into the new incarnation, nothing older left to deny — and are worth taking first.
+`mentions` itself is a weak signal pointing the opposite way from the intuition: recycling freezes the `mentions == 1` path permanently, so taking an id at `mentions == 2` discards progress that was one page-clean from completing while taking one at `mentions == 50` discards almost nothing — a tiebreak at most, and it should lose to density wherever the two disagree.
+Holding recyclable ids back in favour of fresh ones is the worst option, since it consumes the 32-bit id space at the rate of allocations *ever made* and sparsifies the live set, paying per statement to save per id; the sweep described above is the better answer to the same worry, and reaches tombstones this one cannot.
+
 Re-allocating a tombstoned id does **not** retire the tombstone, which is worth stating because the opposite is the intuitive guess.
 The tombstone is exactly what keeps a smaller re-allocation from exposing the tail of the old one, and it says so in the ordinary way: it owns the uncovered ranges as fragments, and its `F` pins hold it there until something newer covers them.
 
@@ -447,7 +458,7 @@ Two obligations come with recycling this early:
 
 One case needs no tombstone at all: freeing and re-allocating an id **within a single flush**.
 A tombstone and the new incarnation's statements would make contradicting existence claims in one epoch, which [[#No conflicts within each epoch]] forbids.
-The flush should instead emit statements that fully cover the new extent, which denies the old incarnation on its own — a bare `Undefined(id, 0, n)` suffices when no content is written.
+The flush should instead emit statements that fully cover the new extent, which denies the old incarnation on its own — a bare `Undefined(id, 0, n)` plus a `Shrink(n)` if the new allocation is smaller than the old one suffice when no content is written.
 
 ## Design directions and trade-offs
 
@@ -470,6 +481,10 @@ Per-statement epochs would spend bytes on every statement to relax a constraint 
 Not required for read correctness; keeping it makes data-page coverage a plain counter and consolidation locally decidable.
 Relaxing it enables `O(1)` copy-on-write clones of allocations and deduplication, at the price of refcounted coverage and clone-aware consolidation.
 Since it is a writer invariant invisible to readers, choosing the strict form now costs nothing later.
+
+- **Decision:** I don't want to pursue copy-on-write clones for now.
+  It adds complexity, opens a potential zip-bomb like attack vector, and most of the use case can probably be captured by `Move` ops which we should add instead.
+  If the need for copy-on-write cloning comes up later, it might be worth exploring an implementation on the data type level rather than the allocation level (i.e., have allocations reference disjoint segments of the file for their payloads, but implement a data type on top of it that can resolve multiple indices or queries to the same allocation, just as one would do with normal, non-persisted, in-memory allocations).
 
 **Inline threshold.**
 The encoding fixes the ceiling at 252 bytes (one-byte tag arithmetic); the policy threshold belongs far below it.
