@@ -68,6 +68,7 @@ ORDER = [
     "superseded/whole-entry-address-table.md",
     # Work in progress; last, because nothing else may depend on it.
     "drafts/index.md",
+    "drafts/open-issues.md",
     "drafts/move-op.md",
     "drafts/segments.md",
 ]
