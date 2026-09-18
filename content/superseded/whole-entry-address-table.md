@@ -19,7 +19,7 @@ A statement in a page with a higher epoch shadowed any statement about the same 
 **Chunks** were the unit of content: an allocation was a sequence of chunks, each of arbitrary size up to `MAX_PAGE_CONTENT`, each contained entirely in one page, with logical offsets implied by the lengths before them rather than stored.
 A chunk could reference a reserved **null page** to state that its range was uninitialized.
 
-That chunk model is the direct ancestor of today's `Ref` and `Undefined` statements, and two of its rules [survive unchanged](../impl/flush.md#cutting-content-across-pages): the writer prefers maximal pieces, and whoever rewrites bytes may re-cut them.
+That chunk model is the direct ancestor of today's `Ref` and `Zero` statements, and two of its rules [survive unchanged](../impl/flush.md#cutting-content-across-pages): the writer prefers maximal pieces, and whoever rewrites bytes may re-cut them.
 The free-re-cutting argument — that consolidation should pack pages the way stock is cut rather than the way bins are packed — was developed here.
 
 ## Why per-chunk statements were rejected first

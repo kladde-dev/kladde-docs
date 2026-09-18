@@ -16,7 +16,7 @@ One rule covers both page kinds, and it is the rule data pages already follow.
 
 **Content bytes are charged to the page that physically holds them.**
 Every `Bytes` fragment names a page and an offset, so when a fragment is destroyed, decrement that page's coverage by the fragment's length.
-A `Ref`'s fragments point into a `Data` page; an `Inline`'s fragments point into the `AddressTable` page carrying the payload; an `Undefined` fragment points nowhere and costs nothing.
+A `Ref`'s fragments point into a `Data` page; an `Inline`'s fragments point into the `AddressTable` page carrying the payload; a zero fragment points nowhere and costs nothing.
 Splitting a fragment changes nothing, since both halves still cover the same bytes.
 
 An inline payload is therefore just content that happens to live in a table page, and it gets per-byte accounting for free — no per-statement payload counters, no special case, the same line of code.
@@ -37,7 +37,7 @@ A statement is live exactly while `pins > 0`, and `pins` is a **single counter o
 | `F` | any statement | a fragment resolves *through* it | that fragment is destroyed or re-owned |
 | `A` | the **anchor** — the newest `Shrink` or `Tombstone` — and a `Grow` with `n == size` | the anchor: on becoming newest; a `Grow`: while it may be the sole witness of the size | the anchor: a newer `Shrink` or `Tombstone` supersedes it, or — a tombstone anchor only — `mentions` falls to 1; a `Grow`: as soon as `size > n`, or `n <= anchor.n`, or it falls below `anchor_epoch` |
 
-So a content statement (`Ref`, `Inline`, `Undefined`) holds only `F`, a `Grow` holds only `A`, and a `Shrink` or `Tombstone` can hold both.
+So a content statement (`Ref`, `Inline`, `Zero`) holds only `F`, a `Grow` holds only `A`, and a `Shrink` or `Tombstone` can hold both.
 
 *Why one counter and not two.*
 A `Shrink` holds `A` and `F` simultaneously — with `Ref(id, 0, 1000)`@3, `Shrink(id, 10)`@5 and `Ref(id, 50, 10)`@9 the size is 60 and `[10, 50)` resolves *through* the `Shrink` — and no consumer ever asks which kind a pin is.
@@ -129,7 +129,7 @@ Dropping a `Grow` also carries no anchor hazard, because it does not anchor the 
 Three separate arguments say the `A` pin cannot be replaced by a test on live state.
 
 **It may be the sole witness of the size.**
-With `Grow(id, 100)`@5 and `Ref(id, 0, 10)`@9 and nothing older, `[10, 100)` resolves to `Undefined` *by default*, so the statement owns no fragment and denies nothing — yet dropping it would shrink the id from 100 to 10.
+With `Grow(id, 100)`@5 and `Ref(id, 0, 10)`@9 and nothing older, `[10, 100)` resolves to zero *by default*, so the statement owns no fragment and denies nothing — yet dropping it would shrink the id from 100 to 10.
 More starkly, an allocation created and never written has `Grow(id, n)` as the *only evidence it exists*.
 
 **Dropping an anchor readmits older extents.**
@@ -176,8 +176,8 @@ So the honest statement of the rule is **not** that an implementation cannot kno
 Redundant `Shrink` statements can survive, and the over-count is not bounded at one per allocation.
 
 A superfluously emitted `Shrink` becomes the anchor, holds `A` alone, and dies at the next shrink — unless an intervening grow hands it fragments over `[n, size)`, in which case it was not superfluous for long.
-A non-anchor `Shrink` lingers whenever it owns a fragment, and it can own one *while being redundant*: when the range it wins would resolve to `Undefined` anyway, because nothing older matches it.
-In fragment-map terms the redundancy is sharp — dropping such a statement would turn its `UndefinedExplicitly` fragment into an `UndefinedByDefault` one covering the same range with the same resolved content.
+A non-anchor `Shrink` lingers whenever it owns a fragment, and it can own one *while being redundant*: when the range it wins would resolve to zero anyway, because nothing older matches it.
+In fragment-map terms the redundancy is sharp — dropping such a statement would turn its `ZeroExplicitly` fragment into a `ZeroByDefault` one covering the same range with the same resolved content.
 
 **What bounds it.**
 Order an id's physically present `Shrink` statements newest-first: one can hold an `F` pin only if its bound is strictly below the minimum bound among all newer ones, so the live set is **contained in the running-minimum chain**.

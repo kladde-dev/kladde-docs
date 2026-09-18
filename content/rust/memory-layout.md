@@ -41,7 +41,7 @@ And it makes `StatementRef` a `NonZeroU32`, so `Option<StatementRef>` is four by
 
 **Why `pins` is `u32` and not `u16`.**
 `pins = F + A`, where `A <= 1` per statement — one statement is either the anchor or the grow witness, never both, since the first is a `Shrink`/`Tombstone` and the second a `Grow`.
-`F` is the one that does not fit: `F <= payload_size` holds only for `Ref`, `Inline` and `Undefined`, which win probes inside their own extent.
+`F` is the one that does not fit: `F <= payload_size` holds only for `Ref`, `Inline` and `Zero`, which win probes inside their own extent.
 A `Shrink` or `Tombstone` wins the gaps *between* newer statements, anywhere in `[n, size)` or `[0, size)`, so its `F` is bounded by the allocation's fragment count and nothing smaller: `Shrink(id, 0)`, then a grow to 1 MiB and 100 000 scattered writes, leaves it owning about 100 000 fragments.
 
 **A debug-only generation array** is worth keeping in mind.
@@ -57,8 +57,8 @@ use std::mem::MaybeUninit;
 /// Safe facade: `size_of::<Fragment>() == 12`
 enum Fragment {
 	Bytes { offset: PageOffset, statement: StatementRef, page: u32 },
-	UndefinedExplicitly { statement: StatementRef },
-	UndefinedByDefault,
+	ZeroExplicitly { statement: StatementRef },
+	ZeroByDefault,
 }
 
 /// Compact internal representation for the B-tree: `size_of::<CompactFragment>() == 10`
@@ -78,8 +78,8 @@ struct PageOffset(u16);
 impl From<CompactFragment> for Fragment {
     fn from(cf: CompactFragment) -> Self {
         match cf.tag_or_offset {
-            0xffff => Fragment::UndefinedByDefault,
-            0xfffe => Fragment::UndefinedExplicitly {
+            0xffff => Fragment::ZeroByDefault,
+            0xfffe => Fragment::ZeroExplicitly {
                 statement: unsafe {
                     StatementRef(NonZeroU32::new_unchecked(cf.statement.assume_init()))
                 }
@@ -103,12 +103,12 @@ impl From<Fragment> for CompactFragment {
                 statement: MaybeUninit::new(statement.0.get()),
                 page: MaybeUninit::new(page),
             },
-            Fragment::UndefinedExplicitly { statement } => CompactFragment {
+            Fragment::ZeroExplicitly { statement } => CompactFragment {
                 tag_or_offset: 0xfffe,
                 statement: MaybeUninit::new(statement.0.get()),
                 page: MaybeUninit::uninit(),
             },
-            Fragment::UndefinedByDefault => CompactFragment {
+            Fragment::ZeroByDefault => CompactFragment {
                 tag_or_offset: 0xffff,
                 statement: MaybeUninit::uninit(),
                 page: MaybeUninit::uninit(),

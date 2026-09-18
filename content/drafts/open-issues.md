@@ -22,16 +22,14 @@ The capacity question does not disappear — it becomes "how many pages may a se
 
 This is first because it is the part a prototype has to build first, and because a reader could reasonably implement either.
 
-### 2. Journal pages cannot satisfy the page framing
+### 2. ~~Journal pages cannot satisfy the page framing~~ — resolved
 
-[Page framing](../spec/file-format.md#page-framing) requires **every** non-header page, `Journal` kind included, to carry a `content_size` and a `crc` over its content.
-The same document then exempts journal appends from the whole-page-write rule, and [Durability](../spec/durability.md#what-is-guaranteed) has transactions appended incrementally without an fsync.
+*Was:* page framing required every non-header page, `Journal` kind included, to carry a CRC over its content, while journal appends were exempted from whole-page writes — and a page appended to incrementally cannot keep a valid CRC unless every append rewrites it.
 
-A page that is appended to incrementally cannot keep a valid CRC over its content unless every append rewrites the whole page — which is exactly what the exemption exists to avoid.
-So either `Journal` pages are exempt from the framing as well as from the write rule, or appends do rewrite the page.
-The documents say neither.
+**Resolved** by scoping the framing to "every page except the pages that make up the current journal" and dropping `Journal` from the `kind` values.
+Journal pages now carry no framing at all, and their integrity rests solely on the chained, epoch-salted transaction CRCs — which is what [How much of the framing is load-bearing](../spec/file-format.md#how-much-of-the-framing-is-load-bearing) already implied and now says.
 
-Note this also touches the recovery argument: [How much of the framing is load-bearing](../spec/file-format.md#how-much-of-the-framing-is-load-bearing) says only the header CRCs and the journal's *chained transaction* CRCs are load-bearing, which reads as though journal page CRCs are expected not to be meaningful — but it never says so.
+Kept here, struck through, until the neighbouring items settle, because the shape of a journal page is still open under item 1 below.
 
 ### 3. The durability promise is stated unqualified where users read it
 
@@ -85,12 +83,14 @@ It is listed here because a reader who checks whether conversion exists will con
 [The layers](../spec/index.md#the-layers) says a kladde file is described by five layers and then tabulates six.
 Trivial, and only listed because the table is the first thing a new implementer reads.
 
-### 9. Which "read" the complexity bound governs
+### 9. Which "read" the complexity bound governs — narrowed, not closed
 
-[Guarantees](../spec/index.md#guarantees-an-implementation-must-provide) requires "read any byte of any allocation" in `O(log F)`.
-The [hub page](../index.md) says reads never touch the file and cost what a native in-memory access costs.
+[Guarantees](../spec/index.md#guarantees-an-implementation-must-provide) requires "read any byte of any allocation" in `O(log F)`, and now also that "a non-mutating operation once the file is loaded" have no overhead over a non-persisted type.
+The second row is the application read, so the ambiguity the first row used to carry is mostly gone.
 
-These describe different operations — the storage-level read that a tool or a `Copy` performs, versus the application-level read of a backed value — but the spec table does not say which, and the two answers differ by a logarithm.
+What remains: the first row still does not say it means the *storage-level* read, and it counts only the fragment-map lookup.
+If data pages are [not resident after loading](../impl/index.md#the-four-structures), reaching the bytes is a `pread` rather than a dereference, so the honest bound is `O(log F)` lookups *plus* whatever fetching the bytes costs.
+Worth saying, since the whole point of the row is to tell an implementer what is achievable.
 
 ### 10. Grouping is "free" but constrained
 
@@ -115,7 +115,8 @@ A prototype needs all of:
 - how the pages of one segment are **chained** — a next-page pointer in each page, a contiguous run, or a list the header carries — and how recovery follows the chain without trusting anything unvalidated;
 - where a transaction's bytes sit within a page, and whether a transaction may **span** pages (it must, for a transaction larger than `MAX_PAGE_CONTENT`);
 - the **framing**: prefix width, checksum algorithm, and how the chained epoch-salted CRC is computed and verified;
-- the resolution of [contradiction 1](#1-the-journal-is-two-different-things) and [contradiction 2](#2-journal-pages-cannot-satisfy-the-page-framing), both of which sit squarely here.
+- the resolution of [contradiction 1](#1-the-journal-is-two-different-things), which sits squarely here.
+  [Contradiction 2](#2-journal-pages-cannot-satisfy-the-page-framing--resolved) is settled — journal pages carry no framing — which fixes the integrity story but not the layout.
 
 This is first because it is genuinely undesigned, and because every other part of the write path depends on its answer.
 
@@ -124,12 +125,9 @@ This is first because it is genuinely undesigned, and because every other part o
 [Record kinds](../spec/journal.md#record-kinds) gives the record set and their semantics, and nothing about their bytes: no tags, no field widths, no varint discipline.
 Both append and replay need it, and replay is what makes the whole design crash-safe, so this cannot be improvised and fixed later.
 
-### 3. Bootstrapping — creating a file is nowhere described
+### 3. Bootstrapping — partly described
 
-"Create new files" is in the prototype's scope, and no document describes the initial state.
-Open: what epoch a fresh file starts at and which header slot it occupies; what the first header's address-table payload contains; how the root allocation and the schema-table allocation come into existence before there is an address table to describe them; whether creation is a degenerate flush or a distinct path.
-
-It is third rather than first only because it is small once the two above are settled.
+Still open in [Header pages](../spec/file-format.md#header-pages): what the first header's address-table payload contains, how the root and schema-table allocations come into existence before an address table describes them, and whether creation is a degenerate flush or a distinct path.
 
 ### 4. File extension is not covered by the durability argument
 

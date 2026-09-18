@@ -45,7 +45,7 @@ Placement, compaction, and fold timing are all free, so two implementations will
 - Choose any placement policy — which reusable page a flush writes to, and how content is cut across pages.
 - Consolidate, or not consolidate, by any strategy.
 - Group application operations into transactions however it likes, including not at all.
-- Fold at any time, and optimize the fold arbitrarily, so long as the result is indistinguishable from an in-order replay given that [unwritten bytes are unspecified](allocations.md#content-semantics).
+- Fold at any time, and optimize the fold arbitrarily, so long as the result is indistinguishable from an in-order replay.
 - Assign, reuse, and recycle ids however it likes.
 - Expose any API shape at all.
   Nothing above the storage layer is constrained.
@@ -55,7 +55,7 @@ Placement, compaction, and fold timing are all free, so two implementations will
 - Change an allocation's id, size, or content during consolidation.
 - Overwrite a page reachable from either on-disk header.
 - Continue a session after a failed `fsync`.
-- Assume that unwritten bytes hold any particular value.
+- Return anything but zero for a byte that has not been explicitly written.
 - Depend on the descriptor table's index assignment for any semantic purpose.
 - Emit a fingerprint that depends on table layout, traversal order, or any runtime-incidental state.
 

@@ -102,9 +102,9 @@ Periodically the journal is **folded**: its records are applied, the on-file sta
 The protocol that commits this is in [Durability](durability.md#the-flush-protocol).
 
 An implementation has wide latitude in *what* it writes.
-It may apply records naively in order, or it may optimize — cancelling an allocate/free pair that never escaped, dropping a write that a later write fully supersedes, eliding a shrink-then-grow.
+It may apply records naively in order, or it may optimize — cancelling an allocate/free pair that never escaped, dropping a write that a later write fully supersedes, eliding a grow-then-shrink that returns to the original size with nothing written in between.
 It may reorder freely, so long as the result is indistinguishable from an in-order replay.
-Because [unwritten content is unspecified](allocations.md#content-semantics), "indistinguishable" is a weaker and more permissive condition than it first appears.
+"Indistinguishable" is measured against [content semantics](allocations.md#content-semantics): every byte has one right answer, so a fold's freedom is to reach that answer by any route rather than to choose among answers.
 
 ### Checkpoint versus commit
 

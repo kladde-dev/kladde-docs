@@ -17,7 +17,7 @@ Nothing else.
 An allocation is an untyped byte range; what its bytes mean is a question for the [schema](schema/) layer, and the storage layer never asks it.
 
 An allocation is **not contiguous on file**.
-Its content is described by whatever `Ref`, `Inline` and `Undefined` statements currently win its offsets, and those may point into any number of data pages, in any order, with gaps that resolve to `Undefined` and occupy no data pages at all.
+Its content is described by whatever `Ref`, `Inline` and `Zero` statements currently win its offsets, and those may point into any number of data pages, in any order, with gaps that resolve to zero and occupy no data pages at all.
 
 *Why not contiguous.*
 Contiguity would have to be maintained against every write, which under copy-on-write means relocating an allocation whenever a byte in its middle changes.
@@ -53,7 +53,7 @@ This is safe because the tombstone matches every probe and outranks every statem
 
 One case needs no tombstone at all: freeing and re-allocating an id **within a single flush**.
 A tombstone and the new incarnation's statements would make contradicting existence claims in one epoch, which the [no-conflicts rule](address-table.md#no-conflicts-within-each-epoch) forbids.
-The flush must instead emit statements that fully cover the new extent, which denies the old incarnation on its own — a bare `Undefined(id, 0, n)` plus a `Shrink(id, n)` if the new allocation is smaller than the old one.
+The flush must instead emit statements that fully cover the new extent, which denies the old incarnation on its own — a bare `Zero(id, 0, n)` plus a `Shrink(id, n)` if the new allocation is smaller than the old one.
 
 ### Pointer encoding
 
@@ -82,14 +82,18 @@ See [Journal](journal.md#ordering).
 
 ## Content semantics
 
-A reader of an allocation **must not assume anything** about the contents of any part of it that has not been explicitly written.
+Every byte of an allocation that has not been explicitly written **reads as zero**.
 
-Concretely: after an allocation is created, its bytes are unspecified.
-After a resize, only the first `min(old_size, new_size)` bytes are preserved; everything beyond is unspecified.
-An implementation may leave whatever was physically there, may zero it, or may report it as `Undefined`, and a file is conforming either way.
+Concretely: after an allocation is created, its bytes are zero.
+After a resize, the first `min(old_size, new_size)` bytes are preserved and everything beyond reads as zero.
+Every conforming implementation returns the same bytes for the same file; there is no latitude here.
 
-This rule is what licenses most of the interesting optimizations in a flush — an implementation is free to elide a shrink immediately followed by a growth, because the bytes in the re-grown region were unspecified in the first place.
-It also means a tool must never infer meaning from bytes outside the region a schema accounts for.
+Zero costs nothing to store — a range that resolves to zero by default occupies no data bytes — so this is a constraint on what a *reader* returns rather than on what a writer must write.
+What it does constrain is the flush: a shrink immediately followed by a growth may no longer be elided outright, because the re-grown region must read as zero rather than as whatever survived.
+In practice the shrink is [emitted regardless](../impl/liveness.md#emission-when-a-resize-must-write-a-statement) and the re-grown range then resolves through it, so the statements on disk are unchanged; what is lost is the narrow case where the fold could previously emit nothing at all.
+
+A consequence worth naming for data-type authors: a type whose zero bit-pattern is its natural default — an empty string, a null pointer, a false flag, a zero integer — needs no initialisation write at all.
+A vector of a thousand empty strings is one `Grow`.
 
 ## Free space
 

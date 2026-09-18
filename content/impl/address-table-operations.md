@@ -50,7 +50,7 @@ fn read(id: Id, offset: AllocationOffset, len: u32) -> Result<Bytes> {
                 let skip = at - range.start;
                 out.extend(page_image(page)[po + skip ..][.. take]);
             }
-            UndefinedExplicitly { .. } | UndefinedByDefault => out.extend_undefined(take),
+            ZeroExplicitly { .. } | ZeroByDefault => out.extend_zeros(take),
         }
         at += take;
     }
@@ -160,7 +160,7 @@ fn split(id: Id, at: AllocationOffset) {
     let shifted = match fragment {
         Bytes { page, offset, statement } =>
             Bytes { page, offset: offset + (at - range.start), statement },
-        other => other,                              // Undefined carries no offset
+        other => other,                              // zero fragments carry no offset
     };
     if let Some(s) = shifted.statement() { pin(s); } // the statement now owns two
     fragments.insert((id, at), shifted);
@@ -195,7 +195,7 @@ The only non-trivial primitive: split at both boundaries, drop what is strictly 
 ### `coalesce_around(id, range)`
 
 Merge each new boundary with its neighbour when both fragments resolve identically **and** name the same statement.
-Two `UndefinedByDefault` ranges merge; a `Shrink`-owned `Undefined` and an `UndefinedByDefault` must not.
+Two `ZeroByDefault` ranges merge; a `Shrink`-owned zero range and a `ZeroByDefault` one must not.
 Two `Bytes` fragments merge only when they are contiguous in the same page *and* owned by the same statement.
 
 Merging releases one pin and decrements `fragment_count`.
@@ -244,9 +244,9 @@ fn apply(stmt: Statement, page: PageNumber, framing: u8) {
                       Bytes { page, offset: payload_offset(stmt), statement: s });
             coverage[page] += size;                     // payload charged per byte
         }
-        Undefined { offset, size } => {
+        Zero { offset, size } => {
             grow_size_to(id, offset + size);
-            overwrite(id, offset..offset+size, UndefinedExplicitly { statement: s });
+            overwrite(id, offset..offset+size, ZeroExplicitly { statement: s });
         }
         Grow { n }   => { grow_size_to(id, n); set_grow_witness(id, s, n); }
         Shrink { n } => { set_anchor(id, s); shrink_size_to(id, n); }
@@ -265,8 +265,8 @@ fn grow_size_to(id: Id, n: u32) {
     meta.size = n;
     // The exposed range is owned by the anchor if there is one, else by nobody.
     let f = match meta.anchor {
-        Some(a) => { pin(a); UndefinedExplicitly { statement: a } }
-        None    => UndefinedByDefault,
+        Some(a) => { pin(a); ZeroExplicitly { statement: a } }
+        None    => ZeroByDefault,
     };
     // Extends the last fragment if it already resolves that way; else one entry.
     insert_or_extend(id, exposed, f);
@@ -358,7 +358,7 @@ fn free(id: Id) {
 The allocation-map entry goes away at the free; only `mentions` and the tombstone reference survive, in the recyclable set.
 
 **Free and re-allocate in one flush** is the one case that emits no tombstone, since a tombstone and the new incarnation would make contradicting existence claims in one epoch.
-Emit statements that fully cover the new extent instead — `Undefined(id, 0, n)`, plus `Shrink(id, n)` if the new allocation is smaller than the old one.
+Emit statements that fully cover the new extent instead — `Zero(id, 0, n)`, plus `Shrink(id, n)` if the new allocation is smaller than the old one.
 
 ### `drop_physically(stmt)`
 
@@ -419,7 +419,7 @@ The consolidator finds a statement's fragments by range-scanning the fragment ma
 
 | statement kind | scan range |
 | --- | --- |
-| `Ref`, `Inline`, `Undefined` | `(id, offset) .. (id, offset + size)` |
+| `Ref`, `Inline`, `Zero` | `(id, offset) .. (id, offset + size)` |
 | `Shrink(id, n)`, `Tombstone` | `(id, n) .. (id, size)` — the only probes it can win |
 | `Grow` | none; it wins nothing |
 
@@ -436,7 +436,7 @@ It never needs an id's physically present statements across the table, because i
 
 A fragment-map-driven consolidator will faithfully re-emit the content a statement owns and **silently corrupt the file** if that statement was also the anchor, because being the anchor is not a fragment and is therefore invisible in the fragment map.
 
-Concretely: with `Ref(7,0,1000,P1)`@3 in another page and `Shrink(7,10)`@5 in the victim, re-emitting only `Undefined(7,10,40)` drops the sole `Shrink`, `anchor_epoch` falls back to `-1`, and the size becomes `max(1000, 50, 60) = 1000` — re-exposing stale bytes across `[10, 1000)`.
+Concretely: with `Ref(7,0,1000,P1)`@3 in another page and `Shrink(7,10)`@5 in the victim, re-emitting only `Zero(7,10,40)` drops the sole `Shrink`, `anchor_epoch` falls back to `-1`, and the size becomes `max(1000, 50, 60) = 1000` — re-exposing stale bytes across `[10, 1000)`.
 
 > **A page holding a statement with an `A` pin cannot be rewritten without transferring the anchor.**
 

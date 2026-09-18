@@ -12,15 +12,15 @@ The resolved-content view, and the structure everything else hangs off: an order
 
 ```rust
 enum Fragment {
-    /// Resolves through a `Ref` or `Inline`. `offset` points at the data,
-    /// never at the framing of an `Inline` statement.
+    /// Resolves through a `Ref` or `Inline`. `(page, offset)` points
+    /// at the *data*, never at the *framing* of the statement.
     Bytes { page: u32, offset: PageOffset, statement: StatementRef },
 
-    /// Resolves through an `Undefined`, `Shrink`, or `Tombstone`.
-    UndefinedExplicitly { statement: StatementRef },
+    /// Resolves to zero through a `Zero`, `Shrink`, or `Tombstone`.
+    ZeroExplicitly { statement: StatementRef },
 
-    /// Resolves to `Undefined` because no statement matches these probes.
-    UndefinedByDefault,
+    /// Resolves to zero because no statement matches these probes.
+    ZeroByDefault,
 }
 
 struct PageOffset(u16);        // offset into a page
@@ -41,20 +41,20 @@ That keeps a fragment small and a split cheap, and it makes the next rule mandat
 ### The fragments of an existing id exactly partition `[0, size)`
 
 A hole is not representable: omitting an entry does not describe a gap, it extends the preceding fragment, and the predecessor lookup then answers with a neighbour's bytes.
-That is a wrong-bytes bug rather than a missing-data bug — the worst kind to leave representable — so a range that resolves to `Undefined` *by default* sits in the map like any other.
+That is a wrong-bytes bug rather than a missing-data bug — the worst kind to leave representable — so a range that resolves to zero *by default* sits in the map like any other.
 
 The only allocation with no fragments at all is a zero-sized one, where `[0, 0)` is empty and `Grow(id, 0)` is the allocation's only trace, in memory as on disk.
 
-### Where `UndefinedByDefault` comes from
+### Where `ZeroByDefault` comes from
 
 A range resolves by default when no statement matches its probes.
-Two sources:
+Two sources, the first of which needs a name: call `[previous_size, new_size)` the **exposed range** of a growth — the offsets that were outside the allocation before it and are inside it after.
 
 - a bare `Grow`, which matches no probe and therefore leaves its exposed range unowned;
-- a `Ref` or `Inline` written at `offset > previous_size`, which leaves `[previous_size, offset)` uncovered;
+- a `Ref` or `Inline` written at `offset > previous_size`, whose exposed range `[previous_size, offset)` it leaves uncovered;
 - and, away from any resize, a range that was simply never written: write `[0, 10)` and then `[20, 35)`, and `[10, 20)` is matched by nothing.
 
-In the first two cases the range is `UndefinedByDefault` **exactly when the id has no anchor**, and the condition is decisive rather than merely necessary: an anchor `Shrink(id, n)` or `Tombstone` matches every probe from `n` upward, hence every probe in an exposed range, and it outranks everything below it; nothing above it reaches there, since content above the anchor is bounded by the size the allocation had before this flush.
+In the first two cases the range is `ZeroByDefault` **exactly when the id has no anchor with `n <= probe`**, and the condition is decisive rather than merely necessary: an anchor `Shrink(id, n)` or `Tombstone` matches every probe from `n` upward (with `n = 0` for `Tombstone`), hence every probe in an exposed range, and it outranks everything with older `epoch`; nothing above it reaches there, since content above the anchor is bounded by the size the allocation had before this flush.
 And an id with no anchor has never decreased in size, so every content statement it has is bounded by `previous_size` and none reaches into the gap either.
 
 What an anchor does in general is put a floor under where an unowned hole can survive: `Shrink(id, n)` matches every probe from `n` up, so holes live only in `[0, n)`, and a `Tombstone`, anchoring at `n = 0`, leaves none at all.
@@ -63,20 +63,22 @@ That is why a tombstoned id's fragments are always owned, and why a re-allocated
 ### Consequences the implementation must honour
 
 - **Coalescing compares the whole variant.**
-  Adjacent fragments merge only when they resolve identically *and* name the same statement, so two `UndefinedByDefault` ranges merge but a `Shrink`-owned `Undefined` and an `UndefinedByDefault` must not — they differ in exactly the thing that carries a pin.
+  Adjacent fragments merge only when they resolve identically *and* name the same statement, so two `ZeroByDefault` ranges merge but a `Shrink`-owned zero range and a `ZeroByDefault` one must not — they differ in exactly the thing that carries a pin.
 - **A size increase adds at most one fragment; a write past the end at most two.**
   Raising the size either extends the last fragment, when the exposed range resolves the way that fragment already does, or adds one entry for it.
   A `Ref` or `Inline` at `offset > size` adds that entry *and* its own, which is the only way a single statement adds two.
 - **The blow-up is bounded.**
-  `UndefinedByDefault` fragments are separated by owned ones, so they at most double an id's entry count.
-- **Every dereference of `statement` must handle its absence.**
-  Re-owning a range releases the previous owner's pin, and an `UndefinedByDefault` fragment has no owner to release.
+  `ZeroByDefault` fragments are separated by owned ones, so they at most double an id's entry count.
+- **Every code path that reaches for a fragment's owner must handle the variant that has none.**
+  `ZeroByDefault` carries no `statement` field at all, so this is a match arm rather than a null check — and it is the arm that is easy to forget, because the other two variants both have one.
+  The concrete case is pin accounting: overwriting a range releases the previous owner's pin, and a `ZeroByDefault` fragment has no owner and no pin to release, so a blind release there would decrement some unrelated statement or panic.
+  The same applies to a consolidator asking "does this fragment belong to the statement I am rewriting?", where the answer for this variant is always no.
 - **Growth into default territory is free.**
-  If the last fragment is already `UndefinedByDefault`, raising the size extends it with no new entry at all, since its end is implied by the size.
+  If the last fragment is already `ZeroByDefault`, raising the size extends it with no new entry at all, since its end is implied by the size.
 
 ## 2. The statement slab
 
-One record per statement that still has a reason to live.
+One `StatementRecord` per live statement.
 
 ```rust
 struct StatementSlab {
@@ -91,7 +93,7 @@ struct StatementRecord {
     /// slot instead, or 0 to end the list.
     page_or_next: u32,
 
-    /// Number of reasons this statement must stay; see [Liveness](liveness.md).
+    /// Number of reasons this statement must stay; see Section "Liveness".
     /// Nonzero for live statements, zero for empty slots.
     pins: u32,
 }
@@ -137,7 +139,7 @@ Nothing ever iterates the allocation map in id order at run time; consolidation'
 | field | updated when | read for |
 | --- | --- | --- |
 | `size` | any flush that resizes the id, writes past its end, frees it, or re-allocates it | answering `size()` in `O(1)`; bounding reads; supplying the extent of an id's last fragment |
-| `fragment_count` | on every fragment created or destroyed for this id | defragmentation ranking — description overhead relative to `size`. Counts `UndefinedByDefault` fragments, which are real entries with real memory cost |
+| `fragment_count` | on every fragment created or destroyed for this id | defragmentation ranking — description overhead relative to `size`. Counts `ZeroByDefault` fragments, which are real entries with real memory cost |
 | `statement_bytes` | when a statement for this id is created, or when one's pins reach zero | defragmentation ranking, paired with `fragment_count` |
 | `mentions` | `+1` per statement naming the id written or read at open; `−1` when one is physically dropped | one thing only: releasing a tombstone anchor's pin when the count falls to 1 |
 | `anchor`, `grow_witness` | `anchor`: when a `Shrink` or `Tombstone` is written. `grow_witness`: when a `Grow` is written, and when `size` moves past its bound | moving the anchor pin; telling a consolidator that a victim page holds an anchor it must replace |

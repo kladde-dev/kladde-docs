@@ -18,7 +18,8 @@ Three candidate kinds compete in that queue:
 3. **Allocation defragmentation** — rewrite a heavily patched region of one allocation as a single fresh `Ref` into fresh data pages; reclaims statement bytes *and* the partially dead data behind the patches, and is the only kind that also shrinks the in-memory fragment map.
 
 Kind 3 is worth naming separately because it pays down a debt the other two cannot see.
-An allocation stippled with `[data] [undefined] [data] …` patches costs statements forever until someone rewrites the region as one `Ref` — and the [`Undefined` usage note](../spec/address-table.md#statement-types) explicitly permits filling the don't-care gaps with arbitrary bytes, which is what makes the rewrite legal.
+An allocation stippled with `[data] [zeros] [data] …` patches costs statements forever until someone rewrites the region as one `Ref` — and the [`Zero` usage note](../spec/address-table.md#statement-types) explicitly permits rewriting such a stipple as one `Ref` over a range whose gaps the consolidator fills with actual zeros, which is what makes the rewrite legal.
+Those bytes are being written anyway, so zeroing them costs nothing beyond the `memset`.
 
 All three emit the same kind of output — fresh pages plus fresh statements — so they compose with the flush's ordinary work.
 

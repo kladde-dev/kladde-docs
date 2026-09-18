@@ -37,7 +37,7 @@ This is what lets the address table decline copy-on-write clones: cloning would 
   A head or interior move is where the cost sits, because closing the gap shifts every later offset in the source.
   Restricting the record to head and tail moves may be worth it; it has not been decided.
 - **What becomes of the source range.** Three candidates, not interchangeable:
-  - `Undefined(src_id, src_offset, len)` — one statement, no shifting, but the source keeps its size and carries a hole until defragmentation pays it down.
+  - `Zero(src_id, src_offset, len)` — one statement, no shifting, but the source keeps its size and carries a hole until defragmentation pays it down.
   - `Shrink(src_id, src_offset)` — available for a tail move only, and then the cheapest of the three.
   - a splice closing the gap — `O(fragments behind the splice point)` restated statements, which [the address table](../spec/address-table.md#design-directions) identifies as this design's weak spot.
 

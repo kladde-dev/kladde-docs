@@ -17,7 +17,7 @@ For each id the segment touches, walk its record subsequence maintaining whether
 enum Source {
     Literal(ArenaPos),      // bytes buffered in the journal's byte arena
     Storage(Id, Offset),    // must be read from the file
-    Undefined,              // uninitialized; may be anything
+    Zero,                   // resolves to zero; occupies no bytes anywhere
 }
 ```
 
@@ -27,7 +27,7 @@ A byte's origin is found by taking the greatest key `≤` the offset and advanci
 
 The distinction that drives everything:
 
-- **Fresh** ids — an `Alloc` appears in this segment — start `{0 → Undefined}`.
+- **Fresh** ids — an `Alloc` appears in this segment — start `{0 → Zero}`.
   Their content is *fully symbolic*; nothing about them ever needs to be read.
 - **Persistent** ids — live from an earlier flush — start `{0 → Storage(self, 0)}`.
 
@@ -37,9 +37,9 @@ Every table therefore begins with exactly **one** entry, which is what makes the
 
 | record | effect on the table |
 | --- | --- |
-| `Alloc(s)` | fresh table, `Undefined` over `[0, s)` |
+| `Alloc(s)` | fresh table, `Zero` over `[0, s)` |
 | `Write(off, bytes)` | overwrite `[off, off+len)` with `Literal` |
-| `Resize(s′)` | clip to `s′`, or extend with `Undefined` |
+| `Resize(s′)` | clip to `s′`, or extend with `Zero` |
 | `Splice(off, old_len, new)` | overwrite, then **shift the suffix segments** |
 | `Copy(src, …)` | overwrite the destination range with pieces taken from *src's current table* |
 | `Free` | mark released |
@@ -243,7 +243,8 @@ A depth change is a single-page event: when the header's child list outgrows its
 
 Build the oracle before the optimizer.
 
-Keep a naive in-order replayer as a reference implementation, and differential-test the optimized flush against it: same segment, then compare the entire observable state — every live allocation's geometry and bytes, with `Undefined` ranges **masked out**, since comparing them would reject legal schedules.
+Keep a naive in-order replayer as a reference implementation, and differential-test the optimized flush against it: same segment, then compare the entire observable state — every live allocation's geometry and bytes, compared in full.
+Nothing is masked out: every byte of a live allocation has exactly one right answer, so a schedule that differs from the replayer anywhere is wrong.
 Randomized segments with shrinking.
 
 Two properties, asserted separately because they fail differently:

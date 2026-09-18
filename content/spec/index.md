@@ -49,8 +49,9 @@ Explicitly **not** fixed, and expected to vary:
 - **placement** — which reusable page a flush writes to, and how it cuts content across pages;
 - **consolidation** — whether an implementation reclaims garbage at all, and by what policy;
 - **when** a flush happens, and how aggressively it optimizes what it writes;
-- **batching** — how an implementation groups application operations into transactions;
+- **batching** — how an implementation joins subsequent application-level operations or transactions into larger library-level transactions when the application temporarily allows the library to do so (useful during large batch operations).
 - everything above the storage layer: the API shape, the mutation mechanism, the container implementations.
+  These decisions should follow conventions of the host language to make a kladde implementation as idiomatic as possible, and this specification is language agnostic.
 
 The test for whether something belongs in the fixed column is simple: *could two implementations disagree about it and still read each other's files?*
 If yes, it stays free.
@@ -71,19 +72,20 @@ An implementation must support the [bounds](address-table.md#bounds) the format 
 **Asymptotic complexity.**
 The format is designed so that these are achievable, and an implementation that misses them is conforming but not useful:
 
-| operation | required |
-| --- | --- |
-| read any byte of any allocation | `O(log F)` in the number of live fragments |
-| allocation size query | `O(1)` |
-| a mutation, in memory | `O(log F)` per contiguous range touched |
-| a flush | `O((k + s) · log F)` for `k` dirty ranges and `s` statements rewritten, plus the pages it writes |
-| opening a file | `O(n)` in the file's live bytes |
+| operation                                        | required                                                                                         |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| read any byte of any allocation                  | `O(log F)` in the number of live fragments                                                       |
+| allocation size query                            | `O(1)`                                                                                           |
+| a mutation, in memory                            | `O(log F)` per contiguous range touched                                                          |
+| a flush                                          | `O((k + s) · log F)` for `k` dirty ranges and `s` statements rewritten, plus the pages it writes |
+| opening a file                                   | `O(n)` in the file's live bytes                                                                  |
+| a non-mutating operation once the file is loaded | no overhead over a comparable non-persisted data type                                            |
 
 Nothing may require a scan of the file at run time, and nothing may require a stop-the-world pause: reclamation is incremental by construction, and a flush's work is bounded by a budget the implementation chooses.
 
 **Crash atomicity of transactions.**
-A transaction is all-or-nothing under both an application crash and a power cut.
-This is the one guarantee application authors build on directly, and it is why transactions — unlike batches — are part of this specification.
+A transaction is all-or-nothing under both an application crash and a power cut, and ordering is preserved: if a transaction survives a crash or power cut, then all previous transactions survive too, in their recorded order.
+These are the guarantees application authors build on directly, and they are why transactions — unlike batches — are part of this specification.
 
 ## Versioning
 
