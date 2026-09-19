@@ -9,25 +9,25 @@ What an allocation is, how it is named, how one refers to another, and what its 
 An **allocation** is a byte range that application data lives in.
 It has:
 
-- a **stable id**, assigned once and never changed;
+- a **stable id**, assigned once, never changed, and never zero — which leaves zero available to encode a null pointer;
 - a **size** in bytes;
 - **content**, resolved from the [address table](address-table.md).
 
 Nothing else.
 An allocation is an untyped byte range; what its bytes mean is a question for the [schema](schema/) layer, and the storage layer never asks it.
 
-An allocation is **not contiguous on file**.
+An allocation is **not necessarily contiguous on file**.
 Its content is described by whatever `Ref`, `Inline` and `Zero` statements currently win its offsets, and those may point into any number of data pages, in any order, with gaps that resolve to zero and occupy no data pages at all.
 
 *Why not contiguous.*
 Contiguity would have to be maintained against every write, which under copy-on-write means relocating an allocation whenever a byte in its middle changes.
-Giving it up costs a lookup per read — served in memory — and buys a flush that writes only what changed.
+Giving it up costs a lookup per read — served in memory, and paid only while loading or when a flush relocates bytes, since application reads go to the loaded values rather than to the file — and buys a flush that writes only what changed.
 
-A **zero-sized allocation** is the natural endpoint of the rules rather than a special case: no content statements at all, and an on-file existence consisting of a single `Grow(id, 0)`.
-Nothing may assume "at least one content statement": even a large allocation can have none, if it is entirely uninitialized.
+A **zero-sized allocation** is the natural endpoint of the rules rather than a special case: no content statements at all, and an on-file existence consisting of a single statement such as `Grow(id, 0)`.
+Nothing may assume "at least one content statement": even a large allocation can have none, if it is entirely left to its default content of all-zero bytes.
 
 There is no distinction between resizable and fixed-size allocations.
-*Why not:* it existed so that neighbours of a fixed-size allocation could rely on it not moving, and in this design nothing is adjacent to anything — every reshape is a statement edit.
+*Why not:* it existed in a [[relocatable-heap|superseded design]] so that neighbours of a fixed-size allocation could rely on it not moving, and in this design nothing is adjacent to anything — every reshape is a statement edit.
 
 ## Stable ids, and why pointers are not addresses
 
@@ -53,7 +53,7 @@ This is safe because the tombstone matches every probe and outranks every statem
 
 One case needs no tombstone at all: freeing and re-allocating an id **within a single flush**.
 A tombstone and the new incarnation's statements would make contradicting existence claims in one epoch, which the [no-conflicts rule](address-table.md#no-conflicts-within-each-epoch) forbids.
-The flush must instead emit statements that fully cover the new extent, which denies the old incarnation on its own — a bare `Zero(id, 0, n)` plus a `Shrink(id, n)` if the new allocation is smaller than the old one.
+The flush must instead emit statements that fully cover the new extent, which denies the old incarnation on its own — for example a bare `Zero(id, 0, n)` plus a `Shrink(id, n)` if the new allocation is smaller than the old one.
 
 ### Pointer encoding
 
@@ -68,17 +68,17 @@ That is [an implementation choice](../rust/pointers.md#why-exactly-one-copyable-
 
 ## Ownership
 
-Every allocation has exactly **one owning pointer**.
+In the current spec, every allocation has exactly **one owning pointer**.
 This is an invariant of the format, not a convention: the value graph reachable from the root is a tree of ownership, and a tool may rely on that when walking it.
 
-Non-owning references — pointers that may target an interior offset of an allocation rather than its start, and that may alias — are **reserved but not specified**.
-They interact with liveness in ways that are not settled: a reference must not outlive the allocation it points into, and nothing currently enforces that.
-**TBD.**
-
 Reclamation follows ownership.
-Dropping or overwriting an owning value releases the allocation it owns, recursively, before the pointer to it becomes unreachable.
-The ordering matters for crash consistency: nothing is freed until whatever superseded it is already published.
-See [Journal](journal.md#ordering).
+Dropping or overwriting an owning value releases the allocation it owns, recursively, in the same transaction as the write that superseded the pointer and after it.
+Both halves matter.
+*After*, because a [journal prefix](journal.md#ordering) that freed an allocation while something still pointed at it would be dangling; *in the same transaction*, because replay truncates at transaction boundaries, so no recovered state is ever left holding an allocation that is unreachable and unfreed.
+
+A future design that allows aliasing for specific pointers is **TBD**.
+Ideas include defining an `AliasingPointer` type in the schema that is completely separate from the normal owning pointer type, a `Reference` type that allows aliases to owning pointers but must not outlive them, or a combination: an `OwnedSharedPointer` that owns the allocation but may have additional `Reference`s while it is alive.
+Its design constraints are that aliasing should be somehow restricted to a subtree of the data structure, and that generic tooling should be able to assume that common `Opaque` types that the tool knows about use pointers that no *other* type aliases.
 
 ## Content semantics
 
@@ -86,13 +86,13 @@ Every byte of an allocation that has not been explicitly written **reads as zero
 
 Concretely: after an allocation is created, its bytes are zero.
 After a resize, the first `min(old_size, new_size)` bytes are preserved and everything beyond reads as zero.
-Every conforming implementation returns the same bytes for the same file; there is no latitude here.
+Two conforming implementations therefore return the same bytes for the same allocation of the same file.
 
-Zero costs nothing to store — a range that resolves to zero by default occupies no data bytes — so this is a constraint on what a *reader* returns rather than on what a writer must write.
-What it does constrain is the flush: a shrink immediately followed by a growth may no longer be elided outright, because the re-grown region must read as zero rather than as whatever survived.
-In practice the shrink is [emitted regardless](../impl/liveness.md#emission-when-a-resize-must-write-a-statement) and the re-grown range then resolves through it, so the statements on disk are unchanged; what is lost is the narrow case where the fold could previously emit nothing at all.
+Zeroing uninitialized bytes of allocations costs nothing to store — a range that resolves to zero by default occupies no data bytes — so this is a constraint on what a *reader* returns rather than on what a writer must write.
+What it does constrain is the flush: a shrink immediately followed by a growth may not be elided outright, because the re-grown region must read as zero rather than as whatever survived.
+In practice the shrink is [emitted regardless](../impl/liveness.md#emission-when-a-resize-must-write-a-statement) and the re-grown range then resolves through it, so the statements on disk are unchanged.
 
-A consequence worth naming for data-type authors: a type whose zero bit-pattern is its natural default — an empty string, a null pointer, a false flag, a zero integer — needs no initialisation write at all.
+A consequence worth naming for data-type authors: a type whose zero bit-pattern is its natural default — an empty string, a null pointer, a `false` flag, a zero integer — needs no initialisation write at all.
 A vector of a thousand empty strings is one `Grow`.
 
 ## Free space

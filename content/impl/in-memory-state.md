@@ -100,7 +100,7 @@ struct StatementRecord {
 ```
 
 **A slab indexed by a dense integer, not a hash map.**
-`StatementRef` is an index, which is exactly what the specification's "at most `2^32` statements" bound buys, and it makes every lookup a array index rather than a hash.
+`StatementRef` is an index, which is exactly what the specification's "at most `2^32 - 1` statements" bound buys, and it makes every lookup a array index rather than a hash.
 Dead slots thread into a free list through `page_or_next`, which is unambiguous because a slot is free exactly when `pins == 0`.
 
 **Slot 0 is never handed out.**
@@ -166,6 +166,8 @@ Within the recyclable set `mentions` only falls, since nothing writes a statemen
 ## 4. The page table
 
 For every page: its kind, its epoch, and its live-byte counter — its **coverage**.
+
+The counter is 32 bits rather than page-sized, because a page's live bytes exceed its capacity whenever several `Ref` statements claim the same bytes — which is legal, and [bounded](../spec/address-table.md#bounds) precisely so that 32 bits suffice.
 
 Pages are bucketed by live fraction, a handful of buckets suffices, together with an age mark.
 That makes victim selection `O(1)` rather than a priority queue's `O(log P)`, with `O(1)` bucket moves as counters change.

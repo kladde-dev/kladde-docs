@@ -266,32 +266,32 @@ Two properties, asserted separately because they fail differently:
 
 ## Walk-through of an epoch
 
-A finer-grained version of the [recovery case analysis](../spec/durability.md#case-analysis-for-a-power-cut-during-flush-e--1), tracking page states step by step.
-This exists because the argument is easy to get subtly wrong, and because two specific corrections were needed when it was first checked.
+A finer-grained version of the [recovery case analysis](../spec/durability.md#case-analysis-for-a-power-cut-during-flush-e), tracking page states step by step.
+This exists because two points in the argument are easy to get backwards: most pages of the older world are also in the newer one and therefore simply live, and a header slot whose write never arrived holds a *valid* stale header rather than garbage.
 
 **During the journaling phase of epoch `E`:**
 
 - Header `E − 2` exists and has been fsynced.
 - Header `E − 1` was written but not fsynced yet.
 - Journal segment `E` is partially written, not fsynced.
-- Every `Data` and `AddressTable` page live at `E − 1` has been fsynced and is **live** — this flush must not overwrite it.
+- All `Data` and `AddressTable` pages of world `E − 1` have been fsynced and are **live** — this flush must not overwrite them.
 - Pages of world `E − 2` that are *not also* part of world `E − 1` are **fallback**, and must not be overwritten either.
-  Pages belonging to both worlds are simply live, which is the first correction: most pages of world `E − 2` are in both.
-- Journal segment `E − 1` is likewise fallback, being referenced by header `E − 2`.
+  This includes journal segment `E − 1`, which header `E − 2` names.
+  Pages belonging to both worlds are simply live, which is the common case rather than the exception: typically most pages of world `E − 2` are in both.
 
-**Steps 1–7** write data and address-table pages for epoch `E`, then fsync.
+**Steps 1–7** of [[spec/durability#The flush protocol|the flush protocol]] write data and address-table pages for epoch `E`, then fsync.
 No header page is touched.
 On a power cut during or after this:
 
 - *If the slot written by flush `E − 1` holds header `E − 1`* — guaranteed once fsync `E` completed, possible earlier — state `E − 1` is recovered, the start page of journal `E` is found from that header, and a possibly-empty prefix of journal `E` is replayed.
-- *If that slot does not hold header `E − 1`* — either its write tore, leaving an invalid CRC, or it never reached the disk, leaving the stale header `E − 3` with a **valid** CRC, which is the more common sub-case and the second correction — then header `E − 2` has the highest epoch among valid headers and governs.
+- *If that slot does not hold header `E − 1`* — either its write tore, leaving an invalid CRC, or it never reached the disk, leaving the stale header `E − 3` with a **valid** CRC, which is the more common sub-case — then header `E − 2` has the highest epoch among valid headers and governs.
   Recovery reaches state `E − 2` and replays journal `E − 1` in full, arriving at the same state as the other case with an empty journal-`E` prefix.
   The lost journal-`E` transactions were never covered by a completed fsync, so this is within the guarantee.
 
 Recovery is indifferent between the torn and never-arrived sub-cases, because it selects the valid header with the *highest epoch* rather than merely a valid one.
 
 **Step 8** overwrites header `E − 2` with header `E`.
-This turns journal `E − 1` and everything reachable only from header `E − 2` from fallback to **reusable**, and turns everything reachable from `E − 1` but not from `E` from live to **fallback**.
+This turns journal `E − 1` and everything reachable only from header `E − 2` from fallback to **reusable**, and it turns everything reachable from `E − 1` but not from `E` from live to **fallback** (including journal `E`).
 On a power cut during or after:
 
 - *If the slot holds header `E`*: the flush completed; recover to state `E` plus whatever prefix of journal `E + 1` accumulated.

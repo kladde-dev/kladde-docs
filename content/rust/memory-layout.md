@@ -130,7 +130,7 @@ Every width below is forced by [the specification's bounds](../spec/address-tabl
 | `PageOffset` | `u16` | page sizes are at most 64 KiB |
 | `AllocationOffset` | `u32` | allocation sizes are bounded by `2^32` |
 | page number | `u32` | page numbers are 32 bit |
-| `StatementRef` | `NonZeroU32` | at most `2^32` statements in a file |
+| `StatementRef` | `NonZeroU32` | at most `2^32 - 1` statements in a file, and zero is the free niche |
 | `framing_len` | `u8` | a statement's framing is at most 21 bytes |
 
 A language without niche optimisation pays four to eight bytes more per optional reference and is otherwise unaffected.

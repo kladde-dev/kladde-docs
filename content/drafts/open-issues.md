@@ -65,9 +65,9 @@ With three readers the field is harder to remove than the text suggests, and any
 
 [Allocations](../spec/allocations.md#reclamation-is-not-part-of-this-specification) says whether an implementation reclaims garbage is unconstrained, and that one which never consolidates is conforming.
 
-[Guarantees](../spec/index.md#guarantees-an-implementation-must-provide) says "reclamation is incremental by construction" as though it were a property the spec asserts, and [Headroom](../spec/durability.md#headroom) makes it a **must** that an implementation reserve enough slack "that a nearly-full disk cannot deadlock the very consolidation that would free space" — a requirement phrased around a mechanism the spec elsewhere declines to require.
+[Guarantees](../spec/index.md#guarantees-an-implementation-must-provide) says "reclamation is incremental by construction" as though it were a property the spec asserts.
 
-The resolution is probably that *incrementality* is required of whatever reclamation an implementation does, while *doing any* is not — but as written the three passages disagree.
+What remains is the wording of the guarantees row: the resolution is presumably that *incrementality* is required of whatever reclamation an implementation does, while *doing any* is not.
 
 ### 7. Conversion is gone, and the flush still reasons about it
 

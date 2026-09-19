@@ -175,10 +175,16 @@ An implementation must support these, and must fail cleanly rather than silently
 - **Allocation sizes** are bounded by `2^32 - 1` bytes ≈ 4.3 GB.
   Note the `-1`, i.e., allocations of size 4 GiB are (just) *not* supported.
   A varint-encoded offset into an allocation therefore uses up to `⌈32/7⌉ = 5` bytes.
-- The **number of statements** in a file must not exceed `2^32`, and an implementation may limit it further, so that statements can be tracked with 32-bit indices.
+- The **number of statements** in a file must not exceed `2^32 - 1`, and an implementation may limit it further, so that statements can be tracked with 32-bit indices that leave zero free as a niche, and counted — per id, say — in 32-bit counters.
   Even at an optimistic 3 bytes per statement that still allows 13 GB of address-table pages alone.
 - The **framing** of a statement — its encoded length excluding an `Inline` payload — is at most **21 bytes**: a `Ref` with 5 bytes of `id_delta`, 1 tag byte, 5 bytes of `offset_delta`, 3 bytes of `size`, and 7 bytes of `address`.
   Most statements are far shorter.
+- The **framings of the live statements naming any one `id`** must sum to at most `2^32 - 1` bytes, so that a reader can track an allocation's description cost in a 32-bit counter.
+  That allows over four gigabytes of address table describing a single allocation — at the 21-byte maximum, more than 200 million live statements for one id — so no writer approaches it without already being pathological.
+  An allocation's *fragments* need no bound of their own: they are non-empty and disjoint within `[0, size)`, so there are never more of them than the allocation has bytes.
+- The `size` fields of the **live `Ref` statements pointing into any one `Data` page** must sum to at most `2^32 - 1`, so that a reader can track a page's live bytes in a 32-bit counter.
+  The [[#statement types|writer invariant]] holds that sum below one page's worth.
+  This bound binds only files that let several `Ref` statements claim the same byte, which is legal, which a reader must therefore survive, and which without a bound would let the sum reach `2^47`.
 
 ## Design directions
 
