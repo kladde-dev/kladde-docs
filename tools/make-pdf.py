@@ -89,12 +89,18 @@ TABLE_PAD = 2.0        # slack per column, see _allocate
 
 
 def slug(text):
-    """Lowercase-hyphen slug, matching the ids GitHub and Quartz generate."""
+    """Lowercase-hyphen slug, matching the ids GitHub and Quartz generate.
+
+    github-slugger, which is what Quartz uses, lowercases, drops every
+    character that is not a word character, space, or hyphen, and turns
+    spaces into hyphens.  Two consequences are easy to get wrong and are
+    what this function exists to reproduce: runs of hyphens are *not*
+    collapsed, so `A — b` becomes `a--b`, and `_` is a word character, so
+    `replacement_anchor(id)` keeps its underscore.
+    """
     text = re.sub(r"`([^`]*)`", r"\1", text)          # drop code ticks
-    text = re.sub(r"[*_]", "", text)                   # drop emphasis
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9 \-]", "", text)
-    return re.sub(r"-+", "-", text.replace(" ", "-")).strip("-")
+    text = re.sub(r"[^\w \-]", "", text.lower(), flags=re.UNICODE)
+    return text.replace(" ", "-")
 
 
 def doc_slug(rel):
