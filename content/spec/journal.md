@@ -98,7 +98,7 @@ Replay is purely mechanical and involves no application code.
 
 ## Folding
 
-Periodically the journal is **folded**: its records are applied, the on-file state is brought up to date, and a fresh segment is started.
+Periodically the journal is **folded**: its records are applied, the on-file state is brought up to date, and a fresh journal segment is started.
 The protocol that commits this is in [Durability](durability.md#the-flush-protocol).
 
 An implementation has wide latitude in *what* it writes.

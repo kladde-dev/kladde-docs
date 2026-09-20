@@ -71,7 +71,7 @@ enum TransactionState {
 ```
 
 `transaction_depth` and `batch_depth` count begins minus ends, with an implied zero in any variant where they are absent.
-Two cursors, `committed_cursor <= ready_cursor <= ops.len()`, divide the operations since the last flush into three segments:
+Two cursors, `committed_cursor <= ready_cursor <= ops.len()`, divide the operations since the last flush into three spans:
 
 - `committed := ops[..committed_cursor]` — written to the on-storage journal;
 - `ready := ops[committed_cursor..ready_cursor]` — pending operations of the current batch, ready to be appended;

@@ -2,7 +2,7 @@
 title: The flush
 ---
 
-How a journal segment becomes pages: what to write, where to put it, and in what order.
+How the journal becomes pages: what to write, where to put it, and in what order.
 
 The [protocol that commits a flush](../spec/durability.md#the-flush-protocol) is normative; everything about *what* a flush chooses to write is not, and is described here.
 
@@ -11,7 +11,7 @@ This is a small optimizing compiler, and it should be built like one: **oracle f
 ## Phase A — the fold
 
 Per id, linear, no graph.
-For each id the segment touches, walk its record subsequence maintaining whether it exists, its current size, and a **piece table** over its bytes.
+For each id the journal touches, walk its record subsequence maintaining whether it exists, its current size, and a **piece table** over its bytes.
 
 ```rust
 enum Source {
@@ -27,7 +27,7 @@ A byte's origin is found by taking the greatest key `≤` the offset and advanci
 
 The distinction that drives everything:
 
-- **Fresh** ids — an `Alloc` appears in this segment — start `{0 → Zero}`.
+- **Fresh** ids — an `Alloc` appears in the journal — start `{0 → Zero}`.
   Their content is *fully symbolic*; nothing about them ever needs to be read.
 - **Persistent** ids — live from an earlier flush — start `{0 → Storage(self, 0)}`.
 
@@ -55,7 +55,7 @@ This is not a micro-optimization; it is what keeps the common case at one or two
 - **A splice on a fresh allocation costs zero I/O.**
   It is a table edit; the shift never touches bytes.
   Since strings and vectors splice in loops, this is probably the largest single win available.
-- **A transient allocation — fresh and freed in the same segment — never touches storage.**
+- **A transient allocation — fresh and freed in the same journal — never touches storage.**
   Recycle its id and emit nothing.
 - **An identity piece emits nothing.**
   `Storage(self, k)` with `k` equal to the segment start means the bytes are already where they belong.
@@ -170,7 +170,7 @@ Only conversion-style chains block, but the guarantee is weaker than an uncondit
 
 **A worked example.**
 After an earlier flush the file holds `A1` (size 256) and `A2` (size 128), both persistent.
-This segment records:
+The journal records:
 
 ```
 1.  Copy(src = A1, src_off = 0, len = 64, dst = A2, dst_off = 32)
@@ -184,8 +184,8 @@ Note the scheduler did not *postpone* the free; it ran it as early as the depend
 With priority rule 1, the transfer runs first, the release becomes ready and top-priority, and `A3` reuses `A1`'s space with no address-level reasoning at all.
 
 **Hoisting.**
-At fold time, if a `Storage(src, …)` piece references a range this segment will **disturb**, read those bytes immediately and turn the piece into a `Literal`.
-Disturbed means any of: `src` is released this segment, the range is written this segment, or `src` is reshaped this segment (since it may relocate).
+At fold time, if a `Storage(src, …)` piece references a range this flush will **disturb**, read those bytes immediately and turn the piece into a `Literal`.
+Disturbed means any of: this flush releases `src`, writes the range, or reshapes `src` (since it may relocate).
 All three are known during the fold, which already runs at flush with full read access.
 
 Applied to the example: `A1` is released, so `A2`'s middle piece becomes a literal during the fold.
@@ -207,7 +207,7 @@ The weakest point is that the hoist condition is conservative on *reshaped*: an 
 Set a flag when any record produces a piece `Storage(other_id, …)` with `other_id` not equal to the id itself.
 That is `Copy` and conversion-on-a-persistent-id, and nothing else — in particular **not** plain resize, and **not** splice, whose source and destination are the same id.
 
-When the flag is clear at flush — the overwhelming majority of segments — run *releases → first-fit-decreasing claims → reshapes → writes* with no graph, no hoisting, and no per-piece analysis.
+When the flag is clear at flush — the overwhelming majority of flushes — run *releases → first-fit-decreasing claims → reshapes → writes* with no graph, no hoisting, and no per-piece analysis.
 
 ## The header as write buffer
 
@@ -243,9 +243,9 @@ A depth change is a single-page event: when the header's child list outgrows its
 
 Build the oracle before the optimizer.
 
-Keep a naive in-order replayer as a reference implementation, and differential-test the optimized flush against it: same segment, then compare the entire observable state — every live allocation's geometry and bytes, compared in full.
+Keep a naive in-order replayer as a reference implementation, and differential-test the optimized flush against it: same journal, then compare the entire observable state — every live allocation's geometry and bytes, compared in full.
 Nothing is masked out: every byte of a live allocation has exactly one right answer, so a schedule that differs from the replayer anywhere is wrong.
-Randomized segments with shrinking.
+Randomized journals with shrinking.
 
 Two properties, asserted separately because they fail differently:
 

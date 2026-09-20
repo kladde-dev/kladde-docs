@@ -7,7 +7,7 @@ Pseudocode for every operation on the [in-memory state](in-memory-state.md).
 Two levels are in play and it is worth separating them before reading any of this.
 The **application level** mutates a value's native in-memory representation and appends a record to the journal; it does not touch the fragment map at all.
 The **storage level** — everything below — describes what the *file* currently says, and changes only when a flush writes statements or a page is rewritten.
-So `write_bytes` below is not what `vec.push()` calls; it is what a flush calls once, after folding a whole journal segment.
+So `write_bytes` below is not what `vec.push()` calls; it is what a flush calls once, after folding a whole journal.
 
 Notation: Rust-like, with `?` for "may fail", and with the obvious map operations left undefined.
 `F` is the number of live fragments, `S` the number of live statements.
@@ -104,7 +104,7 @@ fn open(file) -> State {
 
     // 5. Replay the journal segment the header names, stopping at the
     //    first transaction whose chained CRC fails.
-    for txn in file.journal(header.next_segment).valid_prefix() { replay(txn); }
+    for txn in file.journal(header.first_journal_page).valid_prefix() { replay(txn); }
     state
 }
 ```

@@ -14,7 +14,7 @@ A mutation does two things.
 1. It updates the in-memory value — immediately, synchronously, before the call returns.
 2. It appends records describing the byte-level change to the **journal**, which is durable before the call returns.
 
-Separately and later, the journal is **folded**: the records are applied to the file's compact form, written to fresh pages, and a new segment is started.
+Separately and later, the journal is **folded**: the records are applied to the file's compact form, written to fresh pages, and a new journal segment is started.
 
 The important consequence: durability comes from step 2, not from the fold.
 A mutation that has returned survives an application crash whether or not a fold has happened.

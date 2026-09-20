@@ -20,7 +20,7 @@ Those decisions are documented in the language-specific documentations (currentl
 | [Liveness accounting](liveness.md) | pins, coverage, and what makes a statement or a page reclaimable |
 | [Id recycling](id-recycling.md) | which recyclable id to hand out next, and why the order matters |
 | [Write-phase state](write-phase-state.md) | what is tracked between flushes, and why it is derived from the journal |
-| [The flush](flush.md) | folding a journal segment into pages: piece tables, hoisting, scheduling, and what gets written |
+| [The flush](flush.md) | folding the journal into pages: piece tables, hoisting, scheduling, and what gets written |
 | [Consolidation](consolidation.md) | reclaiming garbage: victim selection, the three candidate kinds, and the budget |
 | [Transactions and batches](transactions-and-batches.md) | grouping operations into transactions, and the buffering state machine |
 | [Related work](related-work.md) | where the design comes from, and where it parts company |

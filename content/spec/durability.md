@@ -30,7 +30,7 @@ Both are excluded by construction rather than by cleanup.
 
 Page states are **derived, not stored**.
 
-Define the **world** of a header as everything reachable from it: its address-table pages, the data pages those reference, and every page of the *next* epoch's **journal segment**, of which the header names only the first — the rest are reached by following the segment from there.
+Define the **world** of a header as everything reachable from it: its address-table pages, the data pages those reference, and every page of the *next* epoch's **journal segment**, of which the header names only the first page; the rest are reached from it.
 At any moment the two on-disk header slots define at most two worlds that can (and typically do) overlap, and every page is in exactly one of three states:
 
 - **live** — reachable from the newer on-disk header's world;
@@ -63,16 +63,16 @@ Appends to it are protected by the chained, epoch-salted transaction CRCs and ar
 
 Flush `E` then proceeds:
 
-1. **Fold** segment `E` in memory into content descriptions for each allocation's dirty ranges.
+1. **Fold** journal `E` in memory into content descriptions for each allocation's dirty ranges.
 2. **Choose target pages**: reusable pages, else grow the file.
 3. **Write data pages** for the dirty ranges.
    Remaining space in each new page may be filled with live content relocated from sparse pages — consolidation that costs no extra page writes.
 4. **Write further consolidation pages**, within whatever budget the implementation chooses.
 5. **Write address-table pages**: the statements describing everything touched in steps 3–4, plus any [tombstones](address-table.md#statement-types).
 6. **Choose a reusable start page for journal segment `E + 1`.**
-   That page needs no write: segment `E + 1`'s CRC chain is salted with epoch `E + 1`, so whatever stale bytes the page holds cannot validate as journal content.
+   That page needs no write: journal segment `E + 1`'s CRC chain is salted with epoch `E + 1`, so whatever stale bytes the page holds cannot validate as journal content.
 7. **`fsync`**.
-8. **Write the header** into slot `E mod 2`: epoch `E`, the root address-table payload, segment `E + 1`'s start page, CRC.
+8. **Write the header** into slot `E mod 2`: epoch `E`, the root address-table payload, journal segment `E + 1`'s start page, CRC.
 
 No further `fsync` is required, and flush `E + 1` may begin immediately: step 7 already made state `E` recoverable, so nothing waits for the header write of step 8 to become durable.
 See [[#why one fsync suffices|below]].
@@ -84,7 +84,7 @@ The protocol maintains exactly two, and they are what the argument rests on.
 **I1 — a header is issued only after an `fsync` that covered (i) everything the new header references, except the journal segment it names, and (ii) the previous header.**
 The header write of epoch `E` happens after `fsync` `E` returns, and `fsync` `E` also flushed the header of epoch `E − 1`, which was issued before it.
 
-The named new journal segment is exempted from invariant I1 because it is the one part of a world that is still being written after the header is issued: header `E` names segment `E + 1`, which is still empty when `fsync` `E` runs.
+The named new journal segment is exempted from invariant I1 because it is the one part of a world that is still being written after the header is issued: header `E` names journal segment `E + 1`, which is still empty when `fsync` `E` runs.
 It needs no protection from I1: it validates itself, transaction by transaction, through the chained epoch-salted CRCs.
 
 *Consequence:* a header found on disk implies that everything in its world except the journal segment it names is durable.
@@ -128,11 +128,11 @@ The reference implementation uses the "`fsync` at open" option for simplicity.
 
 - **Successful case: header `E` reached the disk whole** — the cut came after step 8, and that write happened to be written back before the power was lost.
   By I1 everything in header `E`'s world except journal segment `E + 1` is durable, and header `E` carries the highest epoch among the CRC-valid headers, so recovery picks it and reaches state `E`.
-  It then replays whatever CRC-valid prefix of segment `E + 1` it finds, which here is empty: the segment's start page was only chosen in step 6, the writer is blocked for the duration of the flush, and the stale bytes in that page cannot validate as journal content because the chain is salted with epoch `E + 1`.
+  It then replays whatever CRC-valid prefix of journal segment `E + 1` it finds, which here is empty: its start page was only chosen in step 6, the writer is blocked for the duration of the flush, and the stale bytes in that page cannot validate as journal content because the chain is salted with epoch `E + 1`.
   So the flushed state `E` is recovered exactly.
 - **Error case: header `E` did not reach the disk** — either its write tore, leaving an invalid CRC, or it never arrived, leaving the slot's previous occupant (header `E − 2`, stale but CRC-valid).
   Recovery is indifferent between those sub-cases because it selects the valid header with the *highest* epoch, not merely a valid one.
-  The governing header is then `E − 1`, which `fsync` `E` made durable and which I2 leaves untouched; by I2 its world except for journal segment `E` is intact, and it names that segment's first page.
+  The governing header is then `E − 1`, which `fsync` `E` made durable and which I2 leaves untouched; by I2 its world is intact except for journal segment `E`, whose first page it names.
   Recovery lands on state `E − 1` plus any valid prefix of the (possibly torn) journal segment `E` — at worst losing transactions that no completed `fsync` ever covered, which is within the guarantee.
 
   If the cut came *before* `fsync` `E` returned, header `E − 1` may itself be missing, and its slot holds header `E − 3`.

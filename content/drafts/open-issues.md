@@ -18,7 +18,7 @@ Ordered most to least severe, where severity means *how likely this is to make s
 [Durability](../spec/durability.md#the-flush-protocol) and [File format](../spec/file-format.md#pages) describe it as a **chain of `Journal` pages**, beginning at a page the header names, drawn from the same reusable-page pool as everything else.
 
 These cannot both be true, and under the page model the entire policy answers a question that does not arise: "growing the journal" is taking one more reusable page.
-The capacity question does not disappear — it becomes "how many pages may a segment consume before a flush is forced" — but it is a different and much simpler question, and the `committed`/`ready`/`transaction` cursor machinery is answering the old one.
+The capacity question does not disappear — it becomes "how many pages may a journal segment consume before a flush is forced" — but it is a different and much simpler question, and the `committed`/`ready`/`transaction` cursor machinery is answering the old one.
 
 This is first because it is the part a prototype has to build first, and because a reader could reasonably implement either.
 
@@ -109,10 +109,10 @@ Items marked **deferrable** are not blockers; they are listed so that the line b
 
 ### 1. The journal's on-file representation — unspecified
 
-Nothing outside "there is a `Journal` page kind" and "the header names a segment's start page" exists.
+Nothing outside "there is a `Journal` page kind" and "the header names a journal segment's start page" exists.
 A prototype needs all of:
 
-- how the pages of one segment are **chained** — a next-page pointer in each page, a contiguous run, or a list the header carries — and how recovery follows the chain without trusting anything unvalidated;
+- how the pages of one journal segment are **chained** — a next-page pointer in each page, a contiguous run, or a list the header carries — and how recovery follows the chain without trusting anything unvalidated;
 - where a transaction's bytes sit within a page, and whether a transaction may **span** pages (it must, for a transaction larger than `MAX_PAGE_CONTENT`);
 - the **framing**: prefix width, checksum algorithm, and how the chained epoch-salted CRC is computed and verified;
 - the resolution of [contradiction 1](#1-the-journal-is-two-different-things), which sits squarely here.
@@ -182,7 +182,7 @@ Each of these blocks the prototype only in the sense that a number must be typed
 
 - **page size** — take 4 KiB and defer the 16 KiB measurement;
 - **the `Inline` threshold** — the [documented starting policy](../impl/flush.md#the-inline-threshold) of ~64 bytes;
-- **journal capacity per segment** — whatever falls out of item 1;
+- **how many pages a journal segment may consume** — whatever falls out of item 1;
 - **consolidation constants** — see below.
 
 ### Deferrable, and why
