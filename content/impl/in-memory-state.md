@@ -23,9 +23,9 @@ enum Fragment {
     ZeroByDefault,
 }
 
-struct PageOffset(u16);        // offset into a page
-struct AllocationOffset(u32);  // offset into an allocation; the map's key
-struct StatementRef(NonZeroU32);
+struct PageOffset(u16);          // offset into a page
+struct AllocationOffset(u32);    // offset into an allocation; the map's key
+struct StatementRef(NonZeroU32); // See below why non-zero.
 ```
 
 The three variants answer two questions at once — what the bytes *are*, and who is *responsible* for them — and the third variant is where those answers come apart: a range that resolves by default has a definite answer to the first and none at all to the second.
@@ -83,7 +83,7 @@ One `StatementRecord` per live statement.
 ```rust
 struct StatementSlab {
     records: Vec<StatementRecord>,  // 8 bytes per slot, indexed by StatementRef
-    framing_len: Vec<u8>,           // <= 21, per the spec's bounds
+    framing_len: Vec<u8>,           // each entry is <= 21, per the spec's bounds
     free_head: u32,                 // first free slot, or 0 for "none"
 }
 
@@ -100,11 +100,14 @@ struct StatementRecord {
 ```
 
 **A slab indexed by a dense integer, not a hash map.**
-`StatementRef` is an index, which is exactly what the specification's "at most `2^32 - 1` statements" bound buys, and it makes every lookup a array index rather than a hash.
+`StatementRef` is a 32-bit index, possible because of the specification's bound that at most `2^32 - 1` statements exist.
+This makes every lookup an array index rather than a hash.
 Dead slots thread into a free list through `page_or_next`, which is unambiguous because a slot is free exactly when `pins == 0`.
 
 **Slot 0 is never handed out.**
-That costs one slot once and buys two things: a free-list terminator, which nothing else could be, since page numbers and slot indices both use the whole 32-bit range; and a nonzero `StatementRef`, so an optional reference to a statement is the width of a plain one — which matters three times over in the allocation map below.
+That costs one slot once and buys niche optimization for `AllocationMeta::anchor`, `AllocationMeta::grow_witness`, and `RecyclableId::tombstone`.
+These optimizations are the motivation why the specification bounds the number of statements to at most `2^32 - 1` rather than `2^32`.
+Reserving slot 0 also makes for a simple free-list terminator (`page_or_next == 0`), although this argument is not load bearing since the end of the free-list could also be indicated by a self-reference instead.
 
 **A record exists exactly while `pins > 0`.**
 At the `1 → 0` transition its framing is released from its page's coverage, and the slot is freed.
@@ -165,7 +168,7 @@ Within the recyclable set `mentions` only falls, since nothing writes a statemen
 
 ## 4. The page table
 
-For every page: its kind, its epoch, and its live-byte counter — its **coverage**.
+For every page: its page number, kind, epoch, and live-byte counter (**coverage**).
 
 The counter is 32 bits rather than page-sized, because a page's live bytes exceed its capacity whenever several `Ref` statements claim the same bytes — which is legal, and [bounded](../spec/address-table.md#bounds) precisely so that 32 bits suffice.
 

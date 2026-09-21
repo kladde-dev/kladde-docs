@@ -49,6 +49,8 @@ Placement, compaction, and fold timing are all free, so two implementations will
 - Assign, reuse, and recycle ids however it likes.
 - Expose any API shape at all.
   Nothing above the storage layer is constrained.
+- Read none of an allocation's bytes while loading a value from it.
+  A data type may leave any part of its content untouched, and a tool that only compacts or only edits one subtree reads no content at all — so what a file keeps resident must follow from the file, never from which types happened to look.
 
 ## Must not
 
@@ -57,6 +59,7 @@ Placement, compaction, and fold timing are all free, so two implementations will
 - Continue a session after a failed `fsync`.
 - Return anything but zero for a byte that has not been explicitly written.
 - Depend on the descriptor table's index assignment for any semantic purpose.
+- Make a page's residency, or any storage-layer decision, depend on whether a data type read from it.
 - Emit a fingerprint that depends on table layout, traversal order, or any runtime-incidental state.
 
 ## The suite

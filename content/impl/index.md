@@ -6,7 +6,7 @@ The reference algorithms and data structures: what an implementation must mainta
 
 Everything here is **language-agnostic**.
 Pseudocode is written in a Rust-like notation, because `enum`s and pattern matching make the cases concrete and easy to reason about, but nothing here depends on Rust.
-A Python, C++, or Java implementation should make substantially the same choices — including the choice of a B-tree here and a hash map there, and the choice of integer widths, both of which follow from the [bounds the specification states](../spec/address-table.md#bounds).
+For implementations in other languages, it is recommended but not required to make substantially the same choices for, e.g., integer widths or fundamental data structures like B-trees or hash maps, both of which follow from the [bounds the specification states](../spec/address-table.md#bounds).
 
 What does *not* belong here is anything a different language would do differently: trait shapes or class hierarchies, memory layout, alignment, the mutation-capture mechanism.
 Those decisions are documented in the language-specific documentations (currently only [kladde-rust](../rust/)).
@@ -50,9 +50,15 @@ A loaded file is a mirror of its pages plus four indexes over them.
 An implementation reads pages into its own buffers with ordinary file reads, rather than mapping the file.
 Two rules keep that from meaning "the whole file, forever".
 
-**Mirror only pages that are reachable.**
-Reachability is known while the address table is being parsed — every child reference and every `Ref` address names a page — so the set can be accumulated during that parse and nothing else need ever be read.
-An implementation that finds this inconvenient may instead load each page lazily, the first time something reads from it, which arrives at the same set by a different route.
+**Mirror only pages that are reachable**, where reachable means *named by a surviving fragment* — not merely named by some `Ref` that is physically present.
+The two differ by every `Ref` that lost its probes to a newer statement, and the difference is not small in a file that has been written to for a while.
+So the set is accumulated during [resolution](address-table-operations.md#what-falls-out-of-emission), from the `Bytes` fragments the sweep emits, rather than while decoding statements.
+It might be tempting to instead load each page lazily, the first time something reads from it.
+The decisive objection is not that a page could be missing — one can always be fetched — but that the resident set would stop being a property of the *file* and become a property of the *application*: nothing obliges a `Persistable` to read anything, so a partial loader, whether a sensor app that mocks the subtree it never touches or a tool that only compacts, would leave the storage layer on a path chosen by application code and exercised only when consolidation happens to relocate a page nobody loaded.
+Eager loading also turns scattered reads interleaved with `Persistable::load` into one sequential pass over a set that is known in advance, and validates every reachable page's CRC at open rather than at first touch — which may be long after the last backup that could have helped.
+
+Nothing can read a page that only dead `Ref`s name, which is what makes ignoring it safe rather than merely economical: a dead statement wins no probe at any epoch the file can be recovered to, so no read at any recoverable state resolves into that page.
+The page table agrees by construction, since such a page's [coverage](liveness.md#coverage) is zero and it is therefore already reusable.
 
 Today this saves little, since a reasonably consolidated file is mostly reachable.
 It matters once [segments](../drafts/segments.md) arrive: each segment will live in its own subset of pages, and there is no way to guarantee that a segment's pages are contiguous in the file, so "load one segment" will mean exactly "mirror the reachable pages of that segment".
@@ -70,7 +76,7 @@ Keeping error handling explicit is worth the extra copy.
 Should that trade ever be revisited, note also that the mapping must be read-only, since kladde writes with ordinary writes and `fsync` and mixing the two is only coherent by grace of the platform's unified page cache.
 
 *Reading through a cursor.*
-Handing a data type a `Read + Seek` cursor rather than a byte slice keeps `Persistable::load` from depending on the bytes being contiguous or resident — which is what makes everything above an implementation detail rather than a format one.
+When a data type reads its allocations during `Persistable::load`, the reference implementation hands it an iterator over shared byte slices (fragments) rather than an assembled owned byte slice to avoid unnecessary copies.
 Over the mirror, such a cursor costs no syscalls at all.
 
 ### The indexes

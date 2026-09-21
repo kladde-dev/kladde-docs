@@ -113,6 +113,55 @@ There the honest statement is that the description fragments in proportion to th
 
 Uninitialized ranges help the sparse case for free: an allocation created large but written sparsely stores locations only for the ranges actually written, and occupies no data pages for the rest.
 
+### Where the pages come from
+
+The reusable pool is two queues and a watermark, because the [two-generation quarantine](../spec/durability.md#the-reuse-rule) is a rotation rather than a computation:
+
+```rust
+struct FreePages {
+    ready:    VecDeque<PageNumber>,   // unreachable from both on-disk headers
+    retiring: VecDeque<PageNumber>,   // dropped by the last commit; not yet writable
+    next_new: PageNumber,             // one past the last page of the file
+}
+
+// At each commit, in this order:
+free.ready.extend(free.retiring.drain(..));
+free.retiring = pages_this_commit_stopped_referencing();
+```
+
+`allocate_reusable_page` pops `ready`, and extends the file when `ready` is empty.
+No search, no interval tree: a run of contiguous pages is wanted only for a large write, and for that [growing the file](#contiguity-is-a-preference-not-an-assumption) always supplies one, so the pool never has to answer "find me `k` adjacent pages".
+
+### Cutting and packing, concretely
+
+The objective is not to minimise pages — free re-cutting already fills every page — but to minimise the **statements** that describe them, which means minimising how many ranges straddle a page boundary.
+
+```rust
+fn place(dirty: Vec<Range>) {
+    // 1. Whole pages first: a long range becomes floor(len / C) full pages, each
+    //    described by exactly one statement, plus a remainder below C.
+    let mut remainders = Vec::new();
+    for r in dirty {
+        let (whole, rest) = r.split_at_multiple_of(MAX_PAGE_CONTENT);
+        for piece in whole { write_whole_page(piece); }
+        remainders.push(rest);
+    }
+
+    // 2. First-fit-decreasing over the remainders, which are all below one page.
+    remainders.sort_by_key(|r| Reverse(r.len()));
+    for r in remainders { first_page_that_fits(r).push(r); }
+
+    // 3. Top up whatever space is left from the relocation queue, cut to fit exactly.
+    for page in shared_pages_with_room() { top_up(page); }
+}
+```
+
+**Step 3 is where the straddles go**, and that is the point of doing it last.
+Something has to be cut at the final boundary of a partly filled page; letting it be relocated content rather than freshly written content costs nothing, because relocated content is [re-cut at will](#cutting-content-across-pages) anyway and was going to be described by a fresh statement either way.
+A dirty range, by contrast, would pay a second statement forever.
+
+Sorting is over the flush's own dirty ranges, so its cost is bounded by the flush rather than by the file.
+
 ### The `Inline` threshold
 
 The [format](../spec/address-table.md#statement-types) fixes the ceiling at 251 bytes; the policy threshold belongs far below it.
@@ -222,6 +271,11 @@ Consequences:
   Header pages are exempt from coverage-driven victim selection, since they are rewritten unconditionally.
 
 When the header overflows, the coldest statements are evicted to a fresh leaf, ranked by an **eviction clock** recording how many flushes each has gone untouched.
+
+The name overstates the machinery.
+What the header can hold is bounded by `MAX_PAGE_CONTENT`, so the clock covers on the order of 700 statements however large the file is, and eviction can simply sort them by the epoch they were last written and take a prefix.
+Nothing here needs a CLOCK sweep, an approximate-LRU, or a heap: an `O(n log n)` sort of 700 entries, on the rare flush that overflows, is beneath measurement.
+The one thing it does need is that "last touched" be recorded when a statement is *re-emitted into the header*, not when its allocation is read — reads never reach the address table at all.
 Eviction and consolidation both emit statements sorted by id, so leaves *tend* to cover coherent id ranges — a soft property worth cultivating and not depending on, since it keeps consolidation windows aligned with page boundaries and keeps delta encoding dense.
 
 ## The shape of the tree

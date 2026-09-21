@@ -150,6 +150,11 @@ For `Shrink(id, n)` it follows too, since a content statement in the same epoch 
 For `Grow(id, n)` it does **not** follow, because a `Grow` conflicts with nothing: a writer must simply never put a `Grow(id, n)` in a page whose content for `id` reaches past `n`.
 That costs nothing, since such a `Grow` would be dead on arrival anyway — content reaching past `n` means the size already exceeds `n`.
 
+**Delta encoding buys more than compactness**.
+It makes non-compliant order of statements *unrepresentable*.
+The decoder of the reference implementation exploits the fact that statements within each page are sorted lexicographically by `(id, offset)`, which allows it to efficiently merge statements across pages and iterate over them by increasing offset without having to copy and sort them first.
+Since a wrong order is *unrepresentable* rather than just forbidden by the spec, the decoder does not have to verify correct order.
+
 ### Notes on the physical format
 
 - The root `AddressTable` page *is* the current [header slot](file-format.md#header-pages), so before the payload described by this grammar it carries the file-header fields, all covered by the header CRC.
@@ -175,7 +180,7 @@ An implementation must support these, and must fail cleanly rather than silently
 - **Allocation sizes** are bounded by `2^32 - 1` bytes ≈ 4.3 GB.
   Note the `-1`, i.e., allocations of size 4 GiB are (just) *not* supported.
   A varint-encoded offset into an allocation therefore uses up to `⌈32/7⌉ = 5` bytes.
-- The **number of statements** in a file must not exceed `2^32 - 1`, and an implementation may limit it further, so that statements can be tracked with 32-bit indices that leave zero free as a niche, and counted — per id, say — in 32-bit counters.
+- The **number of statements** in a file must not exceed `2^32 - 1`, and an implementation may limit it further, so that statements can be tracked with 32-bit indices that leave one value free as a niche for optional references, and counted — per id, say — in 32-bit counters.
   Even at an optimistic 3 bytes per statement that still allows 13 GB of address-table pages alone.
 - The **framing** of a statement — its encoded length excluding an `Inline` payload — is at most **21 bytes**: a `Ref` with 5 bytes of `id_delta`, 1 tag byte, 5 bytes of `offset_delta`, 3 bytes of `size`, and 7 bytes of `address`.
   Most statements are far shorter.
