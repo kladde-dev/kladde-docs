@@ -13,6 +13,7 @@ quartz/cli/tui/dist/
 .turbo/
 .stfolder/
 /kladde.pdf
+/kladde-diff.pdf
 /kladde.md
 /kladde-figures/
 __pycache__/

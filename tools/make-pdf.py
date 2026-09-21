@@ -869,6 +869,29 @@ def preamble(title, subtitle=None, documentclass="report", toc=True):
         "  \\usepackage[export]{adjustbox}",
         "  \\DefineVerbatimEnvironment{kladdediagram}{Verbatim}"
                 f"{{baselinestretch={DIAGRAM_LEADING},samepage=true}}",
+        # A class with a separate title page (`report`) ends `titlepage` with
+        # `\\setcounter{page}\\@ne`, so the page after the title is page 1 again
+        # and every printed folio thereafter trails its physical page by one.
+        # That is not only the folios: the table of contents and every
+        # cross-reference quote the same counter, so a reader who follows
+        # "page 12" lands on physical page 13.
+        #
+        # Drop the reset and the count runs straight through. The title page
+        # keeps its own `\\thispagestyle{empty}` from the start of the
+        # environment, so it is counted without being numbered. Patching the
+        # reset out rather than setting the counter to 2 after `\\maketitle`
+        # also stays correct if the title ever runs to a second page.
+        #
+        # `article` leaves `\\@titlepagefalse` and sets its title inline, with
+        # no reset to undo, so the single-page builds skip this.
+        "  \\usepackage{etoolbox}",
+        "  \\makeatletter",
+        "  \\if@titlepage",
+        "  \\patchcmd{\\endtitlepage}{\\setcounter{page}\\@ne}{}{}"
+                "{\\PackageError{kladde}{cannot patch endtitlepage;"
+                " page numbers would be off by one}{}}",
+        "  \\fi",
+        "  \\makeatother",
         "fontsize: 10pt",
         "---",
         "",
@@ -1490,15 +1513,17 @@ def main():
     if args.pages:
         sys.exit(render_pages(args))
 
-    args.output = args.output or str(ROOT / "kladde.pdf")
     on_disk = {p.relative_to(CONTENT).as_posix() for p in CONTENT.rglob("*.md")}
     missing = on_disk - set(ORDER)
     if missing:
         sys.exit("not listed in ORDER: " + ", ".join(sorted(missing)))
 
+    # Before the default below, so that `render_whole_diff` still sees `None`
+    # and can pick `kladde-diff.pdf` instead of overwriting `kladde.pdf`.
     if args.diff:
         sys.exit(render_whole_diff(args))
 
+    args.output = args.output or str(ROOT / "kladde.pdf")
     problems = []
     pages = collect(ORDER)
     figdir = Path(args.output).with_suffix("").parent / (
