@@ -96,8 +96,11 @@ The problem it solves is **worst-case consolidation**.
 With rigid piece sizes, an application that only ever allocates `MAX_PAGE_CONTENT / 2 + 1` bytes pins every data page at ~50 % fill, and no amount of relocation can fix it, because the pieces cannot be made to fit.
 One flexible cut per allocation only softens this — sizes just over half a page still strand ~25 % — and fixed-size middle pieces freeze a large allocation's page alignment at creation, so consolidation could never re-pack it without rewriting all of it.
 
-Free re-cutting dissolves both problems at once: consolidation packs pages the way stock is cut rather than the way bins are packed — fill the page, cut whatever piece crosses the boundary, continue with its remainder in the next page — so fill approaches 100 % for *any* population of live bytes, and there is no alignment left to preserve because there is no grid.
-The price is bounded and small: a packed page gains at most two boundary-crossing cut pieces, i.e. at most two extra statements, roughly 10–20 address-table bytes per ~4 KiB of data.
+Free re-cutting dissolves both problems at once: consolidation *may* pack pages the way stock is cut rather than the way bins are packed — fill the page, cut whatever piece crosses the boundary, continue with its remainder in the next page — so a high fill is reachable for *any* population of live bytes, and there is no alignment left to preserve because there is no grid.
+The price of each such cut is bounded and small: one extra statement, roughly 10 address-table bytes, plus a fragment-map entry.
+
+**That is a capability, not the routine policy**, and the distinction matters because the price is permanent while the slack it avoids is not.
+Free re-cutting is what removes the worst case above, where no packing exists at all; in ordinary flushes the packer prefers [leaving slack to paying for a split](consolidation.md#slack-is-cheaper-than-a-split) and exercises the capability only where a cut is forced or clearly cheap.
 
 A flush writes every piece it produces **whole**, even when only one byte of the range changed.
 This is not new cost in disguise: the operating system would have rewritten the surrounding page in place anyway.
@@ -137,7 +140,7 @@ No search, no interval tree: a run of contiguous pages is wanted only for a larg
 The objective is not to minimise pages — free re-cutting already fills every page — but to minimise the **statements** that describe them, which means minimising how many ranges straddle a page boundary.
 
 ```rust
-fn place(dirty: Vec<Range>) {
+fn place(dirty: Vec<Range>, elastic: impl Iterator<Item = Chunk>) {
     // 1. Whole pages first: a long range becomes floor(len / C) full pages, each
     //    described by exactly one statement, plus a remainder below C.
     let mut remainders = Vec::new();
@@ -147,20 +150,22 @@ fn place(dirty: Vec<Range>) {
         remainders.push(rest);
     }
 
-    // 2. First-fit-decreasing over the remainders, which are all below one page.
-    remainders.sort_by_key(|r| Reverse(r.len()));
-    for r in remainders { first_page_that_fits(r).push(r); }
+    // 2. Pack the remainders together with the relocation stream, in (id, offset)
+    //    order with a bounded look-ahead. Nothing is cut here: a chunk that fits no
+    //    open page opens a new one, and the elastic tail is trimmed rather than split.
+    pack(merge_by_key(remainders, elastic), &mut sinks);
 
-    // 3. Top up whatever space is left from the relocation queue, cut to fit exactly.
-    for page in shared_pages_with_room() { top_up(page); }
+    // 3. Only the last page can end up genuinely short. Top it up from the elastic
+    //    stream, cut to fit, when its slack is worth paying a statement for.
+    if sinks.last().room() > SPLIT_THRESHOLD { top_up_cut(sinks.last(), elastic); }
 }
 ```
 
 **Step 3 is where the straddles go**, and that is the point of doing it last.
-Something has to be cut at the final boundary of a partly filled page; letting it be relocated content rather than freshly written content costs nothing, because relocated content is [re-cut at will](#cutting-content-across-pages) anyway and was going to be described by a fresh statement either way.
+Something has to be cut at the final boundary of the one page that ends up short; letting it be relocated content rather than freshly written content costs one statement rather than two, because relocated content is [re-cut at will](#cutting-content-across-pages) anyway and was going to be described by a fresh statement either way.
 A dirty range, by contrast, would pay a second statement forever.
 
-Sorting is over the flush's own dirty ranges, so its cost is bounded by the flush rather than by the file.
+The two streams are packed together rather than one after the other, and the packing is by key rather than by size, for reasons that belong to [consolidation's side of the same interface](consolidation.md#how-a-flush-and-consolidation-compose): the flush's chunks must be written and the relocated ones need not be, which is what lets the tail absorb the fit instead of a cut.
 
 ### The `Inline` threshold
 

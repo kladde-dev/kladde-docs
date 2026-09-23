@@ -635,12 +635,26 @@ fn rewrite_page(victim: PageNumber) -> PageNumber {
         }
     }
 
-    out.sort_by_key(|s| (s.id(), s.offset()));   // required by the delta encoding
+    // The delta encoding wants (id, offset) order, but only the offsets are unsorted;
+    // see below. `chunk_by_mut` splits `out` into one run per id.
+    for run in out.chunk_by_mut(|a, b| a.id() == b.id()) { run.sort_by_key(|s| s.offset()); }
     write_page(target, out, epoch: current);
     for s in out { apply(s, target, framing_of(s)); }
     target
 }
 ```
+
+**The sort is per id rather than global, because nothing in the loop can change an id.**
+`owned_fragments(stmt)` scans only within `(id, …)`, `restate` keeps the fragment's key, and `replacement_anchor(id)` names the id it was handed.
+So `out` inherits the victim's id order, which is already increasing by [fact 2](#three-facts-about-the-physical-format-that-decide-the-algorithm), and only offsets *within* one id can be out of order.
+
+They genuinely can be, which is why the sort cannot be dropped altogether.
+With `Ref(id, 0, 100)` shadowed over `[20, 25)` by `Zero(id, 20, 5)`, the statements arrive in offset order but their fragments do not: the `Ref` emits at 0 and at 25, and only then does the `Zero` emit at 20.
+A `replacement_anchor` is pushed wherever its anchor statement sat, which is likewise unrelated to its own offset.
+
+The saving is `Σ nᵢ log nᵢ` rather than `n log n` over a page's ~700 statements, and it is larger than that arithmetic suggests: most ids contribute one or two statements to any one page, so most runs have length one or are already sorted, and an insertion sort with an early exit makes the common case linear.
+
+[`rewrite_id_range`](#rewrite_id_rangelo-hi) needs no sort at all, which is the contrast worth noticing: it is driven by the fragment map, which is already in `(id, offset)` order, whereas this rewrite is driven by *statements*, whose owned fragments interleave.
 
 ### `rewrite_id_range(lo, hi)`
 

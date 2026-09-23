@@ -142,8 +142,8 @@ Nothing ever iterates the allocation map in id order at run time; consolidation'
 | field | updated when | read for |
 | --- | --- | --- |
 | `size` | any flush that resizes the id, writes past its end, frees it, or re-allocates it | answering `size()` in `O(1)`; bounding reads; supplying the extent of an id's last fragment |
-| `fragment_count` | on every fragment created or destroyed for this id | defragmentation ranking — description overhead relative to `size`. Counts `ZeroByDefault` fragments, which are real entries with real memory cost |
-| `statement_bytes` | when a statement for this id is created, or when one's pins reach zero | defragmentation ranking, paired with `fragment_count` |
+| `fragment_count` | on every fragment created or destroyed for this id | [pricing defragmentation](consolidation.md#defragmentation-rides-the-id-window) — description overhead relative to `size`. Counts `ZeroByDefault` fragments, which are real entries with real memory cost |
+| `statement_bytes` | when a statement for this id is created, or when one's pins reach zero | pricing defragmentation, paired with `fragment_count` |
 | `mentions` | `+1` per statement naming the id written or read at open; `−1` when one is physically dropped | one thing only: releasing a tombstone anchor's pin when the count falls to 1 |
 | `anchor`, `grow_witness` | `anchor`: when a `Shrink` or `Tombstone` is written. `grow_witness`: when a `Grow` is written, and when `size` moves past its bound | moving the anchor pin; telling a consolidator that a victim page holds an anchor it must replace |
 
@@ -174,6 +174,10 @@ The counter is 32 bits rather than page-sized, because a page's live bytes excee
 
 Pages are bucketed by live fraction, a handful of buckets suffices, together with an age mark.
 That makes victim selection `O(1)` rather than a priority queue's `O(log P)`, with `O(1)` bucket moves as counters change.
+`Data` and `AddressTable` pages are bucketed [separately and at different resolutions](consolidation.md#the-structures-behind-the-ranking), and header pages in neither.
+
+An `AddressTable` page carries one more field: the `(Id, AllocationOffset)` span of the statements it holds, fixed when the page is written.
+Eight bytes a page, and they are what let [a consolidation window be seeded at a page](consolidation.md#seeding-a-window) without decoding it.
 
 A free list tracks reusable pages under the [two-generation quarantine](../spec/durability.md#the-reuse-rule): a page dropped by commit `E` becomes writable in flush `E + 2`.
 
