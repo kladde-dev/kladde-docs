@@ -9,7 +9,7 @@ It is [not part of the specification](../spec/allocations.md#reclamation-is-not-
 
 ## The high-level picture
 
-Consolidation fights **two independent debts**, and the counters that measure one are blind to the other.
+Consolidation fights **three independent debts**, and the counters that measure one are blind to the others.
 
 **Description fragmentation** is a property of an *allocation*: how many statements it takes to say what its bytes are.
 It is measured by [`fragment_count` and `statement_bytes`](in-memory-state.md#3-the-allocation-map) against `size`; it costs memory in the fragment map, bytes in the address table, and time at load; and no page-level counter can see it, because an allocation described by two hundred statements packed densely into one full page makes that page look perfect.
@@ -17,53 +17,53 @@ It is measured by [`fragment_count` and `statement_bytes`](in-memory-state.md#3-
 **Page fragmentation** is a property of a *page*, `Data` and `AddressTable` alike: how much of it current state still relies on.
 It is measured by [`coverage[p]`](liveness.md#coverage) against capacity; it costs file size and nothing else; and no per-id counter can see it, because an allocation described by one `Ref` per flush has ideal `fragment_count` however thinly its bytes end up spread.
 
-Each converts into the other in exactly one direction, which is why neither can be left to the other's mechanism:
+**Outer fragmentation** is a property of the *file*: reusable pages below its last live page.
+It costs file size, since a file can only shrink from its end, and neither kind of counter can see it, because every page involved is either wholly reusable or wholly live.
+It arises whenever the live size falls and stays down — after a large deletion, say — since pages freed anywhere but at the end become holes that only future writes can fill.
+
+The first two convert into each other, each in exactly one direction, which is why neither can be left to the other's mechanism:
 
 - description fragmentation *becomes* address-table page fragmentation, since more statements need more table pages;
 - repairing description fragmentation *creates* data-page fragmentation, since rewriting a stipple as one `Ref` kills the patches it supersedes.
 
-**Only page fragmentation is urgent, and that asymmetry is what decides how each one is scheduled.**
+**Only page fragmentation is urgent, and that asymmetry is what decides how each debt is scheduled.**
 Page fragmentation grows with write traffic and compounds, since garbage left uncleaned occupies the pages the next flush wanted to reuse — so it is attacked greedily, worst first.
-Description fragmentation is a standing debt that does not grow while nobody writes the allocation — so it need only be paid down *eventually*, which a rotating sweep achieves with no ranking structure at all.
+Description fragmentation is a standing debt that does not grow while nobody writes the allocation — so it need only be paid down *eventually*, which a rotating sweep discovers without any ranking structure of its own.
+Outer fragmentation is not a debt at all while the file grows, because growth fills the holes first; it becomes one only once the live size has fallen, and is then paid down in [a mode of its own](#outer-fragmentation).
 
 ### Four mechanisms
 
-| mechanism                                                                       | pays down                                              | selected by                       | reads                                                                      | writes                                                                  |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| [Evacuation](#victims-are-chosen-as-a-set)                                      | page fragmentation of `Data` pages                     | the sparsest data pages, as a set | the mirror, via the [reverse index](#finding-the-referrers-of-a-data-page) | data pages                                                              |
-| [Id-window rewrite](#victim-selection-for-address-table-pages)                  | page fragmentation of `AddressTable` pages             | a rotating id window              | the fragment map                                                           | one table page (merged into existing queue of statements to be written) |
-| [Table-page rewrite](address-table-operations.md#rewrite_pagevictim---new_page) | one stubborn `AddressTable` page that no window drains | that page's coverage              | the victim page, decoded                                                   | one table page                                                          |
-| [Defragmentation](#defragmentation-rides-the-id-window)                         | description fragmentation                              | the ids an id window passes over  | the mirror                                                                 | data *and* table pages                                                  |
+| mechanism | pays down | selected by | reads | writes |
+| --- | --- | --- | --- | --- |
+| [Evacuation](#victims-are-pulled-one-at-a-time) | page fragmentation of `Data` pages; outer fragmentation, in [compaction mode](#compaction-mode) | the sparsest data pages, one victim at a time | the victim's survivors, from the file, found through the [reverse index](#finding-the-referrers-of-a-data-page) | the survivors, into data pages |
+| [Page rewrite](#the-page-rewrite) | page fragmentation of `AddressTable` pages; outer fragmentation, in compaction mode | the sparsest table pages, one victim at a time | the victim, decoded | the victim's live content, restated into the statement queue |
+| [Rotating window](#the-rotating-window) | delta-encoding density | a cursor that rotates through the fragment map | the fragment map | restatements, into the room the queue leaves over |
+| [Defragmentation](#defragmentation-rides-the-id-window) | description fragmentation | the stipples the rotating window's walk finds | the stipple's bytes, from the file | one `Ref` per stipple, retiring the statements it replaces |
 
-All four end in the same place — fresh pages plus fresh statements and address-table child pages — which is what lets [one placement pass](#how-a-flush-and-consolidation-compose) serve all of them, and one budget price them.
+All four end in the same place — fresh pages plus fresh statements — which is what lets [one placement pass](#how-a-flush-and-consolidation-compose) serve all of them.
 
 ### Why address-table pages have two mechanisms
 
-**The id window is the workhorse and the table-page rewrite is an escape hatch**, and the two need no arbitration because both are priced from the same number, `coverage[p]`.
+**The page rewrite drains table pages and the rotating window keeps them dense**, and it is [the shared statement queue](#one-statement-queue-and-why-its-length-is-computed-last) that divides the work that way.
 
-Rewriting an id window dominates whenever a window with real benefit exists.
-At the identical cost of one page write it drains *many* pages at once, restores delta-encoding density across the range it rewrites, and decodes nothing.
-Rewriting a victim page does none of that: its output covers whatever scattered id set the victim happened to hold, so the delta encoding stays sparse, and it must decode the victim to learn which ids those even are.
+Once every table-side mechanism writes into one queue, a restatement costs its encoded bytes rather than a page, and the cheapest way to empty a victim is to restate exactly what its statements still own — which is what the page rewrite does.
+A window that emptied the same victim would restate a superset: everything live in the victim's key span, including whatever other pages hold there.
+So the page rewrite does the draining, and it selects victims exactly as evacuation does, sparsest first from [a bucket queue of its own](#the-structures-behind-the-ranking).
+That includes a table page whose live statements are scattered across the whole id space, which no window could drain but which is, to the page rewrite, simply a sparse victim.
 
-What the page rewrite can do that no window can is **drain a page that no window would ever choose**.
-A table page holding forty live statements spread across the whole id space contributes one statement to each of forty different windows, so its `drain[Q]² / coverage[Q]` term is negligible in every one of them — and yet it holds a whole page hostage.
-Such a page survives indefinitely under window selection alone, because the rotation reaches every id but the *ranking* need never pick the window that would help.
+What the page rewrite cannot do is make its output denser than its input.
+Statements that went cold together and were evicted from the header together may lie far apart in the id space, and each of them then pays nearly full-width varints for its id and offset — two to four bytes more than among dense neighbours, on statements of about ten.
+The rotating window repairs that: it restates a contiguous key range, so its output is as dense as the encoding allows.
+That is worth too little per byte to compete for the budget, so the window gets only the room the victims leave over — which is also all it needs, since density is never urgent.
 
-So the table-page rewrite is gated rather than freely competing: it becomes a candidate only for a page whose coverage is low in absolute terms and which no window has drained for a full rotation of the sweep cursor.
-The decode it then pays for is cheap, but that is a consequence of residency rather than a reason for it.
-
-**[Address-table pages stay resident](index.md#the-mirror) for `Inline` payloads, which the common path dereferences.**
-An id-window rewrite copies the payload of every inline statement it re-emits, and windows are chosen precisely to drain *many* pages at once, so a non-resident address table would add a scattered read per drained page to every consolidating flush — not to the rare one.
-On the table-page rewrite's account alone the balance would indeed tip the other way, exactly as an escape hatch should: read the victim back from the file when it is needed.
-
-If the ~8 MB per million allocations ever outweighs those reads, the thing to hold is an **inline-payload arena** rather than whole pages.
-It keeps exactly the bytes the rewrite path dereferences and drops all the framing, so it saves the non-inline fraction of address-table bytes — nearly everything in a `Ref`-dominated file and nearly nothing in an `Inline`-dominated one, which is why the mix has to be measured before it is worth building.
+Both mechanisms copy `Inline` payloads out of table pages, and the page rewrite decodes its victim, so [address-table pages stay resident](index.md#the-mirror) by default; at ~8 MB per million allocations that is cheap.
+Nothing depends on it, though: dropping leaves after load, as data pages are dropped, costs one read per victim and one per table page whose inline payload the window restates.
 
 ### Defragmentation rides the id window
 
-**Defragmentation needs no victim selection of its own**, because the id-window rewrite already walks every fragment of a contiguous id range and therefore already sees which allocations are stippled.
+**Defragmentation needs no victim selection of its own**, because the rotating window already walks every fragment of a contiguous key range and therefore already sees which allocations are stippled.
 
-The decision is per id and entirely local: the window is re-emitting this id's statements anyway, so the only question is whether to emit them as they stand or to replace a patched region with one `Ref` over fresh, zero-filled data bytes.
+The decision is per id and entirely local: the walk visits this id's fragments anyway, so the only question is whether a patched region is worth replacing with one `Ref` over fresh, zero-filled data bytes.
 
 **Both sides carry data bytes and statement bytes, and getting that right is the whole of the criterion.**
 The data terms very nearly cancel, because the fragments a rewrite supersedes lose their coverage exactly where they pointed:
@@ -77,54 +77,71 @@ written(a, b)  = (b − a)                                           // includin
 
 Subtracting leaves a criterion that is worth stating on its own, because it is the thing to reason about and it is not what the ratio looks like at first glance:
 
-> **A defragmentation pays when the statement bytes it retires exceed the zero bytes it materialises.**
-> `framing_retired − ref_framing > (1 − density) · (b − a)`, with `density` the fraction of `[a, b)` that currently resolves through a statement.
+> **A defragmentation pays when the statement bytes it retires exceed the zero bytes it materialises** — by a margin of `μ` for every byte it writes.
+> `framing_retired − ref_framing − (1 − density) · (b − a) > μ · (b − a)`, with `density` the fraction of `[a, b)` that currently resolves through a statement.
+
+`μ ≥ 0` is the price of writing a byte, in address-table bytes: at `μ = 0` a defragmentation must merely not grow the file, and above it a long rewrite must save correspondingly more.
+It is not [the churn floor `λ`](#the-churn-floor-is-a-parameter-not-an-identity), which prices *space* per byte written and may well sit below 1: the two price different debts, and a defragmentation's net saving in file bytes — at most the framing it retires — would fail any floor near 1.
 
 ### The envelope is a maximum-subarray problem
 
 **There is no need for a heuristic, and no need to choose between "all" and "nothing".**
-Attribute the criterion above to each fragment and the best subrange is the maximum-weight contiguous run of them — Kadane's algorithm, one pass, on a sequence the window walk is traversing anyway.
+Attribute the criterion above to each fragment and the best subrange is the maximum-weight contiguous run of them — Kadane's algorithm, one pass, on a sequence the rotating walk is traversing anyway.
 
 ```rust
-/// Best subrange of `id` to rewrite as one `Ref`, or None. `lambda` is the budget
-/// loop's exchange rate: bytes of space that must be freed per byte written.
-fn defrag_candidate(id: Id, size: u32, lambda: f32) -> Option<Candidate> {
-    // What rewriting a fragment frees, minus what writing it costs. `share` spreads a
-    // statement's framing over the fragments it owns — `pins` counts them — so a
-    // statement that falls entirely inside the chosen range is credited its whole framing.
+/// Best subrange of `id` to rewrite as one `Ref`, or None. Weights are *net* file
+/// bytes — what the rewrite releases minus what it consumes — less `mu` per byte
+/// written, so a range that would grow the file, or cost more to write than it
+/// saves, weighs below zero.
+fn defrag_candidate(id: Id, size: u32, mu: f32) -> Option<DefragCandidate> {
+    // `share` spreads a statement's framing over the fragments it owns — `pins`
+    // counts them — so a statement wholly inside the range is credited in full.
     let weight = |f: &Fragment, len: u32| {
         let share = f.statement().map_or(0.0, |s| framing_len(s) as f32 / pins(s) as f32);
-        let freed = match f {
-            Bytes{..}          => len as f32 + share,  // its coverage drops where it pointed
-            ZeroExplicitly{..} => share,               // nothing to reclaim but the framing
-            ZeroByDefault      => 0.0,                 // owned by nobody; frees nothing
+        let net = match f {
+            Bytes{..}          => share,                // its bytes move: released, consumed
+            ZeroExplicitly{..} => share - len as f32,   // its zeros become real bytes
+            ZeroByDefault      => -(len as f32),        // likewise, and nothing is released
         };
-        freed - lambda * len as f32
+        net - mu * len as f32
     };
-    let (gain, range) = kadane(fragments.range((id, 0)..=(id, size)), weight)?;
-    (gain > lambda * REF_FRAMING).then(|| Candidate { id, range, .. })
+    let (gain, range) = kadane(fragments.range((id, 0)..(id, size)), weight)?;
+    (gain > REF_FRAMING).then(|| DefragCandidate { id, range, gain, .. })
 }
 ```
 
+This code example shows the calculation of the maximum envelope as a free-standing function for best readability.
+The real implementation folds Kadane's algorithm into [the rotating walk](#the-rotating-window), which iterates over fragments anyway, evaluating and resetting the max-weight subarray records at every `id` boundary of that walk.
+A walk that starts or stops inside an id sees only part of it, and Kadane then finds the best subrange of that part; a stipple that a walk boundary cuts in two is judged as two halves, which errs toward doing less.
+
 The weights are what make the answer come out right at both ends.
-A run of `ZeroByDefault` scores `−λ · len`, so the envelope stops at the edge of a stipple rather than swallowing the sparse allocation around it.
-A single large `Ref` scores `len · (1 − λ) + share`, which is barely positive at `λ ≈ 1` and negative above it — so an already-contiguous region is excluded, which is correct, since rewriting it merges no statements and only moves bytes.
-And exactly the case you describe — a long allocation carrying a short, dense knot of tiny `Inline` patches — is where the run of large positive weights is, so it is what Kadane returns.
+A run of `ZeroByDefault` scores `−(1 + μ) · len`, so the envelope stops at the edge of a stipple rather than swallowing the sparse allocation around it.
+A single large `Ref` scores `share − μ · len`, which is negative for any `Ref` longer than `share / μ` — a few hundred bytes at `μ = 0.02` — so an already-contiguous region is excluded, which is correct, since rewriting it merges no statements and only moves bytes.
+And a long allocation carrying a short, dense knot of tiny `Inline` patches is exactly where the run of large positive weights is, so it is what Kadane returns.
 
 ### Where it is called, and how it is executed
 
-**From the window walk, but priced on its own.**
-The walk is already visiting this id's fragments in offset order, so Kadane costs nothing extra; what it cannot do is fold the result into the window's own score, because a defragmentation's cost is *data* pages while a window's is address-table bytes.
-So `table_window_candidate` returns its window **plus** the defrag candidates its walk turned up, and [the budget loop](#the-budget-loop) ranks those beside everything else.
-That is the precise sense in which defragmentation rides the window: the window supplies *discovery*, which is the part that would otherwise need a structure of its own, and not *pricing*.
+**Discovered by the rotating walk, executed from a share of its own.**
+The walk visits every id's fragments in offset order, so Kadane costs nothing extra, and [`rotating_window`](#the-rotating-window) returns the candidates it found.
+They cannot compete with evacuation for the budget, since what they pay down is description rather than space, and a net saving of a few bytes of framing would lose to any victim.
+So they are paid from a **reserved share** of each flush's budget: first as free filling, since a candidate's rewrite is one chunk, [elastic like a survivor](#mandatory-and-elastic); and, only when the flush writes no data page at all, on a budgeted page of its own if the share can fill one.
+
+Among themselves, candidates are ranked the way data pages are,
+
+```
+score = gain · age / written
+```
+
+with `age` the number of flushes since the newest statement in the range was written.
+The age term is the same *prediction* it is in [data-page scoring](#scoring-a-data-page): a range the application patched recently is likely to be patched again, which would re-stipple it and waste the rewrite.
+So a cold allocation's candidate rises the longer it waits, however marginal its gain, and the reserved share guarantees that it is reached.
+
+A candidate found in one flush is executed in a later one, because the walk runs after the flush's data pages are packed, so it is re-checked first: `defrag_candidate` runs again for that id, which is cheap, and which also catches exactly the case the age term anticipates — an allocation written in between.
 
 Executing one needs no new operation.
-It is [`write_bytes(id, a, b − a, dest)`](address-table-operations.md#write_bytesid-offset-bytes) over the range's resolved content — read from the mirror, gaps `memset` to zero — and the existing path turns that into one `Ref` that supersedes everything under it, with `overwrite` releasing the old owners' pins and `coalesce_around` collapsing the entries.
+It is [`write_bytes(id, a, b − a, dest)`](address-table-operations.md#write_bytesid-offset-bytes) over the range's resolved content — read from the file, gaps `memset` to zero — and the existing path turns that into one `Ref` that supersedes everything under it, with `overwrite` releasing the old owners' pins and `coalesce_around` collapsing the entries.
 
-This is what pays off the debt that [the single ranked queue would otherwise starve](#the-budget-loop): the sweep cursor is not ratio-driven, so a cold, heavily patched allocation is reached within one rotation of the id space whether or not it ever looks urgent.
-What the arrangement gives up is *worst-first* order, which is exactly the right thing to give up here, since description debt does not grow while it waits.
-
-A per-id bucket queue over `statement_bytes * B / max(size, 1)` remains available if one rotation ever proves too long to wait.
+A per-id bucket queue over `statement_bytes * B / max(size, 1)` remains available if one rotation ever proves too slow to discover what needs doing.
 It should not be built before that measurement exists, being a second structure to maintain on every statement created or destroyed.
 
 ### How a flush and consolidation compose
@@ -142,37 +159,59 @@ enum Source {
     Arena(ArenaPos),                   // written this flush; awaiting a page
     Resident(PageNumber, PageOffset),  // already in the file
 }
+
+struct ArenaPos(u32);                  // bounds the arena at 4 GiB; see below
 ```
 
 `Resident` is what makes consolidation composable rather than bolted on, and it splits by what placement decides to do with it: a piece left where it is emits a `Ref` at its existing address and writes nothing, while a piece being relocated needs a page like any freshly written range.
-**A consolidation survivor is therefore the same object as a dirty range** — a **chunk**, a byte range plus a `Pending` with an unfilled hole — differing only in whether its bytes are read from the mirror or from the journal's arena.
+**A consolidation survivor is therefore the same object as a dirty range** — a **chunk**, a byte range plus a `Pending` with an unfilled hole — differing only in whether its bytes are read from the file or from the journal's arena.
 Placement cannot tell them apart, and does not need to.
+
+**A 32-bit `ArenaPos` halves `Source`**: six bytes of payload in its larger variant rather than eight, so eight bytes with the tag rather than sixteen.
+That is a saving of width, not of a niche — `Option<Source>` costs nothing extra at either width, since the tag has spare values.
+It also turns an assumption into a bound the implementation must enforce: the arena holds everything written since the last flush, so a flush must be forced before it would pass 4 GiB, and a single transaction larger than that, which no flush can split, must fail cleanly, as [the bounds](../spec/address-table.md#bounds) require of everything else.
 
 #### Mandatory and elastic
 
-**One stream must be written whole and the other may be trimmed**, and that asymmetry is the only thing the packer needs to know about where a chunk came from.
+Placement combines two streams: what the flush must write and what consolidation may add.
+**One stream must be written whole and the other may be cut short**, and that asymmetry is the only thing the packer needs to know about where a chunk came from.
 A commit that omits part of what the journal produced is not a commit.
 A survivor left behind costs a delay and nothing else.
 
-That settles the choice between your (i) and (ii) in favour of **(i) with (ii)'s benefit kept**.
-Neither stream is cut into pages before the other is visible, because pre-cutting the mandatory stream freezes exactly the boundaries that the elastic stream exists to avoid.
-The elastic stream is then *trimmed* rather than cut, which is where (ii)'s "stop at a convenient point" comes back — and trimming is available only because the elastic stream is chosen after the mandatory one has been measured.
+Neither stream is cut into pages before the other is visible, because pre-cutting the mandatory stream would freeze exactly the boundaries that the elastic stream exists to avoid.
+The elastic stream is instead drawn **on demand**: a victim is pulled into a page only at the moment that page has room its own content cannot use, and only if all of the victim's survivors fit.
+That is what lets consolidation fill every page the flush writes to nearly full — cutting a fixed stream into pages would typically leave its last page sparse — without ever opening a page it cannot fill.
 
-What this document described before was neither: it placed the flush's ranges first and filled afterwards, which is (ii) with the trimming left out — so it inherited (ii)'s frozen boundaries without buying anything for them.
+#### Slack is cheaper than a split — up to a point
 
-#### Slack is cheaper than a split
-
-**Do not cut a chunk to make a page come out exactly full.**
-Your instinct is right, and the asymmetry is sharper than the byte counts suggest: page slack is *recoverable*, since the next consolidation to pick the page up re-packs it, whereas a split is a statement and a fragment-map entry that survive until [defragmentation](#defragmentation-rides-the-id-window) pays them off — and description debt is the debt with no natural drain.
+**Do not cut a chunk to make a page come out exactly full; cut only to keep a page from closing more than `θ` empty.**
+In principle, the format would allow cutting `Ref` statements at arbitrary offsets and thus packing all emitted data pages exactly full.
+However, the reference implementation does not try to fit data pages *exactly* full and instead accepts a small amount of slack in each page.
+Filling data pages exactly would reduce page fragmentation at the cost of description fragmentation, with an important asymmetry: page fragmentation is *recoverable*, since the next consolidation to pick the page up re-packs it, whereas a split is a statement and a fragment-map entry that survive until [defragmentation](#defragmentation-rides-the-id-window) pays them off — and description debt is the debt with no natural drain.
 
 | | costs | until |
 | --- | --- | --- |
-| leaving slack | at most the smallest chunk still in the packer's look-ahead, which bottoms out at the 64-byte [`Inline` threshold](flush.md#the-inline-threshold) against a 4081-byte page | the page is next consolidated |
+| leaving slack | at most `θ` of a page, on every page but a flush's last, and usually far less | the page is next consolidated |
 | splitting to fill it | ~10 bytes of address table, ~20 bytes of fragment map, and one more entry in every scan of that id | something rewrites the range as one `Ref` |
 
-Two exceptions survive, and both are forced rather than chosen.
-A chunk longer than `MAX_PAGE_CONTENT` must be cut whatever the policy, and cutting whole pages off its front is the cut that costs least.
-And the one page per flush that ends up genuinely short — the tail of the packing, never a middle page — is worth topping up from the elastic stream when its slack runs to a few hundred bytes rather than sixty; [relocated content was going to be re-described anyway](flush.md#cutting-and-packing-concretely), so cutting it there costs one statement rather than two.
+**Slack has no small bound of its own, which is what `θ` is for.**
+Without it, what bounds slack is the smallest chunk still within the packer's reach, and that is only as good as the chunks are: close to the `Inline` threshold when small chunks are plentiful, and nothing like it when they are not.
+Chunks all just over half a page are the adversarial case — no two ever share a page, and every page closes half empty, whatever the look-ahead.
+
+So a page that would close more than `θ` empty is filled instead, in the order that costs least:
+
+1. with whole victims, which ride for free in a page that is being written anyway;
+2. failing that, by cutting the flush's next chunk at the page boundary.
+
+That makes the guarantee unconditional: **every data page a flush writes, except its last, is at least `1 − θ` full**, whatever the chunk sizes, at a cost of at most one cut per page — and in the adversarial case the cuts are exactly what halve the page count.
+The chunk cut is the next one in key order rather than the largest within reach, so its two halves stay adjacent in key order and in page order, and a tail shorter than the `Inline` threshold becomes an `Inline` rather than a chunk.
+
+**On a page that holds content of the flush's own, that content is what gets cut, not a victim's survivor.**
+Both cuts cost exactly one extra statement.
+But the flush's own content is what the application is working on — the same [temporal update locality](#victim-selection-for-data-pages) that data-page scoring rests on — so its cut is the likelier to be overwritten soon and take the extra statement with it, whereas a survivor's cut would sit in cold data until defragmentation found it.
+
+A page opened only for consolidation has no such content, and there a survivor is cut instead, its tail leading the next page.
+Refusing to would leave the adversarial file at half fill for good: every victim in it holds one chunk just over half a page, so no two victims could ever share a page, and consolidation could never improve it.
 
 #### Packing in id order, with look-ahead
 
@@ -180,81 +219,103 @@ And the one page per flush that ends up genuinely short — the tail of the pack
 First-fit-decreasing packs tightly and destroys id locality completely, which costs two things worth keeping: a smaller [reverse index](#finding-the-referrers-of-a-data-page), which holds one entry per `(page, id)` pair, and the chance that a later evacuation of the page relocates one id's bytes together and merges their fragments.
 
 ```rust
-fn pack(chunks: impl Iterator<Item = Chunk>, sinks: &mut Sinks) {
-    let mut ahead = VecDeque::new();                  // bounded look-ahead, L ~ 16
-    for chunk in chunks.chain(repeat_with(|| None)) {
-        ahead.extend(chunk);
-        if ahead.len() < L && chunk.is_some() { continue; }
-        // Place the first chunk that fits the open page, not the largest one.
-        match ahead.iter().position(|c| c.len <= sinks.open().room()) {
-            Some(i) => sinks.open().place(ahead.remove(i)),
-            None    => sinks.close_and_open(),        // or stop, if the tail is elastic
+fn pack(mut chunks: Lookahead<Chunk>, elastic: &mut Elastic) -> Vec<Page> {
+    let mut pages = Vec::new();
+    if chunks.is_empty() { return pages; }       // no page is being written anyway
+    let mut open = Page::new();
+    loop {
+        // 1. The first of the flush's own chunks that fits, in key order, within reach.
+        if let Some(c) = chunks.take_first_fit(open.room()) { open.place(c); continue; }
+        // 2. None fits: whole victims ride along for free. `elastic` offers
+        //    defragmentation's rewrites first, while its share lasts.
+        while let Some(e) = elastic.take_fitting(open.room()) { open.place_all(e); }
+        if chunks.is_empty() { break; }          // the flush's last page, possibly short
+        // 3. Still more than θ empty: cut the next chunk so the page closes full.
+        if open.room() > THETA * MAX_PAGE_CONTENT {
+            let (head, tail) = chunks.pop_front().split_at(open.room());
+            open.place(head);
+            chunks.push_front(tail);             // shorter than the `Inline` threshold: an `Inline`
         }
+        pages.push(mem::take(&mut open));
     }
+    pages.push(open);
+    pages
 }
 ```
 
-Slack is then bounded by the smallest chunk *in the look-ahead window* rather than by the smallest chunk overall, and id order survives up to a reordering of `L`.
-Whole-page chunks bypass the window entirely, being cut off the front of an over-long range and written to pages of their own, exactly as [the current placement](flush.md#cutting-and-packing-concretely) does.
+Chunks longer than a page never reach `pack`: whole pages are cut off their front first and written on their own, [as the flush's placement does](flush.md#cutting-and-packing-concretely), since that is the one cut that is forced rather than chosen.
 
-#### Choosing the victim set so the total lands near a boundary
-
-**The remaining slack is removed by choosing victims to fit, not by cutting chunks to fit.**
-
-The fold gives the flush's own chunk bytes `D` exactly.
-Rounding up to `P = ceil(D / C)` pages leaves `P · C − D` bytes that would otherwise be slack, so consolidation aims at that plus whatever the budget buys:
-
-1. Take victims in ratio order while their live bytes fit the target.
-2. When the next one overshoots, **do not take it**: scan the next `K` candidates for the one whose live bytes come closest to the remaining room — a best fit over *victims*, cheap because the sparsest bucket is already at hand.
-3. Whatever room is left is then under one candidate's live-byte count, and simply goes unfilled.
-
-A victim is all-or-nothing, since relocating only some of a page's survivors reclaims nothing, which is why the fitting is done at victim granularity and never at chunk granularity.
-The estimate of `P` is allowed to be wrong, because the error lands in the elastic stream: one victim more or less, never a torn commit.
+**Victims are pulled in while packing, not chosen before it and fitted afterwards.**
+So there is no estimate of the page count to get wrong: a page closes when the flush's own content no longer fits it, the room it has left at that moment is known exactly, and whatever fills that room is chosen to fit it.
+Nor can a victim force a page open: step 2 takes a victim only when all of its survivors fit, and a page that exists only for consolidation's sake is opened by [the budget loop](#the-budget-loop), and only when its offer fills it.
+Slack in every page but the last is then at most `θ` of it, and usually far less, since step 2 fills the room with whatever victims fit before step 3 would cut; id order survives up to a reordering within the look-ahead.
 
 #### One statement queue, and why its length is computed last
 
-**Every mechanism emits into one queue, and the queue's encoded length is computed only once it is sorted**, because [delta encoding](../spec/address-table.md#physical-format) makes a statement's length a property of its predecessor rather than of itself.
+**Every mechanism emits into one queue, and the queue's encoded length is computed only once it is sorted**, because [delta encoding](../spec/address-table.md#delta-encoding) makes a statement's length a property of its predecessor rather than of itself.
 
-That gives the table side the same two-stream shape as the data side, with the same trimming:
+The queue holds everything the flush states:
 
-- the flush's statements, evacuation's restatements, and the windows' re-emissions all go into one queue;
-- after sorting, one pass computes each statement's length against its predecessor, and that pass is also what discovers how much room is left in the last page;
-- an id window is then chosen to fill that room, bounded by *encoded length* rather than by statement count.
+1. **the header's carried statements** — the header is rewritten every flush, so they are this flush's statements as much as any new one — each restated from what it still owns, which is how the header already narrows them;
+2. the fold's statements, and one restatement per chunk relocated by evacuation or rewritten by defragmentation;
+3. the restatements of the table victims the page rewrite drains.
 
-**The bound you point out is what makes that choice cheap.**
-`|encode(A ∪ B)| ≤ |encode(A)| + |encode(B)|`, because merging only ever brings each element's predecessor closer and a varint's length is monotone in the value it encodes.
-So a window's encoded length, measured in isolation during scoring, is a safe upper bound on what it adds to the queue: filling to that bound under-fills rather than overflows, and a second pass over the merged queue recovers the difference when it is worth another window.
+It is then cut, and the order of the cuts matters.
 
-#### The flush as a straight line
+**The header keeps the hottest statements, not the tail of the key order.**
+The header is [the write buffer](flush.md#the-header-as-write-buffer): a statement that stays in it is rewritten for free every flush, so an allocation the application keeps touching never leaves a statement to be shadowed in a leaf.
+Filling the header from the end of the sorted queue would evict a hot statement whenever it happened to sort early, and each of its later updates would then leave garbage in a leaf.
+Key order is right for the rest: the statements the header does not keep are cut into leaves in key order, which is what keeps leaves dense.
+Evicting the coldest *key-contiguous run*, rather than the coldest statements wherever they sit, gets both at once — heat decides that a run goes, and key order decides which.
 
-1. **Fold** the journal into chunks and `Pending`s ([Phase A](flush.md#phase-a--the-fold)), which also yields `D` and the provisional coverage drops below.
-2. **Choose victims** against coverage as this flush will leave it, aiming at `P · C − D` plus the budget, and fitting the last one.
-3. **Pack** the union of both chunk streams in `(id, offset)` order with look-ahead, cutting only what must be cut.
-4. **Fill every hole** — a `Ref`'s `(page, page_offset)` is known once its chunk has a page — and push every statement into the shared queue.
-5. **Sort the queue, compute encoded lengths**, top the last table page up with an id window, and evict from the header whatever no longer fits.
-6. **Write, unlink** the leaves whose coverage reached zero, and **commit** by [the flush protocol](../spec/durability.md#the-flush-protocol).
+**Only the last page is short, and its room is filled the way a data page's is.**
+The room — in the last leaf, or in the header when the flush needs no leaf — takes whole table victims that fit first, and then [the rotating window](#the-rotating-window), the one filler that can stop at any byte and so fills the room exactly.
 
-**Coverage falls in step 4, not in step 1**, and that is what decides what step 2 is allowed to see.
-The fold computes and commits nothing, so no counter moves: coverage falls when [`apply`](address-table-operations.md#applying-a-statement) re-owns a range and releases the previous owner's pin, which needs the new statements to exist.
-Selecting victims against raw committed coverage would therefore evacuate pages that this very flush is about to empty — pure waste — so the fold, which walks the overwritten fragments anyway, accumulates a **provisional drop per page** that step 2 subtracts without committing it.
-What remains genuinely one flush behind is only the flush's *own output*: the pages it writes and the statements it emits cannot be victims of the flush that produced them, and there is no reason to want them to be.
+**Subadditivity of the encoded length is what makes that fitting cheap.**
+`|encode(A ∪ B)| ≤ |encode(A)| + |encode(B)|` for any two sets of statements that may share an epoch, because merging only ever brings each element's predecessor closer and a varint's length is monotone in the value it encodes.
+The one condition is that the union be conflict-free — [each fragment stated once](#each-fragment-is-stated-once-per-epoch) — since two statements claiming the same byte would need the offset cursor to step backwards, which the encoding cannot express.
+So a filler's length, measured on its own, is a safe upper bound on what it adds: filling to that bound under-fills rather than overflows, and a second pass over the merged queue recovers the difference.
+(Subadditive is the word; convexity is a property of functions on a vector space, which a function of sets is not.)
 
-The one accounting trap is that **the budget must be charged for the address-table pages a candidate causes, not only for its data pages.**
-Evacuating a data page emits a statement per relocated chunk, and enough of those overflow the header into a leaf the flush never planned to write.
-Defragmentation is where this bites hardest, being the one mechanism whose two costs pull in opposite directions: it writes data bytes in order to *stop* writing statements.
+In more detail, the queue is cut like this:
 
-## One currency
+- The statements the header does not keep are sorted, and their lengths computed *with page boundaries*: each leaf's first statement pays its full-width id and offset, since both cursors reset at a page boundary; a leaf spends one delimiter byte on its empty child list; and a statement that does not fit starts the next leaf.
+  The outputs are the leaves and the room left in the last of them.
+- The header's room is what remains after the file-header fields, its child list, and the statements it keeps.
+  Its child list depends on how many leaves this flush adds and unlinks, so the split is computed against an estimate and corrected once: if the list turns out longer, the header gives up its coldest statements to the last leaf.
+- A child list that no longer fits the header at all is not a case to optimize, but [the depth change](flush.md#the-shape-of-the-tree) the tree already provides: the whole list moves into one fresh interior page, which the header references instead.
 
-The design has one throttle — a per-flush **maintenance budget** in pages beyond the flush's own dirty content — and one queue of candidates competing for it, ranked by `bytes reclaimed / bytes written`.
-One further parameter, [the churn floor `λ`](#the-churn-floor-is-a-parameter-not-an-identity), says when a candidate is not worth taking at all.
+#### Each fragment is stated once per epoch
 
-Three candidate kinds compete in that queue, which the [four mechanisms](#four-mechanisms) map onto unevenly:
+**Everything a flush writes shares one epoch, so no two of its statements may claim the same byte** — and a flush that assembles its output from several sources breaks that easily unless one rule prevents it.
 
-1. **Evacuation** — relocate the live content of a set of sparse data pages into the fill of pages being written anyway, plus however many fresh pages the set still needs; reclaims dead data bytes.
-2. **An id-window rewrite** — re-emit the live statements of an id range, sorted and dense; reclaims dead statement bytes *and* restores delta-encoding density.
-   **Defragmentation is priced inside this candidate** rather than competing as a fourth, since [the window's own walk is what finds the stippled allocations](#defragmentation-rides-the-id-window).
-3. **A table-page rewrite** — drain one stubborn table page directly.
-   It is [gated on the starvation condition](#why-address-table-pages-have-two-mechanisms) rather than competing freely, so that it can never outrank a window that would do strictly more for the same page write.
+Three collisions are waiting:
+
+- a victim's survivor that the same flush overwrites, which evacuation would restate beside the flush's own statement for it;
+- a survivor that belongs to a statement the header is carrying forward, which the header would restate as well;
+- the rotating window passing over a fragment that the fold, a victim, or the header already restates.
+
+**The rule is: re-own before placing.**
+Every statement the flush creates takes ownership of its fragments in the fragment map at the moment it is created, and only its location is filled in later, when its chunk gets a page or the queue is cut.
+Every source then reads current ownership — a victim's survivors are the fragments that still point into it, the header's carried statements are restated from what they still own, and the rotating window skips any fragment owned by a statement this flush states — so the collisions become impossible rather than checked for.
+
+Two things follow.
+Coverage *releases* happen at re-own time, so victim selection sees the state the flush will leave with no provisional bookkeeping of its own; only the *charges* for new statements wait for their locations.
+And the fragment map now changes before the commit, so a flush that fails must unwind or [poison the session](../spec/durability.md#headroom), which the reference implementation's poisoning already covers.
+
+## The budget
+
+The design has one throttle — a per-flush **maintenance budget** in pages beyond the flush's own content — and one queue of offers competing for it, ranked by `bytes reclaimed / bytes written`.
+One further parameter, [the churn floor `λ`](#the-churn-floor-is-a-parameter-not-an-identity), says when an offer is not worth taking at all.
+
+Two sources compete for that budget, and they are one mechanism applied to two kinds of page:
+
+1. **Evacuation** relocates a data victim's survivors, and reclaims dead data bytes.
+2. **The page rewrite** restates a table victim's live content, and reclaims dead statement bytes.
+
+The other two mechanisms stay out of the ranking, each for a reason of its own.
+**The rotating window** takes only the room the victims leave, because what it buys — density — is worth too little per byte to compete.
+**Defragmentation** pays down a different debt: it reclaims almost no space, and what it retires is description, measured in statements and fragment-map memory rather than in file bytes, so it draws on [a reserved share](#where-it-is-called-and-how-it-is-executed) instead of competing.
 
 Defragmentation is worth naming as a mechanism of its own even so, because it is the only one that pays down [description fragmentation](#the-high-level-picture) and the only one that shrinks the in-memory fragment map.
 An allocation stippled with `[data] [zeros] [data] …` patches costs statements forever until someone rewrites the region as one `Ref` — and the [`Zero` usage note](../spec/address-table.md#statement-types) explicitly permits rewriting such a stipple as one `Ref` over a range whose gaps the consolidator fills with actual zeros, which is what makes the rewrite legal.
@@ -262,7 +323,7 @@ Those bytes are being written anyway, so zeroing them costs nothing beyond the `
 
 ### The structures behind the ranking
 
-Every candidate that starts from a *page* is ranked from **bucket queues**, which is the structure that makes "give me a good victim" `O(1)` instead of `O(log P)`.
+Every source that starts from a *page* is ranked from **bucket queues**, which is the structure that makes "give me a good victim" `O(1)` instead of `O(log P)`.
 
 ```rust
 struct Buckets {
@@ -274,12 +335,12 @@ struct Buckets {
 A page's bucket is `coverage[p] * B / capacity`, so moving a page is: swap-remove it from its old list, push it onto the new one, and fix the `at` entry of whatever the swap moved.
 Three array writes and two map updates, no comparisons, no rebalancing — which matters because coverage changes on **every** fragment created or destroyed, not once per flush.
 
-**Kind 3 gets its own instance, and with a smaller `B`.**
-One shared instance would cost the `O(1)` the structure exists for: data pages outnumber table pages by roughly the ratio of their contents, so `lowest_non_empty()` on a mixed structure would keep handing back data pages and the table candidate would scan past them.
-The smaller `B` follows from what that candidate is for — a gated escape hatch that needs "nearly empty" rather than a fine ranking — so four buckets do where the data side wants sixteen.
-Header pages belong in neither, [being rewritten unconditionally](flush.md#the-header-as-write-buffer) and therefore never victims.
+**Each page kind gets its own instance.**
+One shared instance would cost the `O(1)` the structure exists for: data pages outnumber table pages by roughly the ratio of their contents, so `lowest_non_empty()` on a mixed structure would keep handing back data pages and the table side would scan past them.
+Both can use the same `B`, since the page rewrite is the table side's primary mechanism and wants the same resolution evacuation does.
+Header pages belong in neither: a header is rewritten every flush, so it is never a victim, and its statements are accounted for by being [restated into every flush's queue](#one-statement-queue-and-why-its-length-is-computed-last) rather than by its coverage.
 
-Kind 2 needs no bucket structure of its own, being [seeded from the table-page buckets and from a rotating cursor](#seeding-a-window), and neither does the defragmentation priced inside it.
+The rotating window needs no bucket structure at all, being driven by its cursor, and neither does the defragmentation it discovers.
 
 **Why bucketing is enough.**
 A bucket queue answers "roughly the sparsest" rather than "the sparsest", and the ranking is a heuristic whose inputs are estimates anyway.
@@ -287,44 +348,78 @@ What it must not do is *miss* a good victim, and it cannot: a page in the sparse
 
 ### The budget loop
 
+A flush and its consolidation run as one straight line:
+
 ```rust
-fn consolidate(budget: Budget) -> Plan {
-    let mut plan = Plan::new();
+fn flush(journal: Journal, budget: Budget) {
+    // 1. Fold (Phase A), then re-own: every statement the fold produces takes its
+    //    fragments now and its location later. Coverage falls here, so everything
+    //    below sees the state this flush will leave.
+    let fold = fold(journal);
+    re_own(&fold.statements);
+    let mut queue = Queue::new(header.statements(), fold.statements);  // every restatement below joins it
 
-    // 1. Free filling. These sinks are the slack in pages that must be written
-    //    anyway, so nothing here is traded off against anything: it runs to exhaustion.
-    plan.fill(flush.data_slack(),  evacuation.survivors());
-    plan.fill(flush.table_slack(), id_windows.statements());
+    // 2. Data pages: the flush's own chunks in key order, with victims riding along
+    //    wherever a page has room its own content cannot use. See `pack`.
+    let mut data = pack(fold.chunks, &mut elastic);
 
-    // 2. Budgeted cleaning: pages that exist only to reclaim. Each source offers its
-    //    next *marginal* victim, and within a source those arrive in decreasing ratio
-    //    order — so one greedy pass over the merged streams is the whole policy.
-    while plan.extra_pages() < budget.pages {
-        let Some(v) = [evacuation.peek(), id_windows.peek(), table_pages.peek()]
-                          .max_by_key(|v| v.reclaimed / v.written) else { break };
-        if v.reclaimed < budget.lambda * v.written { break; }    // the churn floor
-        plan.take(v);
+    // 3. Budgeted pages, one at a time, to whichever page kind reclaims more per
+    //    byte — and only a page the offer fills, since a page opened for a sliver
+    //    would cost a whole page write for next to nothing.
+    for _ in 0..budget.pages {
+        let Some(offer) = [evacuation.offer_page(), page_rewrite.offer_page()]
+                              .into_iter().flatten()
+                              .max_by_key(|o| o.reclaimed / o.written) else { break };
+        if offer.reclaimed < budget.lambda * offer.written { break; }   // the churn floor
+        if offer.fill() < 1.0 - THETA { break; }
+        offer.take(&mut data, &mut queue);
     }
-    plan
+
+    // 4. Address-table pages: cut the queue. The hottest statements stay in the
+    //    header, the rest go to leaves in key order, and the last page's room goes
+    //    to table victims that fit and then to the rotating window.
+    let table = cut(queue, &mut page_rewrite, &mut rotating_window);
+
+    // 5. Unlink emptied pages, write, fsync, commit; then truncate a reusable tail.
+    #[cfg(debug_assertions)] fill_observer.record(&data, &table);
+    commit(data, table);
 }
 ```
 
-**The sources are combined, not traded off — but they do compete.**
-You are right that the result is one *set* and that the three sources add to a shared plan rather than one of them winning outright; a whole evacuation was never a `Candidate`, and having `evacuation_candidate` return a set while this loop treated it as a single page was a genuine inconsistency.
-What survives of the trade-off is that they compete for one scarce thing, the page budget, which is why the merge is greedy over *marginal* victims rather than over whole mechanisms.
-Each source's marginal ratio decreases as it takes more, so one greedy pass over the merged stream is the right amount of machinery.
+**The two page kinds are combined, not traded off — but they do compete.**
+Their victims fill one plan, and what they compete for is the one budget, a page at a time; each source's offers decline as it takes more, so one greedy pass over the two is the right amount of machinery.
+
+**Free filling happens inside steps 2 and 4, and step 3 is the only place a page is opened for consolidation's sake.**
+It opens one only when the offer fills it to `1 − θ`, which is what keeps a victim too many from costing a nearly empty page.
+An offer is what the page would hold: whole victims first, by best fit, and then — if that leaves more than `θ` empty — one more victim with a survivor cut at the page boundary, exactly as `pack` cuts the flush's own chunk.
+A cut's tail leads the next page, which is therefore opened whatever its own offer, so the loop cuts nothing on its last page, and every chain of cuts it starts ends within the budget.
+The flush's data pages form one such chain: the last page `pack` returns may cut a victim's survivor too whenever the loop goes on to open another, so only the flush's very last data page can close short.
+Defragmentation's reserved share rides in step 2, and reaches step 3 only on a flush that writes no data page at all.
+
+**Debug builds observe how full the pages come out.**
+
+```rust
+#[cfg(debug_assertions)]
+#[derive(Default)]
+struct FillObserver {
+    // One slot per category: the header, other address-table pages, data pages.
+    pages:   [u64; 3],   // written this session
+    content: [u64; 3],   // their `content_size`s summed; average fill is content / pages
+    lowest:  [u16; 3],   // the lowest `content_size` written by the latest flush
+}
+```
+
+It measures fill *at write time* — the packer's quality — which is a different number from the file's live fraction, the consolidator's quality, which the budget throttle reads.
+`record` also asserts what packing promises: every data page of a flush but its last at least `1 − θ` full, and every leaf but the last full to within the length of the statement that did not fit.
+The header's fill is observed but not asserted, since a small file's header is legitimately almost empty.
 
 #### The churn floor is a parameter, not an identity
 
-**You are right that `reclaimed ≤ written` is arbitrary, and the reason is a units error.**
-A *ranking* only needs two candidates' ratios to be comparable, and they are.
-A *threshold* needs the ratio to have an absolute meaning, and comparing the two sides at 1 quietly asserts one: that a byte of I/O is worth exactly a byte of space.
-Nothing supports that rate, and asserting it is precisely what produces the `u = 1/2` floor.
-
-So the floor is a parameter `λ` — space freed per byte written — and its price is explicit.
+The floor is a parameter `λ` — space freed per byte written — and its price is explicit.
 Cleaning pages at live fraction `u` costs `u / (1 − u)` bytes written per byte of space freed, so a total write amplification of `1 / (1 − u)`: 2× at `u = 1/2`, 5× at `0.8`, 10× at `0.9`.
+Nothing requires `λ ≥ 1`: below 1 it cleans pages more than half live, at the corresponding amplification, which a workload with no temporal locality may need.
 
-**But `λ` is the wrong knob for the file fill you want.**
+**But `λ` is the wrong knob for a target file fill.**
 An average fill of 80–90 % does not mean cleaning pages that are 80–90 % live, and implementing it that way would buy the last few percent at five to ten times the write traffic.
 It means the distribution of live fractions is bimodal enough that most pages sit near full while the garbage concentrates in a few nearly empty ones — which is what [the age term](#scoring-a-data-page) is for, and the whole reason LFS's cost-benefit cleaner beats plain greedy.
 
@@ -336,14 +431,17 @@ The two knobs therefore do different jobs, and only one of them is a floor:
 That also sharpens [the bound this buys](#the-bound-this-buys): `live_size / τ` is reached by spending budget, and the floor's only job is to stop spending it on pages that cannot repay.
 
 **The known failure mode of the single ranked queue.**
-Ratio-greedy ranking starves **costs that current ratios cannot see**, and this design has exactly two of them.
-Description debt on a cold allocation — one that will be read forever and never written again — never looks urgent, because nothing about it is changing.
-A table page whose live statements are scattered across the id space never looks urgent either, because no single window reclaims much of it.
-Both are taken out of the ranking rather than weighted inside it: the first rides [the rotating sweep cursor](#defragmentation-rides-the-id-window), and the second fires on [a gate](#why-address-table-pages-have-two-mechanisms).
-Folding an invisible cost into the ranking — as LFS's cost-benefit policy does with segment age — is the alternative, and it is the right one where a cost is *urgent but mismeasured*.
-It is the wrong one for both of these, which are not urgent at all: it would buy a tuning parameter for a problem a rotation solves without one.
+Ratio-greedy ranking starves **costs that current ratios cannot see**, and one such cost remains in this design: description debt on a cold allocation — one that will be read forever and never written again — never looks urgent, because nothing about it is changing.
+It is taken out of the ranking rather than weighted inside it: [the rotating walk](#defragmentation-rides-the-id-window) discovers it, and a reserved share of the budget pays it.
+A table page whose live statements are scattered across the id space is not a second such cost, because the page rewrite selects by sparsity alone, to which scattering is invisible.
 
-### The complexity this buys
+**That is not a verdict against age terms.**
+Age can do two different jobs, and only one of them is a starvation guard.
+In [data-page scoring](#scoring-a-data-page) it is a *prediction*: a page written recently will likely get sparser by itself, so cleaning it now wastes the writes that relocate survivors about to die.
+That job is exactly right there, and the same prediction applies to defragmentation — a range patched recently will likely be patched again, which would waste the rewrite — which is why [defragmentation candidates are scored with age](#where-it-is-called-and-how-it-is-executed).
+What age would be wrong for is the other job, guaranteeing that a cost the ratio never sees is eventually paid: a weight large enough to force that is a tuning parameter standing in for a rotation, which guarantees it outright.
+
+### The complexity this incurs
 
 Strictly logarithmic work *per flush* is unattainable, because a flush must at least record what it changed.
 The attainable form, and what this design achieves:
@@ -355,12 +453,12 @@ The attainable form, and what this design achieves:
 
 ## Two forms of consolidation
 
-Consolidation runs inside every flush, in two forms that differ in [the price of the sink](#victims-are-chosen-as-a-set) and, following from that, in whether they are traded off against anything at all:
+Consolidation runs inside every flush in two forms, which differ in [the price of the sink](#victims-are-pulled-one-at-a-time) and, following from that, in whether they are traded off against anything at all:
 
-- **Free filling.** Survivors land in the slack of pages that must be written anyway, so they cost no page write and compete with nothing. It runs to exhaustion.
-- **Budgeted extra pages.** Beyond that, pages that exist only to reclaim. These compete, under [the budget and the churn floor](#the-budget-loop).
-
-Both draw from the same [elastic stream](#mandatory-and-elastic), and every knob in this document applies to the second.
+- **Free filling.** Victims, and defragmentation's rewrites, ride in the room of pages that are being written anyway — the flush's own data pages, and the header or the last leaf — so they cost no page write and compete with nothing.
+  It happens inside [packing](#packing-in-id-order-with-look-ahead) and inside [cutting the queue](#one-statement-queue-and-why-its-length-is-computed-last), and it runs to exhaustion.
+- **Budgeted pages.** Beyond that, pages that exist only to reclaim, offered one at a time and opened only when the offer fills them.
+  These compete, under [the budget and the churn floor](#the-budget-loop).
 
 ## Victim selection for data pages
 
@@ -389,182 +487,120 @@ The bucket gives `u` only to within `1/B` and says nothing at all about age, so 
 That keeps selection `O(1)` and gets the age term back, and it is robust in the way that matters: the sampled set is already known to be sparse, so the worst outcome of a bad sample is cleaning a page slightly less old than the best one in the same bucket.
 Rotating the start of the sampling window across flushes stops the same unlucky prefix from being examined forever.
 
-### Victims are chosen as a set
+### Victims are pulled one at a time
 
-**The number of output pages is a consequence of the victim set, never a second decision.**
-[Free re-cutting](flush.md#cutting-content-across-pages) fills every output page completely, so `k` victims holding `L` live bytes between them produce exactly `ceil(L / C)` output pages for page capacity `C`, reclaim `k · C − L` bytes, and write `L`.
+**A victim is taken only when all of its survivors have somewhere to go in this flush.**
+A victim is all-or-nothing, since relocating only some of a page's survivors reclaims nothing, so the victim is the unit of choice and the room is the only constraint.
+In free filling that means the page's room holds all of them; on a budgeted page, one survivor may be [cut at the boundary](#slack-is-cheaper-than-a-split--up-to-a-point), its tail leading the next page — never on the budget's last page, where the tail would have nowhere to go.
 
-The ratio that ranks the operation therefore depends only on the set's **mean** live fraction, `ū = L / (k · C)`:
-
-```
-reclaimed / written = (1 − ū) / ū
-```
-
-Two things follow, and both simplify the policy rather than complicate it.
-
-**Sparsest-first is exactly right, and the size of the set is free.**
-Adding victims in increasing live fraction raises `ū` and lowers the ratio monotonically, so there is no combinatorial choice to make and no reason to consider any set but a prefix of the sorted order: draw from the sparsest bucket until the budget runs out or the next victim stops paying for itself.
 A marginal victim frees `(1 − u_v) · C` bytes and writes `u_v · C`.
+The `1 − u_v` is not the victim's empty fraction claimed as a gain; that space is unusable already and would be released regardless.
+It is what remains after paying for the survivors: all `C` of the victim's bytes come back, and `u_v · C` of them are spent again at once, because the survivors take up as much space in their new page as they did in the victim.
+The two-epoch quarantine delays the release and the consumption alike, so it changes the timing and nothing else.
 
-**The `1 − u_v` is not the victim's empty fraction being claimed as a gain**, which would indeed be double counting — that space is already unusable and is about to be released whatever we do.
-It is what remains after paying for the survivors: the victim's `C` bytes do all come back, exactly as you say, and `u_v · C` of them are immediately spent again, because the survivors occupy space in their new page exactly as they occupied it in the victim.
-Net space gained is `C − u_v · C`.
-The two-epoch quarantine changes only the timing, and it delays the release and the consumption alike.
+**Sparsest first is exactly right**, since the marginal ratio `(1 − u_v) / u_v` falls as `u_v` rises, and the churn floor then reads `u_v ≤ 1 / (1 + λ)`.
 
-What does change the arithmetic is a *free* sink, which is the next point: a survivor landing in slack that was going to be wasted consumes nothing, so the net gain is the whole `C` and the ratio is `1 / u_v`, above 1 for every `u_v`.
-
-The set-average form of the marginal test is the [budget loop](#the-budget-loop)'s floor, since `reclaimed = λ · written` reads `ū = 1/(1 + λ)` — and the marginal test always binds first, which is why a set stops growing before the plan as a whole stops paying.
-
-**Free filling and budgeted consolidation differ only in the price of the sink.**
-A survivor landing in the leftover space of a page the flush was writing anyway costs no page write at all, so the marginal victim reclaims `1 − u_v` for nothing and *any* `u_v < 1` is worth taking.
-That is the whole of the distinction between [the two forms](#two-forms-of-consolidation), and it is why they are one pass over a stream of sinks rather than two mechanisms.
-
-Putting the two together, evacuation is a **source of marginal victims** that [the budget loop](#the-budget-loop) draws from, not a candidate that wins or loses as a unit:
+**A free sink changes the arithmetic, not the order.**
+A survivor landing in room that a page being written anyway would otherwise waste consumes nothing, so the victim's net gain is the whole `C` and its ratio `1 / u_v`, above 1 for every `u_v`: free filling takes any victim that fits, and the churn floor does not apply to it.
+That is the whole of the distinction between [the two forms](#two-forms-of-consolidation).
 
 ```rust
 impl Evacuation {
-    /// The next victim this source would take, and what it would cost. The budget
-    /// loop compares this against the other sources' next victims and takes the best.
-    fn peek(&self, room: u32) -> Option<Victim> {
-        let bucket = self.buckets.lowest_non_empty();
-        let best = bucket.sample(K).max_by_key(|p| score(p))?;
-        // Do not overshoot the room left in the pages already being written: past
-        // that boundary a victim buys a whole new page for a sliver of content.
-        if coverage[best] > room {
-            // Best fit over victims, not a split of chunks; see "Choosing the victim
-            // set". Returns None when nothing in the sample fits, which stops the
-            // source — elastic, so stopping is free.
-            return bucket.sample(K).filter(|p| coverage[p] <= room).max_by_key(|p| score(p));
-        }
-        Some(best)
+    /// The best-scoring sampled victim whose survivors fit `room`, evacuated, or None.
+    /// A victim that would overshoot is passed over for one that fits, never cut to fit.
+    fn take_fitting(&mut self, room: u32) -> Option<Survivors> {
+        let bucket = self.buckets.lowest_non_empty()?;
+        let v = bucket.sample(K).filter(|p| coverage[p] <= room).max_by_key(|p| score(p))?;
+        Some(self.evacuate(v))       // restated and re-owned; see "Each fragment is stated once"
     }
+
+    /// What one budgeted page would hold and reclaim, without taking anything: whole
+    /// victims by best fit, the churn floor applied to each, then — unless this is the
+    /// budget's last page — one more victim cut at the boundary if the page would
+    /// otherwise close more than θ empty.
+    fn offer_page(&self) -> Option<Offer> { … }
 }
 ```
 
-The `room` argument is the fix for stopping an iteration too late: without it the source hands over a victim whose survivors spill a few bytes past a page boundary, and the plan pays a whole page for them.
-With it, the overshooting victim is simply passed over in favour of one that fits, and the source stops when none does.
-
-A caveat on the arithmetic rather than on the policy: `coverage` counts [aliased bytes once per claimant](liveness.md#coverage), so `L` over-states both what an evacuation writes and what it reclaims, and the ratio above is a lower bound wherever aliasing is present.
+A caveat on the arithmetic rather than on the policy: `coverage` counts [aliased bytes once per claimant](liveness.md#coverage), so `u_v` over-states both what an evacuation writes and what it reclaims, and the ratio above is a lower bound wherever aliasing is present.
 
 ## Victim selection for address-table pages
 
-Consolidated by **id range** rather than page identity.
+**Table pages are drained by the page rewrite, victim by victim, as data pages are evacuated**, and the rotating window restates a key range for density's and defragmentation's sake in whatever room is left; [why the work divides that way](#why-address-table-pages-have-two-mechanisms) is above.
 
-The quantity to optimize is reclaimed coverage per byte written.
-Rewriting all live statements of an id range into one fresh page costs one page write, and its benefit is the coverage it drains from the pages currently holding those statements — *weighted*, because drained coverage only helps on pages that end up empty or nearly so: draining a page from 60 live bytes to 0 frees a slot; draining it from 3000 to 2940 frees nothing.
+### The page rewrite
 
-**Picking a window needs no new index.**
-The fragment map is ordered by id, and every owned fragment names its statement, whose page and framing the slab already records.
-So a window is scored by walking fragments:
+Victims come from the address-table buckets — sparsest first, `K` sampled and scored as [data pages are](#scoring-a-data-page) — and a victim is taken only where all of its restatements fit: in the room of the queue's last page, which costs nothing, or on a budgeted leaf.
+Executing one is [`rewrite_page`](address-table-operations.md#rewrite_pagevictim-queue): decode the victim, restate the fragments its live statements still own into the queue, and transfer the anchor wherever it lived there.
+
+Its cost is those restatements' encoded bytes, estimated from the victim's coverage while it is only being offered and computed exactly once it is taken; its benefit is the whole victim.
+So it is priced exactly as evacuation is, `(C − written) / written`, and the two compete in [the budget loop](#the-budget-loop) on equal terms.
+[Coverage charges an inline payload per byte to the table page that carries it](liveness.md#coverage), so the estimate includes payloads without special care — which matters, since a page of 64-byte inlines is ~90 % payload and would look ten times sparser than it is if only framing counted.
+
+A victim with children — an interior page — is rewritten the same way, and its `child_ref`s move with it; see [unlinking](#unlinking-an-emptied-page).
+
+### The rotating window
 
 ```rust
-fn table_window_candidate() -> Candidate {
-    let mut best = None;
-	let mut drain: SmallMap<PageNumber, u32> = SmallMap::new();
-	let mut seen: SmallSet<StatementRef> = SmallSet::new();
-    for _ in 0..WINDOWS_PER_FLUSH {                 // a small constant, e.g. 8
-	    drain.clear();
-	    seen.clear();
-        let mut encoded = 0;
-
-        // Walk fragments from the cursor until one page's worth of statements would
-        // be re-emitted. `sweep_cursor` is a fragment-map key, kept across flushes.
-        for (key, fragment) in fragments.range(sweep_cursor..) {
-            let Some(s) = fragment.statement() else { continue };   // ZeroByDefault
-            // Framing is per statement, so it is guarded by `seen`. An inline payload
-            // is live only where the statement still owns a fragment, so it is not.
-            if seen.insert(s) { drain[slab.page_of(s)] += slab.framing_len[s]; }
-            if s.is_inline()  { drain[slab.page_of(s)] += fragment.len(); }
-            encoded += re_encoded_size(fragment); // Needs id and offset of last encoded fragment to calculate size of delta-encoding
-            if encoded >= MAX_PAGE_CONTENT { break; }
-        }
-
-        best = max(best, Candidate { benefit: benefit(&drain), written: 1, .. });
-        sweep_cursor = next_window_start();
+/// One step of the rotation. Restates live fragments from the cursor into `sink`
+/// until `room` bytes of encoding are used, walks on for defragmentation's sake
+/// until `WALK` fragments have been seen, and returns the candidates found.
+fn rotating_window(room: u32, sink: &mut QueuePage) -> Vec<DefragCandidate> {
+    let start = cursor;
+    let mut stop = None;                           // where the restated range ends
+    let mut encoded = 0;
+    let mut defrag = KadanePerId::new();           // resets at every id boundary
+    for (key, fragment) in fragments.range_wrapping(start).take(WALK) {
+        defrag.push(key, fragment);                // weights as in `defrag_candidate`
+        cursor = key.next();
+        if stop.is_some() { continue; }
+        let Some(s) = fragment.statement() else { continue };   // ZeroByDefault
+        if states_this_flush(s) { continue; }      // see "Each fragment is stated once"
+        encoded += re_encoded_size(fragment);      // against the previous restatement
+        if encoded > room { stop = Some(key); }
     }
-    best
+    rewrite_key_range(start, stop.unwrap_or(cursor), sink);
+    defrag.finish()
 }
 ```
 
-**The inline payload has to be counted**, and leaving it out would misrank exactly the pages most worth draining.
-[Coverage charges an inline payload per byte to the table page carrying it](liveness.md#coverage), so draining an inline statement drops framing *and* payload from that page's counter.
-The two accumulate differently, which is the part that is easy to get wrong: framing is per statement, and therefore guarded by `seen`, while a partially shadowed inline has live payload only where it still owns a fragment.
-A page of 64-byte inlines is ~90 % payload, so counting framing alone would under-report its drain by an order of magnitude and rank it below pages holding nothing but `Ref`s.
+**`room` is an argument because the room is whatever the queue leaves**, which varies from flush to flush; and the function returns what its walk found rather than a score, since nothing chooses between windows — there is only the one.
 
-### The cursor is a fragment-map key
+**The cursor is a fragment-map key**, `(Id, AllocationOffset)`, so a window is a plain range of the structure it walks, with no special case at either end.
+An allocation whose live statements alone outgrow the room is simply resumed mid-allocation by the next window, where a cursor keyed by id alone would never get past it.
+Anchors need no position in the window: [`rewrite_key_range`](address-table-operations.md#rewrite_key_rangelo-hi-sink) transfers an anchor only when the anchor's page is one the window restates from, which is a question about pages rather than about how much of the id the window covered.
 
-**Yes, `(Id, AllocationOffset)`, which is the fragment map's own key** — and that is the argument for it: a window becomes a plain range of the structure being walked, with no special case at either end.
+**A new session resumes the rotation somewhere new.**
+The cursor lives in memory, so a session that started it at the beginning of the key space every time would, over many short sessions — a command-line tool that a script invokes over and over, say — only ever reach the low ids.
+So open seeds it at the first statement of one table page, chosen by the governing header's CRC modulo the number of table pages: deterministic for a given file, so tests reproduce, and spread evenly over pages across sessions, which is spread evenly over statements to within how full the pages are.
 
-The edge case you name is real rather than hypothetical, since any id with a long enough history of small `Inline` patches reaches it, and an id-keyed cursor fails at it badly: the window never gets past that id, so `next_window_start()` returns to it forever and the sweep stalls there permanently.
-An offset-keyed cursor simply resumes mid-allocation on the next window.
+### Unlinking an emptied page
 
-The one thing to check is the anchor, which is invisible in the fragment map and therefore has no position in a window.
-[`rewrite_id_range`](address-table-operations.md#rewrite_id_rangelo-hi)'s rule survives unaltered, because it is a question about pages rather than about coverage of the id: it transfers an anchor when the rewrite drains the page holding it.
-A partial window that emits `replacement_anchor(id)` emits `Shrink(id, size(id))`, which is correct whatever else that window covered, and one that does not emit it leaves an anchor whose page was not drained — also correct.
+**Nothing waits for a load.**
+With framing, inline payloads, and child references all charged per byte, a table page whose last live content is restated elsewhere reaches zero coverage in the same flush, and [the two-generation quarantine](../spec/durability.md#the-reuse-rule) does the rest: fallback at the next commit, writable one commit after that.
+Its dead bytes then sit in it until it is overwritten, which is a statement about the bytes and not about the page's availability.
 
-### Seeding a window
+One step stands between zero coverage and reuse, and it is structural rather than an accounting overhang: **an emptied table page is still named by its parent**, so it stays reachable from the header, and [I2](../spec/durability.md#the-two-invariants) forbids overwriting it until the flush that emptied it has also unlinked it.
 
-**Seed from the sparsest table page rather than from a random one**, which is your idea with the selection put back into it.
+The reference implementation writes shallow trees — the header is the only interior page until a file has accrued [on the order of a thousand leaves](flush.md#the-shape-of-the-tree) — but it must not rely on that, since another writer may shape the tree differently.
+So:
 
-The mechanism you are reaching for is real: a window straddling two pages retires neither, while one aligned with a page's id span retires it outright.
-Seeding at a page's first statement is what aligns it, and it works because [pages tend to hold coherent id ranges](flush.md#the-header-as-write-buffer) — every mechanism here emits sorted.
+- **The page table records each table page's parent**, four bytes a page, which [the tree property](../spec/address-table.md#physical-format) makes a single page number.
+- **Unlinking rewrites the parent** without the child's reference.
+  At depth 1 the parent is the header, rewritten anyway; deeper, the parent is rewritten like any other table page, its other children carried over, and so is *its* parent, up to the header — the `depth − 1` path copy of a [structural update](flush.md#the-shape-of-the-tree).
+- **A child reference is charged to its parent's coverage**, and released when the child is unlinked.
+  Without that charge, a parent whose statements had all moved elsewhere would reach zero coverage while still holding the only reference to live children, and reusing it would orphan them — silently, since nothing would reach their statements at the next load.
+- **A page rewritten while it has children carries them along**: into the header if its child list has room, which also flattens the tree, and otherwise into the page's replacement, with each moved child's parent entry updated.
 
-Two refinements make it strictly better than random:
+Data pages need none of this, having no parent.
 
-- **Record each table page's key span in the page table** — `(first_key, last_key)` over the same `(Id, AllocationOffset)` space as the cursor, eight bytes a page.
-  It is known when the page is written and never changes afterwards, so it turns "seed at this page" into a lookup rather than a decode.
-- **Take the seed page from the address-table buckets.**
-  The sparsest page is the one most worth retiring, and its span says in advance whether one window can even cover it — which is [the starvation test](#why-address-table-pages-have-two-mechanisms) made cheap, and therefore what decides when to fall back to decoding the page instead.
-
-Reproducibility then needs no pseudorandom stream at all, the choice being a deterministic function of the page table.
-
-**Keep the rotating cursor alongside it, for one window per flush.**
-Page-seeded windows go where the garbage is and would never visit a densely packed page, but [defragmentation rides these windows](#defragmentation-rides-the-id-window) and depends on reaching *every* id eventually — which only a rotation guarantees.
-
-**The benefit is drained bytes weighted by the fraction drained**, which is what encodes "draining a page from 60 live bytes to 0 frees a slot; draining it from 3000 to 2940 frees nothing":
-
-```
-benefit = Σ over pages Q of  drain[Q] · drain[Q] / coverage[Q]
-```
-
-**`coverage[Q]` sits inside a sum over pages and `encoded` does not**, which is what settles the slot each belongs in: the benefit is shaped per drained page, while the cost is a property of the window as a whole.
-`drain[Q] / coverage[Q]` is the *fraction* of `Q` this window takes away, so `drain[Q] · drain[Q] / coverage[Q]` reads "bytes drained, discounted by how far they get `Q` toward empty".
-Putting `encoded` there would divide every term by the same window-wide constant, which changes no comparison between pages and merely moves the constant inside the sum.
-
-Where you are right is that the cost is `encoded` and not a page.
-`written: 1` is wrong once [every mechanism shares one statement queue](#one-statement-queue-and-why-its-length-is-computed-last), because a window no longer buys a page: its statements join the queue, and it is the queue that rounds up to pages.
-So the candidate's ratio is `benefit / encoded`, in the same bytes-per-byte currency as everything else.
-
-The square is doing real work.
-Plain `Σ drain[Q]` would rate a window that shaves 2 % off fifty pages exactly as highly as one that empties two — identical bytes reclaimed, and one of them useless.
-
-**Two properties worth knowing about this walk.**
-Each statement is counted once even though it may own several fragments, which is what `seen` is for and which is easy to forget, since the fragment map is the only thing being walked.
-And a window's cost is bounded by construction: it stops at one page's worth of re-encoded statements, so it touches on the order of 700 fragments, whatever the file's size.
-
-Because a window's statements are rewritten sorted and adjacent, the same pass **re-establishes delta-encoding density**.
-Density is restored by cleaning, not maintained by an invariant — which is the cheaper of the two, since maintaining it would constrain every write.
-
-**Executing a window decodes nothing**, which is the property that separates it from every other rewrite in the design: the fragment map already holds resolved truth for the range, so [`rewrite_id_range`](address-table-operations.md#rewrite_id_rangelo-hi) emits statements straight from it.
-The drained pages are never touched.
-They get emptier because their statements *lose their pins* when the fresh ones supersede them, and coverage follows pins rather than physical presence.
-
-**Nothing waits for a load**; your reading of the accounting is the right one and the earlier wording was simply wrong.
-With framing and inline payloads both charged per byte, executing a window drops a fully drained table page's coverage to zero within the same flush, and [the two-generation quarantine](../spec/durability.md#the-reuse-rule) does the rest: fallback at the next commit, writable one commit after that.
-The dead bytes then sit in the page until it is overwritten, which is a statement about the bytes and not about the page's availability.
-
-One step does stand between zero coverage and reuse, and it is structural rather than an accounting overhang.
-**A table page with zero coverage is still named by its parent**, so it remains reachable from the header and [I2](../spec/durability.md#the-two-invariants) forbids overwriting it.
-The flush that drains it must therefore also unlink it, which [compacts the parent's child array during a rewrite that was happening anyway](flush.md#the-shape-of-the-tree) and costs nothing at depth 1, where the parent is the header.
-Data pages have no such step, having no parent.
-
-The one correctness obligation on any such rewrite is [transferring the anchor](address-table-operations.md#replacement_anchorid--the-one-correctness-obligation).
+The one correctness obligation on any rewrite is [transferring the anchor](address-table-operations.md#replacement_anchorid--the-one-correctness-obligation).
 
 ## Finding the referrers of a data page
 
 **This is an unresolved gap**, and it is worth stating plainly rather than leaving implicit.
 
-Rewriting an address-table page is self-describing — decode the victim, and its statements name the `(id, offset)` keys to look up — which is precisely what makes [the table-page rewrite](#why-address-table-pages-have-two-mechanisms) usable as an escape hatch, and why address-table pages need nothing of what follows.
+Rewriting an address-table page is self-describing — decode the victim, and its statements name the `(id, offset)` keys to look up — which is what lets [the page rewrite](#the-page-rewrite) drain table pages directly, and why address-table pages need nothing of what follows.
 A **data** page is opaque bytes with no ids in it, so decoding it tells you nothing, and the fragment map is keyed by `(id, offset)` rather than by address.
 Nothing in the design currently gets from a victim data page number to the `Ref` statements that must be re-pointed.
 
@@ -582,7 +618,7 @@ Four candidate answers, roughly in order of how well they fit:
   1. **Widen on fragment creation.** Creating a `Bytes` fragment into `P` unions its range into the window for `(P, id)`. `O(1)`, on the only path that can invalidate the index.
   2. **Do nothing on fragment destruction.** The index is then a superset, which costs a wasted scan and never a missed referrer.
   3. **Recompute the window only while using it.** A scan that visits `(P, id)` already learns the true extent of `P`'s fragments in that id, so it can narrow the window then, and drop the entry when it finds none. Narrowing it at any *other* time is unsound: a splice moves bytes to offsets outside the recorded window, and it is rule 1 — not the window — that keeps the entry honest.
-- **Make data-page consolidation allocation-driven**, the way kinds 2 and 3 already are: start from an id whose bytes are spread over sparse pages rather than from the page.
+- **Make data-page consolidation allocation-driven**, the way defragmentation already is: start from an id whose bytes are spread over sparse pages rather than from the page.
   Needs no new structure at all, at the cost of not being able to target a specific page — which does not cover the free-filling form, since that is page-driven by construction.
 - **An exact `page → fragments` index.** `O(fragments in page)` and exact, but a second index to maintain on every fragment created or destroyed.
 - **LFS-style segment summaries** — a trailer in each data page listing `(id, offset, page_offset, size)` per resident piece.
@@ -605,6 +641,39 @@ struct ReverseIndex {
 }
 ```
 
+## Outer fragmentation
+
+**Placement decides whether holes form, truncation returns what reaches the end, and a compaction mode moves what never would.**
+
+### Lowest page first
+
+A flush that writes into the lowest reusable page, and grows the file only when none is left, keeps new content away from the end of the file, so pages that die there stay dead and the tail drains of its own accord.
+A first-in-first-out pool, by contrast, hands pages out in the order they became reusable, which refills the tail as readily as any hole.
+
+It costs nothing that matters.
+The pool becomes an ordered set — a `BTreeSet<PageNumber>`, or a bitmap with a cursor on its lowest set bit — rather than a queue, and [the quarantine rotation](flush.md#where-the-pages-come-from) is unchanged.
+It does give up the contiguity that taking a run from the end of the file would have offered a large write, but contiguity buys nothing here: a `Ref`'s payload is [bounded by one page's content](../spec/address-table.md#bounds), so no `Ref` spans pages, and adjacent pages need exactly as many statements as scattered ones.
+Journal pages come from the same pool, so the journal, too, starts in the lowest hole rather than at the end.
+
+### Truncation
+
+After a commit, the file may shrink to one past its highest page in either on-disk world, counting the first journal page each header names even before anything is written to it — the [truncation rule](../spec/durability.md#the-truncation-rule).
+It is safe for the same reason reuse is: no header that recovery could choose reaches past that point, and a power cut that loses the truncation only leaves the file longer than necessary.
+
+Truncating is a cheap metadata operation, but shrinking and regrowing the file on every flush of a workload that oscillates is not, so the reference implementation truncates only once the reusable tail exceeds a threshold.
+Open is a natural moment as well: once [the `fsync` at open](../spec/durability.md#recovery--loading-a-kladde-file) has retired the older world, the file can shrink to one past the governing world's highest page.
+
+### Compaction mode
+
+Placement and truncation return the tail only if the pages there die by themselves, and cold, full pages never do.
+So when **holes** — reusable pages below the highest live one — exceed a share `h_high` of the file, the highest live page is offered to [the budget loop](#the-budget-loop) ahead of every other victim, whatever its fill: evacuated if it is a data page, rewritten if it is a table page, with lowest-first placement landing its content in holes.
+The mode lasts until holes fall below `h_low`, and the gap between the two thresholds is what stops it flapping.
+
+A tail victim at fill `u` returns a whole page to the file system for `u · C` written, a ratio of `1 / u` that passes a churn floor near 1 even for a full page — so it is the budget that paces the mode.
+The return is realised only once every page above the victim has gone too, which is why the mode works strictly from the top down; journal pages are skipped, since the next flush moves the journal to the lowest hole by itself.
+
+Finding the highest live page needs no structure of its own: a cached index, lowered past reusable pages as the tail empties and raised when a page above it is written, passes each page once per change of state, which is `O(1)` amortised.
+
 ## Pacing
 
 Each flush consumes at least one reusable page, often a few, so consolidation must reclaim at least that many on average.
@@ -621,9 +690,12 @@ The bound is controllable and, in relative terms, independent of file size.
 ## Constants still to be chosen
 
 - The live-fraction target τ, and the feedback rule that moves [the budget](#the-churn-floor-is-a-parameter-not-an-identity) toward it.
-- The churn floor λ, which should be near 1 and is not the knob that sets τ.
+- The churn floor λ, near 1 and not the knob that sets τ.
+- Defragmentation's price `μ` per byte written, and its reserved share of the budget.
 - The per-flush page budget's starting value and its bounds.
-- The age weighting in victim selection.
-- The look-ahead depth `L` and the split threshold in [packing](#packing-in-id-order-with-look-ahead) — the first sets how much slack survives, the second how much slack is worth a statement.
-- The bucket counts: 16 for data pages, ~4 for address-table pages.
+- The age weighting, in data-page scoring and in defragmentation's ranking.
+- The look-ahead depth `L` and the fill floor `θ` in [packing](#packing-in-id-order-with-look-ahead) — the first sets how much slack survives in the common case, the second bounds it in every case.
+- The rotating walk's length `WALK`, in fragments per flush.
+- The bucket count, 16 for each page kind.
+- The hole shares `h_high` and `h_low` that enter and leave [compaction mode](#compaction-mode), and the reusable tail that triggers truncation.
 - The page size, 4 KiB versus 16 KiB, to be measured on macOS/iOS and Linux — a per-file header property either way.

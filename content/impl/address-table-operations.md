@@ -616,33 +616,36 @@ Clearing the tombstone reference at the pin release rather than at the eventual 
 
 Both eviction and consolidation are the same operation — **rewrite a page as resolved truth** — differing only in which page and why.
 
-### `rewrite_page(victim) -> new_page`
+### `rewrite_page(victim, queue)`
 
 ```rust
-fn rewrite_page(victim: PageNumber) -> PageNumber {
-    let target = allocate_reusable_page();
+fn rewrite_page(victim: PageNumber, queue: &mut Queue) {
+    let page = decode(victim);
     let mut out = Vec::new();
 
-    for stmt in decode(victim).statements {
+    for stmt in page.statements {
         let id = stmt.id();
         match keep(stmt) {
             Keep::Drop        => drop_physically(stmt),
             Keep::AsResolved  => {
-                for f in owned_fragments(stmt) { out.push(restate(f, target)); }
+                for f in owned_fragments(stmt) { out.push(restate(f)); }   // location pending
                 if is_anchor(stmt) { out.push(replacement_anchor(id)); }
                 drop_physically(stmt);
             }
         }
     }
+    adopt_children(page.children);   // into the header if it has room, else the replacement
 
     // The delta encoding wants (id, offset) order, but only the offsets are unsorted;
     // see below. `chunk_by_mut` splits `out` into one run per id.
     for run in out.chunk_by_mut(|a, b| a.id() == b.id()) { run.sort_by_key(|s| s.offset()); }
-    write_page(target, out, epoch: current);
-    for s in out { apply(s, target, framing_of(s)); }
-    target
+    re_own(&out);                    // the fragments are the restatements' from now on
+    queue.push_run(out);             // one sorted run; the queue merges runs when it is cut
 }
 ```
+
+**It writes no page of its own.**
+Its restatements join the flush's [shared statement queue](consolidation.md#one-statement-queue-and-why-its-length-is-computed-last), and which page they land in is decided when the queue is cut; they take their fragments at once, so that nothing else the flush restates can [state the same fragment twice](consolidation.md#each-fragment-is-stated-once-per-epoch).
 
 **The sort is per id rather than global, because nothing in the loop can change an id.**
 `owned_fragments(stmt)` scans only within `(id, …)`, `restate` keeps the fragment's key, and `replacement_anchor(id)` names the id it was handed.
@@ -654,40 +657,41 @@ A `replacement_anchor` is pushed wherever its anchor statement sat, which is lik
 
 The saving is `Σ nᵢ log nᵢ` rather than `n log n` over a page's ~700 statements, and it is larger than that arithmetic suggests: most ids contribute one or two statements to any one page, so most runs have length one or are already sorted, and an insertion sort with an early exit makes the common case linear.
 
-[`rewrite_id_range`](#rewrite_id_rangelo-hi) needs no sort at all, which is the contrast worth noticing: it is driven by the fragment map, which is already in `(id, offset)` order, whereas this rewrite is driven by *statements*, whose owned fragments interleave.
+[`rewrite_key_range`](#rewrite_key_rangelo-hi-sink) needs no sort at all, which is the contrast worth noticing: it is driven by the fragment map, which is already in `(id, offset)` order, whereas this rewrite is driven by *statements*, whose owned fragments interleave.
 
-### `rewrite_id_range(lo, hi)`
+### `rewrite_key_range(lo, hi, sink)`
 
-[Address-table consolidation](consolidation.md#victim-selection-for-address-table-pages) rewrites an **id range**, not a page, and it is the one rewrite that decodes nothing at all.
+[The rotating window](consolidation.md#the-rotating-window) rewrites a **key range**, not a page, and it is the one rewrite that decodes nothing at all.
 
 ```rust
-fn rewrite_id_range(lo: Id, hi: Id) -> PageNumber {
-    let target = allocate_reusable_page();
+fn rewrite_key_range(lo: Key, hi: Key, sink: &mut QueuePage) {
     let mut out = Vec::new();
-    let mut drained = SmallSet::new();                   // pages this rewrite supersedes in
+    let mut touched = SmallSet::new();                   // pages this rewrite restates from
 
     // The fragment map is resolved truth, so it is the source. Fragments arrive
     // sorted by (id, offset), which is the order the delta encoding wants.
-    for (key, fragment) in fragments.range((lo, 0)..(hi, 0)) {
-        if let Some(s) = fragment.statement() { drained.insert(slab.page_of(s)); }
+    for (key, fragment) in fragments.range(lo..hi) {
+        let Some(s) = fragment.statement() else { continue };   // ZeroByDefault: states nothing
+        if states_this_flush(s) { continue; }            // already stated at this epoch
+        touched.insert(slab.page_of(s));
         match fragment {
-            ZeroByDefault      => {}                     // owned by nobody; states nothing
             ZeroExplicitly{..} => out.push(Zero { id: key.id, offset: key.offset, .. }),
-            Bytes{..}          => out.push(restate(fragment, target)),
+            Bytes{..}          => out.push(restate(fragment)),          // location pending
         }
     }
 
     // Anchors are invisible in the fragment map, so they are transferred by hand —
-    // but only where it pays, since a fresh anchor costs bytes in the new page.
+    // but only where it pays, since a fresh anchor costs bytes.
     for id in ids_in(lo..hi) {
         if let Some(a) = anchor(id) {
-            if drained.contains(slab.page_of(a)) { out.push(replacement_anchor(id)); }
+            if touched.contains(slab.page_of(a)) && !states_this_flush(a) {
+                out.push(replacement_anchor(id));
+            }
         }
     }
 
-    write_page(target, out, epoch: current);
-    for s in out { apply(s, target, framing_of(s)); }    // supersedes the old statements
-    target
+    re_own(&out);                                        // supersedes the old statements
+    sink.extend(out);
 }
 ```
 
@@ -713,7 +717,7 @@ A page is rewritten as resolved truth, and one cannot emit resolved truth withou
 Its cost is predictable in advance from `fragment_count`, which lets the ranking price a candidate before committing to it.
 
 A page rewrite decodes exactly **one** page: its victim.
-It never needs an id's physically present statements across the table, because it only rewrites what the victim holds — and an [id-range rewrite](#rewrite_id_rangelo-hi) decodes none at all, since it reads the fragment map instead.
+It never needs an id's physically present statements across the table, because it only rewrites what the victim holds — and a [key-range rewrite](#rewrite_key_rangelo-hi-sink) decodes none at all, since it reads the fragment map instead.
 
 ### `replacement_anchor(id)` — the one correctness obligation
 

@@ -89,7 +89,7 @@ Two rules govern the cutting:
   A long dirty range becomes `MAX_PAGE_CONTENT`-sized pieces in whole pages plus a remainder in a shared page; a small allocation is written as a single piece in a shared page.
   This is what keeps address-table statements compact.
 - **Whoever rewrites bytes may re-cut them.**
-  Piece boundaries carry no meaning beyond "these bytes are stored contiguously here", so a flush re-cuts the ranges it rewrites at will, and consolidation may split a piece it relocates — or merge adjacent pieces it relocates together — so that its target pages come out exactly full.
+  Piece boundaries carry no meaning beyond "these bytes are stored contiguously here", so a flush re-cuts the ranges it rewrites at will, and consolidation may split a piece it relocates — or merge adjacent pieces it relocates together — so that its target pages come out full; [packing](consolidation.md#packing-in-id-order-with-look-ahead) says when a split is worth its statement.
 
 *Why free re-cutting rather than a fixed head/middle/tail scheme.*
 The problem it solves is **worst-case consolidation**.
@@ -100,30 +100,30 @@ Free re-cutting dissolves both problems at once: consolidation *may* pack pages 
 The price of each such cut is bounded and small: one extra statement, roughly 10 address-table bytes, plus a fragment-map entry.
 
 **That is a capability, not the routine policy**, and the distinction matters because the price is permanent while the slack it avoids is not.
-Free re-cutting is what removes the worst case above, where no packing exists at all; in ordinary flushes the packer prefers [leaving slack to paying for a split](consolidation.md#slack-is-cheaper-than-a-split) and exercises the capability only where a cut is forced or clearly cheap.
+Free re-cutting is what removes the worst case above, where no packing exists at all; in ordinary flushes the packer prefers [leaving slack to paying for a split](consolidation.md#slack-is-cheaper-than-a-split--up-to-a-point), and cuts only where it is forced — a chunk longer than a page — or where a page would otherwise close more than `θ` empty.
 
 A flush writes every piece it produces **whole**, even when only one byte of the range changed.
 This is not new cost in disguise: the operating system would have rewritten the surrounding page in place anyway.
 What is new is that the old bytes remain behind as garbage until consolidation reclaims them.
 
-### Contiguity is a preference, not an assumption
+### Page contiguity buys nothing
 
-When a single flush writes many pieces of one allocation, it should place them in one run of reusable pages — a run is always available by growing the file — so that the statements collapse to few.
-That covers bulk writes, whole-allocation copies, and compact-on-close.
+**Adjacent pages need exactly as many statements as scattered ones**, because a `Ref`'s payload is [bounded by one page's content](../spec/address-table.md#bounds): no `Ref` spans a page boundary, so a bulk write of many pages is one statement per page wherever those pages are.
+Placement therefore does not seek runs of pages at all; it takes the lowest reusable page, which is what keeps [outer fragmentation](consolidation.md#outer-fragmentation) from forming.
 
-It does *not* cover an allocation filled incrementally across many flushes, whose pieces land wherever each flush put them.
-There the honest statement is that the description fragments in proportion to the number of flushes that touched the allocation, and that cross-flush contiguity is **consolidation's** job, not the flush's.
+What *does* fragment is the description of an allocation filled incrementally across many flushes, whose pieces land wherever each flush put them.
+There the honest statement is that the description fragments in proportion to the number of flushes that touched the allocation, and that repairing it is **consolidation's** job, not the flush's.
 
 Uninitialized ranges help the sparse case for free: an allocation created large but written sparsely stores locations only for the ranges actually written, and occupies no data pages for the rest.
 
 ### Where the pages come from
 
-The reusable pool is two queues and a watermark, because the [two-generation quarantine](../spec/durability.md#the-reuse-rule) is a rotation rather than a computation:
+The reusable pool is an ordered set, a list, and a watermark, because the [two-generation quarantine](../spec/durability.md#the-reuse-rule) is a rotation rather than a computation:
 
 ```rust
 struct FreePages {
-    ready:    VecDeque<PageNumber>,   // unreachable from both on-disk headers
-    retiring: VecDeque<PageNumber>,   // dropped by the last commit; not yet writable
+    ready:    BTreeSet<PageNumber>,   // unreachable from both on-disk headers
+    retiring: Vec<PageNumber>,        // dropped by the last commit; not yet writable
     next_new: PageNumber,             // one past the last page of the file
 }
 
@@ -132,17 +132,19 @@ free.ready.extend(free.retiring.drain(..));
 free.retiring = pages_this_commit_stopped_referencing();
 ```
 
-`allocate_reusable_page` pops `ready`, and extends the file when `ready` is empty.
-No search, no interval tree: a run of contiguous pages is wanted only for a large write, and for that [growing the file](#contiguity-is-a-preference-not-an-assumption) always supplies one, so the pool never has to answer "find me `k` adjacent pages".
+`allocate_reusable_page` takes the **lowest** page in `ready`, and extends the file only when `ready` is empty; journal pages come from the same pool.
+Lowest-first is what lets pages at the end of the file stay dead once they die, so that [truncation](consolidation.md#truncation) can return them, and it costs one `pop_first` — a bitmap with a cursor on its lowest set bit does as well.
+No search beyond that, and no interval tree: [contiguity buys nothing](#page-contiguity-buys-nothing), so the pool never has to answer "find me `k` adjacent pages".
 
 ### Cutting and packing, concretely
 
-The objective is not to minimise pages — free re-cutting already fills every page — but to minimise the **statements** that describe them, which means minimising how many ranges straddle a page boundary.
+The objective is to fill pages without describing their contents in more statements than necessary — every cut is one more statement — and the two pull against each other only where chunks fit pages badly.
 
 ```rust
-fn place(dirty: Vec<Range>, elastic: impl Iterator<Item = Chunk>) {
+fn place(dirty: Vec<Range>, elastic: &mut Elastic) -> Vec<Page> {
     // 1. Whole pages first: a long range becomes floor(len / C) full pages, each
-    //    described by exactly one statement, plus a remainder below C.
+    //    described by exactly one statement, plus a remainder below C. This is the
+    //    one cut that is forced rather than chosen.
     let mut remainders = Vec::new();
     for r in dirty {
         let (whole, rest) = r.split_at_multiple_of(MAX_PAGE_CONTENT);
@@ -150,22 +152,16 @@ fn place(dirty: Vec<Range>, elastic: impl Iterator<Item = Chunk>) {
         remainders.push(rest);
     }
 
-    // 2. Pack the remainders together with the relocation stream, in (id, offset)
-    //    order with a bounded look-ahead. Nothing is cut here: a chunk that fits no
-    //    open page opens a new one, and the elastic tail is trimmed rather than split.
-    pack(merge_by_key(remainders, elastic), &mut sinks);
-
-    // 3. Only the last page can end up genuinely short. Top it up from the elastic
-    //    stream, cut to fit, when its slack is worth paying a statement for.
-    if sinks.last().room() > SPLIT_THRESHOLD { top_up_cut(sinks.last(), elastic); }
+    // 2. Pack the remainders in (id, offset) order with a bounded look-ahead,
+    //    pulling in consolidation's victims wherever a page has room its own
+    //    content cannot use, and cutting only to keep a page from closing more
+    //    than θ empty.
+    pack(Lookahead::new(remainders, L), elastic)
 }
 ```
 
-**Step 3 is where the straddles go**, and that is the point of doing it last.
-Something has to be cut at the final boundary of the one page that ends up short; letting it be relocated content rather than freshly written content costs one statement rather than two, because relocated content is [re-cut at will](#cutting-content-across-pages) anyway and was going to be described by a fresh statement either way.
-A dirty range, by contrast, would pay a second statement forever.
-
-The two streams are packed together rather than one after the other, and the packing is by key rather than by size, for reasons that belong to [consolidation's side of the same interface](consolidation.md#how-a-flush-and-consolidation-compose): the flush's chunks must be written and the relocated ones need not be, which is what lets the tail absorb the fit instead of a cut.
+[`pack`](consolidation.md#packing-in-id-order-with-look-ahead) is described with consolidation, because what it has to know is consolidation's side of the interface: the flush's chunks must be written and a victim's need not be, which is what lets a victim fill the room a cut would otherwise have filled.
+It guarantees that every page a flush writes, except its last, is at least `1 − θ` full, and when it must cut, it cuts the flush's own chunk rather than a victim's — the flush's content being the likelier to be overwritten soon, taking the extra statement with it.
 
 ### The `Inline` threshold
 
@@ -281,7 +277,8 @@ The name overstates the machinery.
 What the header can hold is bounded by `MAX_PAGE_CONTENT`, so the clock covers on the order of 700 statements however large the file is, and eviction can simply sort them by the epoch they were last written and take a prefix.
 Nothing here needs a CLOCK sweep, an approximate-LRU, or a heap: an `O(n log n)` sort of 700 entries, on the rare flush that overflows, is beneath measurement.
 The one thing it does need is that "last touched" be recorded when a statement is *re-emitted into the header*, not when its allocation is read — reads never reach the address table at all.
-Eviction and consolidation both emit statements sorted by id, so leaves *tend* to cover coherent id ranges — a soft property worth cultivating and not depending on, since it keeps consolidation windows aligned with page boundaries and keeps delta encoding dense.
+Eviction and consolidation both emit statements sorted by id, so leaves *tend* to cover coherent id ranges — a soft property worth cultivating and not depending on, since it keeps delta encoding dense.
+Evicting the coldest *key-contiguous run* rather than the coldest statements wherever they sit cultivates it at the source: heat still decides that a run goes, and key order decides which (see [the statement queue](consolidation.md#one-statement-queue-and-why-its-length-is-computed-last)).
 
 ## The shape of the tree
 

@@ -39,8 +39,9 @@ At any moment the two on-disk header slots define at most two worlds that can (a
 
 ```mermaid
 stateDiagram-v2
-  [*] --> reusable: page comes into existence<br>by growing the file
+  nonexistent --> reusable: file grows, bringing page<br>into existence
   reusable --> live: (a) written during flush E<br>and in header E's world<br>or (b) appended to journal
+  reusable --> nonexistent: file shrinks once no live or<br>fallback page with higher<br>page number exists
   live --> fallback: header E+k written, whose<br>world no longer contains the page
   fallback --> reusable: header E+k+1 written,<br>overwriting the only<br>header whose world still<br>contained the page
   live --> live: append transaction<br>(journal pages only)
@@ -55,6 +56,14 @@ It means a page that the commit of epoch `E` stopped referencing becomes writabl
 
 The same rule covers reopening after a crash: whatever headers are on disk define the worlds to respect.
 The one deliberate exception is that a load may [[#Recovery / loading a kladde file|retire the older world immediately]], once it has made the governing header durable.
+
+### The truncation rule
+
+> **A file may shrink only past pages that are reusable.**
+
+Truncation is the other way a page can be lost, and it answers to the same argument as reuse: every page beyond the new end must be unreachable from both on-disk headers.
+That includes the first journal page each header names, even while nothing has been written to it, since the header's claim that the journal starts there must stay satisfiable.
+A truncation is not a step of the flush protocol and needs no `fsync` of its own: a power cut that loses it leaves the file longer than necessary, and nothing worse.
 
 ## The flush protocol
 

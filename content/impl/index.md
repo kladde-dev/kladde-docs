@@ -66,9 +66,9 @@ It matters once [segments](../drafts/segments.md) arrive: each segment will live
 **Drop the data-page mirror once loading is done.**
 After the load, application reads are served by the values' own in-memory representations and never touch the file, so a `Bytes` fragment's `(page, offset)` is dereferenced only when a flush relocates those bytes or a `Copy`/`Splice` reads them — both rare, and both able to afford a fresh read.
 
-**Address-table pages stay resident**, for a reason data pages do not share: `Inline` payloads live *inside* them, so a fragment resolving to an inline value dereferences into a table page, and [an id-window rewrite copies the payload of every inline statement it re-emits](consolidation.md#why-address-table-pages-have-two-mechanisms) — on the common path, of every consolidating flush, from pages chosen precisely for being many.
+**Address-table pages stay resident by default**, for a reason data pages do not share: `Inline` payloads live *inside* them, and [both table-side consolidation mechanisms](consolidation.md#why-address-table-pages-have-two-mechanisms) copy those payloads on every consolidating flush — the [page rewrite](address-table-operations.md#rewrite_pagevictim-queue), which also decodes its victim, and the rotating window.
 They are also small — on the order of 8 MB for a million allocations.
-That a [page rewrite](address-table-operations.md#rewrite_pagevictim---new_page) can then decode its victim for free is a consequence; on its own it would argue for reading the victim back from the file, being rare.
+Nothing depends on it, though: only the header must stay, being the write buffer, and dropping the leaves after load, as data pages are dropped, costs one read per table victim and one per table page whose inline payload the window restates.
 
 *Why not `mmap`.*
 Mapping the file would let the operating system's page cache serve as the mirror, with pointer-dereference access and no second copy.

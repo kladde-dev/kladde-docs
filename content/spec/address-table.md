@@ -101,14 +101,15 @@ Given the winning statement:
 
 ## Physical format
 
+Address table pages follow the [[file-format#Page framing|general page framing]] and encode their payload in the `content` field.
 There is only a single `kind` for address table pages: `kind == AddressTable`.
 The header page is always an `AddressTable` page.
 Every `AddressTable` page contains zero or more references to other `AddressTable` pages followed by zero or more statements.
-References between `AddressTable` pages form a tree rooted at the header page.
+References between `AddressTable` pages form a tree rooted at the header page: every page reachable from the header other than the header itself is named by exactly one `child_ref` among the pages reachable from the header, and no `child_ref` names a header slot, page 0 or page 1.
 
 ```
-address_table_page := num_children:varint child_ref{num_children}
-                      num_statements:varint statements:statement{num_statements}
+; `content` field of an address table page:
+address_table_page := child_ref* 0:byte statements:statement*
 child_ref          := page_number_delta:varint  ; see "Delta encoding" below
 statement          := id_delta (tagged_ref | tagged_zero | tagged_shrink
                                 | tagged_tombstone | tagged_grow | inline)
@@ -129,13 +130,16 @@ inline             := size_tag:byte offset_delta:varint payload:byte{size_tag - 
 ### Delta encoding
 
 Child refs within a page are sorted by their page number, and statements within a page are sorted lexicographically by `(id, offset)`.
-That is well defined even for `Tombstone` statements, which carry no `offset`, because no other statement mentioning the same `id` can coexist with a `Tombstone(id)` in one epoch.
+This order is well defined even for `Tombstone` statements, which carry no `offset`, because no other statement mentioning the same `id` can coexist with a `Tombstone(id)` in one epoch.
 
 To save encoding space by exploiting the compactness of varints, page numbers, ids, and offsets are delta-encoded.
 When starting to decode an address table page, a reader initializes a `page_cursor`, an `id_cursor`, and an `offset_cursor` to `0`, then decodes the page in reading order.
 
 - For each `child_ref`, increment `page_cursor` by `page_number_delta`; the resulting `page_cursor` is the number of the referenced page.
-- For each `statement`, perform these steps in this order:
+  Decode `child_ref`s until encountering the delimiter byte `0` (which is also a varint-encoded zero).
+  The delimiter cannot be confused with a `child_ref`, whose `page_number_delta` is never zero: the first child's page number is at least 2, since no `child_ref` names a header slot, and each later one exceeds its predecessor, since the tree names each page at most once.
+- Decode `statements` until the end of the page's `content` field is reached, which can be detected by the `content_size` field of the [[file-format#Page framing|page framing]].
+  For each `statement`, perform these steps in this order:
 	1. Increment `id_cursor` by `id_delta`.
 	2. Read off the statement's `id` from `id_cursor`.
 	3. If `id_delta != 0`: set `offset_cursor = 0`.

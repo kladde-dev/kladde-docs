@@ -174,10 +174,11 @@ The counter is 32 bits rather than page-sized, because a page's live bytes excee
 
 Pages are bucketed by live fraction, a handful of buckets suffices, together with an age mark.
 That makes victim selection `O(1)` rather than a priority queue's `O(log P)`, with `O(1)` bucket moves as counters change.
-`Data` and `AddressTable` pages are bucketed [separately and at different resolutions](consolidation.md#the-structures-behind-the-ranking), and header pages in neither.
+`Data` and non-header `AddressTable` pages are bucketed [separately](consolidation.md#the-structures-behind-the-ranking), and header pages in neither.
+Excluding the header is correct, and nothing is lost by it: a header is rewritten every flush, so it is never a victim, and its statements are accounted for by being [restated into every flush's statement queue](consolidation.md#one-statement-queue-and-why-its-length-is-computed-last) rather than by its coverage.
 
-An `AddressTable` page carries one more field: the `(Id, AllocationOffset)` span of the statements it holds, fixed when the page is written.
-Eight bytes a page, and they are what let [a consolidation window be seeded at a page](consolidation.md#seeding-a-window) without decoding it.
+An `AddressTable` page carries one more field: its parent's page number, four bytes, updated whenever the parent is replaced.
+[Unlinking an emptied page](consolidation.md#unlinking-an-emptied-page) needs it, since a page may be named by an interior page rather than by the header.
 
 A free list tracks reusable pages under the [two-generation quarantine](../spec/durability.md#the-reuse-rule): a page dropped by commit `E` becomes writable in flush `E + 2`.
 

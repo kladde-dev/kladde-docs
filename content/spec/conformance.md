@@ -55,7 +55,7 @@ Placement, compaction, and fold timing are all free, so two implementations will
 ## Must not
 
 - Change an allocation's id, size, or content during consolidation.
-- Overwrite a page reachable from either on-disk header.
+- Overwrite a page reachable from either on-disk header, or truncate the file below one ([the truncation rule](durability.md#the-truncation-rule)).
 - Continue a session after a failed `fsync`.
 - Return anything but zero for a byte that has not been explicitly written.
 - Depend on the descriptor table's index assignment for any semantic purpose.
