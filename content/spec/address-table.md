@@ -175,7 +175,7 @@ An implementation must support these, and must fail cleanly rather than silently
   This is visible to data type implementations, which may serialize a 32-bit pointer into one allocation to point at another.
   Varint encoding of ids therefore takes up to `⌈32/7⌉ = 5` bytes.
   Once `Segment`s land, each will likely have its own id space, so a file may then contain more than `2^32` allocations.
-- **Page sizes** are uniform throughout a file and are given by the header's `log2(page size)`, currently 4 KiB with 8, 16, 32, and 64 KiB reserved.
+- **Page sizes** are uniform throughout a file and are given by the header's `log2_page_size`, currently 4 KiB with 8, 16, 32, and 64 KiB reserved.
   Therefore, offsets into a page that don't point at the exact end of the page always fit into 16 bit.
 - **Payload sizes** of `Ref` is bounded by `MAX_PAGE_CONTENT`, the page size minus the 15 bytes of [page framing](file-format.md#page-framing), thus at most `2^12 - 15` bytes in the current 4 KiB page size setup, and at most `2^16 - 15` if 64 KiB pages become a reality.
   Their varint encoding thus takes at most `⌈16/7⌉ = 3` bytes.

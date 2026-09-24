@@ -545,7 +545,6 @@ The header's fill is observed but not asserted, since a small file's header is l
 
 The floor is a parameter `λ` — space freed per byte written — and its price is explicit.
 Cleaning pages at live fraction `u` costs `u / (1 − u)` bytes written per byte of space freed, so a total write amplification of `1 / (1 − u)`: 2× at `u = 1/2`, 5× at `0.8`, 10× at `0.9`.
-Nothing requires `λ ≥ 1`: below 1 it cleans pages more than half live, at the corresponding amplification, which a workload with no temporal locality may need.
 
 **But `λ` is the wrong knob for a target file fill.**
 An average fill of 80–90 % does not mean cleaning pages that are 80–90 % live, and implementing it that way would buy the last few percent at five to ten times the write traffic.
