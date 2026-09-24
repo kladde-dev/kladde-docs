@@ -106,11 +106,43 @@ The header write is a *representation* change, not the durability point; durabil
 This is why kladde needs one `fsync` per flush where a random-access database like LMDB needs two: kladde can afford to let the header lag one write behind and lean on journal replay.
 By contrast, LMDB has no journal and thus `fsync`s twice: once after writing updates into reusable pages (like kladde does) and again after overwriting the alternating meta page (unless turned off by `MDB_NOMETASYNC`).
 
+### Niche optimization
+
+When closing a kladde session, an implementation may choose to reclaim the space taken up by the unused header slot by a process called *niche optimization*.
+In a niche optimized kladde file, the header is always in page 0 with an even epoch, and page 1 holds a live non-journal (i.e., address table or data) page that must not be referenced from other pages by its physical page number 1 and may only be referenced by its logical page number `num_pages`, where `num_pages` is the number of physically present pages in the file.
+The *first journal page* field in the header of a niche-optimized file may (and usually does) point to `num_pages + 1`, and it must *not* point to `num_pages` because that page number is associated with the page physically present at page 1, which is not a journal page.
+
+Having the header in page 0 ensures that the file starts with the correct magic string.
+The non-header page 1 cannot be confused with an alternate header because the first byte of the [[file-format#Page framing|page framing]] of non-header pages is always different from the [[file-format#The magic|magic]] of a header page.
+Since the page physically present at page 1 is referenced by page number `num_pages`, a new kladde session can always copy the page out to its logical position before page 1 gets overwritten with the next header, and all references to the page stay valid.
+
+Niche optimization is best motivated for small files, and here it is achieved most easily by simply writing out a new temporary file, `fsync`ing it, and then moving it over the old file.
+An application that chooses to implement niche optimization without a temporary file must ensure not to violate the durability guarantees.
+For example, this can be achieved by first executing a suitable sequence of flushes that end on an even epoch (i.e., a header being written to page 0), and that ideally arrange the file such that no reusable or fallback pages exist except at the end of the file (optional but motivated whenever niche optimization is motivated).
+Then:
+
+1. **`fsync`** to make the header write in Step 8 of the last flush durable.
+   This also turns any fallback pages into reusable state.
+2. **Copy** (not move) the last live page of the file over page 1.
+    Refer to the page number of this page at its original location as `last_page`.
+    This is a literal copy — it leaves the `epoch` field of the page unchanged.
+3. **`fsync`** to make the above copy durable.
+   All non-journal pages include a CRC covering their content (including the first byte, from which header pages can always be distinguished from non-header non-journal pages because the first byte of the header's *magic* field does not match any page `kind`).
+4. Shrink the file to remove any trailing reusable pages and the page that was copied out in Step 10 above (and optionally any padding of the page before that).
+    This step must leave at least one byte in the page `last_page - 1`, even if that page is reusable.
+    @Claude: can shrinking tear, i.e., can it shrink partially and leave an invalid page at `last_page`? If so then we would have to add the requirement that the last page of a niche-optimized kladde file must be CRC-valid, otherwise it is not considered present and the file is considered to be one page smaller, but this means that a reader would actually have to check the CRC of the last page if it finds a candidate for niche-optimization in page 1.
+
 ## Recovery / loading a kladde file
 
 1. Read both header pages; keep the CRC-valid ones; take the one with the **highest epoch**.
-2. Bulk-load its world.
-3. Replay the valid prefix of the journal segment it names, stopping at the first transaction whose chained CRC fails.
+2. If the governing header is in page 0 then check page 1; if it is a non-header non-journal page with a valid CRC then consider it to be page number `num_pages`, where `num_pages` is the number of pages in the kladde file.
+   Treat its liveness like that of any other page, as if it was physically present at `num_pages`.
+   If the shrink step in [[#niche optimization]] did not become durable then `num_pages` is larger than the page's original page number.
+   Thus, Step 3 below will resolve all references to the page to its instance at the original physical location, and it will find the niche-optimized page with number `num_pages` to never be referenced, thus reusable.
+3. Bulk-load the governing header's world.
+4. Replay the valid prefix of the journal segment it names, stopping at the first transaction whose chained CRC fails.
+5. If niche optimization was detected and the niche-optimized page is live, then reserve page `num_pages` for it and copy it there at any time before the `fsync` of the first flush of this session.
+   This is safe because page 1 won't be overwritten until after that `fsync`
 
 Thus, recovery happens entirely on the storage layer and is agnostic to the schema.
 
