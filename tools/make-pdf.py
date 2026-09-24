@@ -407,6 +407,33 @@ def self_test():
     check("a shared channel is detected", any("channel" in w for w in before))
     check("a shared channel is separated", not any("channel" in w for w in after))
 
+    # latexdiff's shape for a table whose column spec changed: a pair that
+    # opens outside the table and closes inside it, next to a rule.
+    table = ("\\begin{document}\n"
+             "\\DIFaddbegin \\begin{longtable}[]{ll}\n"
+             "\\DIFaddend \\toprule\n"
+             "a & \\DIFdelbegin \\DIFdel{b}\\DIFdelend \\DIFaddbegin \\DIFadd{c}\\DIFaddend \\\\\n"
+             "\\bottomrule\n"
+             "\\end{longtable}\n")
+    out = bar_whole_tables(table)
+    inside = out[out.index("\\begin{longtable}"):out.index("\\end{longtable}")]
+    check("a changed table loses its inner brackets",
+          not REGION_MARK.search(inside))
+    check("a changed table keeps its cell markup",
+          "\\DIFdel{b}" in inside and "\\DIFadd{c}" in inside)
+    check("a changed table is barred as a whole",
+          "\\DIFmodbegin \\begin{longtable}" in out
+          and "\\end{longtable}\\DIFmodend" in out)
+    check("the bars around a changed table pair up", unpaired_bar(out) is None)
+    check("an unpaired bar is found", unpaired_bar(table.replace(
+        "\\DIFaddend \\toprule", "\\toprule")) is not None)
+    plain = "\\begin{longtable}[]{ll}\n\\toprule\na & b \\\\\n\\end{longtable}\n"
+    check("an unchanged table is left alone", bar_whole_tables(plain) == plain)
+    merged = ADJACENT_BARS.sub("", "\\DIFdelbegin \\DIFdel{a}\\DIFdelend \\DIFaddbegin "
+                                   "\\DIFadd{b}\\DIFaddend \n")
+    check("touching bars are merged into one",
+          merged == "\\DIFdelbegin \\DIFdel{a}\\DIFadd{b}\\DIFaddend \n")
+
     for name in cases:
         print(f"  {'FAIL' if name in failures else 'ok  '}  {name}")
     print(f"{len(cases) - len(failures)}/{len(cases)} passed")
@@ -1044,24 +1071,6 @@ DIFF_MARKUP = "CULINECHBAR"
 # used").
 CHANGEBAR_DRIVER = "xetex"
 
-# latexdiff brackets each changed region with `\DIFaddbegin`/`\DIFaddend` (and
-# the `del` pair).  Under the default SAFE subtype those are defined empty, so
-# they render nothing -- but an empty group is still a group, and between a
-# row's `\\` and the `\bottomrule` that closes a table only `\noalign` material
-# is legal.  A table that gained or lost a row therefore fails to compile with
-# "Misplaced \noalign".
-#
-# Dropping them in that position costs nothing, because there is nothing there
-# to draw.  (It would if the subtype ever became MARGIN, whose bracketing
-# commands are real `\marginpar`s -- hence the assertion in `latexdiff`.)
-# Suppressing table diffing wholesale via PICTUREENV was the alternative, and
-# is worse: a `longtable` cannot sit inside the `\DIFadd{...}` that carries the
-# colour and the change bar, so a changed table would render unmarked.
-NOALIGN_CLASH = re.compile(
-    r"(?:\\DIF(?:add|del)(?:begin|end)\s*)+"
-    r"(?=\\(?:bottomrule|midrule|toprule|cmidrule|hline"
-    r"|endhead|endfirsthead|endfoot|endlastfoot)\b)")
-
 # Inside a code block latexdiff marks each changed line with `%DIF >`/`%DIF <`
 # and relies on its `listings` language to turn that into markup.  An added or
 # removed *blank* line leaves the marker with nothing after it, which listings
@@ -1160,7 +1169,7 @@ def restore_deleted_braces(tex):
 # the commented `\\` was the one that ended the row, that text is stranded
 # between the previous row and `\bottomrule`, where only `\noalign` material is
 # legal -- "Misplaced \noalign" again, but with real content this time rather
-# than the empty brackets NOALIGN_CLASH removes.
+# than the region brackets `bar_whole_tables` removes.
 #
 # Giving the row its `\\` back makes it a row again.  Its `&`s are revived with
 # it, but only within the span the recovered row covers: those are that row's
@@ -1229,6 +1238,96 @@ def drop_orphan_items(tex):
             line = line[:start] + line[end:]
         out.append(line)
     return "".join(out)
+
+
+# latexdiff brackets each changed region with `\DIFaddbegin`/`\DIFaddend` (and
+# the `del` and `mod` pairs), which REGION_BARS turns into the change bars.
+# Inside a table those brackets are useless and harmful at once.  Useless,
+# because changebar draws nothing from inside a table cell.  Harmful, because
+# between a row's `\\` and the rule after it only `\noalign` material is legal,
+# so a bracket there fails the compile with "Misplaced \noalign" -- and
+# deleting only that one leaves its partner, typically a `\DIFaddbegin` just
+# before a changed `\begin{longtable}`, opening a bar that nothing closes and
+# that runs to the end of the document.
+#
+# So every bracket inside a table goes, and a table that changed at all gets
+# one bar around the whole of it instead.  The `\DIFadd{...}`/`\DIFdel{...}`
+# markup is left alone, so the changed cells are still underlined and struck
+# through.  A pair that straddles the table's edge is closed just before the
+# table or reopened just after it, so the brackets outside still pair up.
+#
+# Suppressing table diffing wholesale via PICTUREENV was the alternative, and
+# is worse: a `longtable` cannot sit inside the `\DIFadd{...}` that carries the
+# colour, so a changed table would render unmarked.
+REGION_MARK = re.compile(r"\\(?P<name>DIF(?:add|del|mod)(?P<edge>begin|end))\b[ \t]*")
+TABLE_MARK = re.compile(
+    f"(?P<open>{TABLE_OPEN.pattern})|(?P<close>{TABLE_CLOSE.pattern})"
+    f"|{REGION_MARK.pattern}")
+
+
+def bar_whole_tables(tex):
+    """Swap the region brackets inside each table for one bar around it."""
+    edits, depth, pos = [], 0, 0             # edits: (offset, length, insertion)
+    for line in tex.splitlines(keepends=True):
+        for m in TABLE_MARK.finditer(executed(line)):
+            at = pos + m.start()
+            if m.group("open"):
+                if depth == 0:
+                    opened, strips, still_open, closed_early = at, [], [], []
+                depth += 1
+            elif m.group("close"):
+                if depth == 0:
+                    continue
+                depth -= 1
+                if depth or "DIF" not in tex[opened:pos + m.end()]:
+                    continue
+                edits += strips
+                edits.append((opened, 0, "".join(
+                    f"\\{name} " for name in closed_early) + "\\DIFmodbegin "))
+                edits.append((pos + m.end(), 0, "\\DIFmodend" + "".join(
+                    f" \\{name}" for name in still_open)))
+            elif depth:
+                strips.append((at, len(m.group(0)), ""))
+                if m.group("edge") == "begin":
+                    still_open.append(m.group("name"))
+                elif still_open:
+                    still_open.pop()
+                else:
+                    closed_early.append(m.group("name"))
+        pos += len(line)
+    for offset, length, insertion in sorted(edits, reverse=True):
+        tex = tex[:offset] + insertion + tex[offset + length:]
+    return tex
+
+
+# latexdiff closes one region and opens the next back to back all the time --
+# `\DIFdelend \DIFaddbegin` for every replaced phrase.  In running text
+# changebar records a `\cbend` only at the end of the line, via `\vadjust`, but
+# a `\cbstart` at once, so the pair is recorded the wrong way round.  That is
+# harmless on its own, but when the bar opened there is still open at a page
+# break, changebar continues the wrong one onto the next page -- one that has
+# already ended -- and the lines at the top of that page go unbarred.
+#
+# The two bars would touch anyway, so merging them into one loses nothing, and
+# there is then no pair to misorder.
+ADJACENT_BARS = re.compile(
+    r"\\DIF(?:add|del|mod)end\s*\\DIF(?:add|del|mod)begin\b[ \t]*")
+
+
+def unpaired_bar(tex):
+    """The line of the first change bar that does not pair up, or None."""
+    start = tex.find("\\begin{document}")     # the preamble *defines* them
+    first = tex.count("\n", 0, max(start, 0)) + 1
+    opened = []
+    for n, line in enumerate(tex[max(start, 0):].splitlines(), first):
+        for m in REGION_MARK.finditer(executed(line)):
+            if m.group("edge") == "begin":
+                opened.append(n)
+            elif opened:
+                opened.pop()
+            else:
+                return n
+    return opened[0] if opened else None
 
 
 def parse_diff_spec(spec):
@@ -1306,19 +1405,27 @@ def latexdiff(old_tex, new_tex, out_tex):
         sys.exit(f"latexdiff failed:\n{proc.stderr}")
     tex = proc.stdout
     # REGION_BARS renews these, which fails on a macro that does not exist, and
-    # NOALIGN_CLASH drops the ones that land next to a table rule -- safe only
-    # while they are latexdiff's own empty brackets rather than something that
-    # prints. Both assumptions hold exactly as long as this line does.
+    # `bar_whole_tables` moves them about -- safe only while they are
+    # latexdiff's own empty brackets rather than something that prints. Both
+    # assumptions hold exactly as long as this line does.
     for command in ("DIFaddbegin", "DIFaddend", "DIFdelbegin", "DIFdelend",
                     "DIFmodbegin", "DIFmodend"):
         if f"\\providecommand{{\\{command}}}{{}}" not in tex:
             sys.exit(f"latexdiff no longer defines \\{command} as empty; "
-                     "REGION_BARS and NOALIGN_CLASH both assume it does")
-    # NOALIGN_CLASH first: it strips the empty brackets that would otherwise
+                     "REGION_BARS and bar_whole_tables both assume it does")
+    # `bar_whole_tables` first: it strips the brackets that would otherwise
     # look like stranded row content to `close_dangling_rows`.
     tex = restore_deleted_braces(drop_orphan_items(close_dangling_rows(
-        NOALIGN_CLASH.sub("", EMPTY_DIF_LINE.sub("", tex)))))
+        bar_whole_tables(EMPTY_DIF_LINE.sub("", tex)))))
+    body = tex.index("\\begin{document}")        # the preamble *defines* them
+    tex = tex[:body] + ADJACENT_BARS.sub("", tex[body:])
     out_tex.write_text(tex)
+    # A bar left open is not an error to TeX: it silently runs to the end of
+    # the document, over every page after it.
+    line = unpaired_bar(tex)
+    if line is not None:
+        sys.exit(f"the change bars in the diff do not pair up, starting at "
+                 f"{out_tex}:{line}; rerun with --keep-markdown to keep that file")
     return out_tex
 
 
