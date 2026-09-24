@@ -122,7 +122,7 @@ The reusable pool is an ordered set, a list, and a watermark, because the [two-g
 
 ```rust
 struct FreePages {
-    ready:    BTreeSet<PageNumber>,   // unreachable from both on-disk headers
+    ready:    BTreeSet<PageNumber>,   // reusable: neither live nor fallback
     retiring: Vec<PageNumber>,        // dropped by the last commit; not yet writable
     next_new: PageNumber,             // one past the last page of the file
 }
@@ -141,7 +141,7 @@ No search beyond that, and no interval tree: [contiguity buys nothing](#page-con
 The objective is to fill pages without describing their contents in more statements than necessary — every cut is one more statement — and the two pull against each other only where chunks fit pages badly.
 
 ```rust
-fn place(dirty: Vec<Range>, elastic: &mut Elastic) -> Vec<Page> {
+fn place(dirty: Vec<Range>, rewrites: Vec<Chunk>, elastic: &mut Elastic) -> Vec<Page> {
     // 1. Whole pages first: a long range becomes floor(len / C) full pages, each
     //    described by exactly one statement, plus a remainder below C. This is the
     //    one cut that is forced rather than chosen.
@@ -152,11 +152,12 @@ fn place(dirty: Vec<Range>, elastic: &mut Elastic) -> Vec<Page> {
         remainders.push(rest);
     }
 
-    // 2. Pack the remainders in (id, offset) order with a bounded look-ahead,
-    //    pulling in consolidation's victims wherever a page has room its own
-    //    content cannot use, and cutting only to keep a page from closing more
-    //    than θ empty.
-    pack(Lookahead::new(remainders, L), elastic)
+    // 2. Pack the remainders — with the description defragmentation rewrites this
+    //    flush pays for, which are never longer than a page — in (id, offset) order
+    //    with a bounded look-ahead, pulling in consolidation's victims wherever a
+    //    page has room its own content cannot use, and cutting only to keep a page
+    //    from closing more than θ empty.
+    pack(Lookahead::new(merge_by_key(remainders, rewrites), L), elastic)
 }
 ```
 
@@ -262,7 +263,7 @@ When the flag is clear at flush — the overwhelming majority of flushes — run
 ## The header as write buffer
 
 The root of the address table is the header page, and the header page is rewritten by every flush no matter what.
-That page is free real estate, so it doubles as the address table's **write buffer**: every statement a flush produces lands in the header first, at zero additional page writes.
+That page is free real estate, so it doubles as the address table's **write buffer**: every flush [takes its content whole](address-table-operations.md#the-header) and states it again, and the cut fills the header before any leaf, at zero additional page writes.
 
 Consequences:
 
@@ -271,14 +272,16 @@ Consequences:
 - A statement carried in the header becomes a *new* record at the new epoch each flush, so an anchor re-points and its pin moves every flush.
   Header pages are exempt from coverage-driven victim selection, since they are rewritten unconditionally.
 
-When the header overflows, the coldest statements are evicted to a fresh leaf, ranked by an **eviction clock** recording how many flushes each has gone untouched.
+When the header overflows, the coldest statements go to a fresh leaf instead, ranked by an **eviction clock** recording how many flushes each has gone untouched.
 
 The name overstates the machinery.
-What the header can hold is bounded by `MAX_PAGE_CONTENT`, so the clock covers on the order of 700 statements however large the file is, and eviction can simply sort them by the epoch they were last written and take a prefix.
+What the header can hold is bounded by `MAX_PAGE_CONTENT`, so the clock covers on the order of 700 entries however large the file is, and the cut can simply sort the header's candidates by heat and keep a prefix.
 Nothing here needs a CLOCK sweep, an approximate-LRU, or a heap: an `O(n log n)` sort of 700 entries, on the rare flush that overflows, is beneath measurement.
-The one thing it does need is that "last touched" be recorded when a statement is *re-emitted into the header*, not when its allocation is read — reads never reach the address table at all.
-Eviction and consolidation both emit statements sorted by id, so leaves *tend* to cover coherent id ranges — a soft property worth cultivating and not depending on, since it keeps delta encoding dense.
-Evicting the coldest *key-contiguous run* rather than the coldest statements wherever they sit cultivates it at the source: heat still decides that a run goes, and key order decides which (see [the statement queue](consolidation.md#one-statement-queue-and-why-its-length-is-computed-last)).
+
+**The clock's entries belong to fragments, not to statements**, since the cut [derives statements afresh](consolidation.md#one-dirty-set-and-why-statements-are-derived-last) every flush; a statement derived from several fragments takes the hottest of them.
+An entry is reset when the application writes its fragment — when the fold takes it — not when the header merely carries it, and not when its allocation is read, since reads never reach the address table at all.
+Eviction and consolidation both state statements sorted by id, so leaves *tend* to cover coherent id ranges — a soft property worth cultivating and not depending on, since it keeps delta encoding dense.
+Evicting the coldest *key-contiguous run* rather than the coldest statements wherever they sit cultivates it at the source: heat still decides that a run goes, and key order decides which (see [the dirty set](consolidation.md#one-dirty-set-and-why-statements-are-derived-last)).
 
 ## The shape of the tree
 

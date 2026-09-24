@@ -21,6 +21,11 @@ enum Fragment {
 
     /// Resolves to zero because no statement matches these probes.
     ZeroByDefault,
+
+    /// Taken by the flush in progress, and not stated yet; see "During a flush".
+    /// The cut turns it into `Bytes` or `ZeroExplicitly`, so no other code path
+    /// outside a flush ever meets it.
+    Pending(PendingRef),
 }
 
 struct PageOffset(u16);          // offset into a page
@@ -28,7 +33,8 @@ struct AllocationOffset(u32);    // offset into an allocation; the map's key
 struct StatementRef(NonZeroU32); // See below why non-zero.
 ```
 
-The three variants answer two questions at once — what the bytes *are*, and who is *responsible* for them — and the third variant is where those answers come apart: a range that resolves by default has a definite answer to the first and none at all to the second.
+The three permanent variants answer two questions at once — what the bytes *are*, and who is *responsible* for them — and the third is where those answers come apart: a range that resolves by default has a definite answer to the first and none at all to the second.
+The fourth answers the second with "the flush in progress", and exists only between a flush taking a range and [stating it](#during-a-flush).
 
 **An ordered map, because the query is a predecessor search.**
 Reading offset `p` of allocation `i` means finding the greatest key `≤ (i, p)` — `O(log F)` for `F` live fragments — and a sequential read iterates from there.
@@ -73,6 +79,7 @@ That is why a tombstoned id's fragments are always owned, and why a re-allocated
   `ZeroByDefault` carries no `statement` field at all, so this is a match arm rather than a null check — and it is the arm that is easy to forget, because the other two variants both have one.
   The concrete case is pin accounting: overwriting a range releases the previous owner's pin, and a `ZeroByDefault` fragment has no owner and no pin to release, so a blind release there would decrement some unrelated statement or panic.
   The same applies to a consolidator asking "does this fragment belong to the statement I am rewriting?", where the answer for this variant is always no.
+  During a flush `Pending` joins it: it has no owner either, and a source that takes a range already pending simply discards the older entry, with no pin to release.
 - **Growth into default territory is free.**
   If the last fragment is already `ZeroByDefault`, raising the size extends it with no new entry at all, since its end is implied by the size.
 
@@ -131,6 +138,7 @@ struct AllocationMeta {
     fragment_count: u32,
     statement_bytes: u32,
     mentions: u32,
+    last_written: u32,                  // the flush that last wrote the id; see below
     anchor: Option<StatementRef>,       // newest Shrink or Tombstone
     grow_witness: Option<StatementRef>, // Grow with n == size, if any
 }
@@ -142,12 +150,18 @@ Nothing ever iterates the allocation map in id order at run time; consolidation'
 | field | updated when | read for |
 | --- | --- | --- |
 | `size` | any flush that resizes the id, writes past its end, frees it, or re-allocates it | answering `size()` in `O(1)`; bounding reads; supplying the extent of an id's last fragment |
-| `fragment_count` | on every fragment created or destroyed for this id | [pricing defragmentation](consolidation.md#defragmentation-rides-the-id-window) — description overhead relative to `size`. Counts `ZeroByDefault` fragments, which are real entries with real memory cost |
+| `fragment_count` | on every fragment created or destroyed for this id | [pricing description defragmentation](consolidation.md#description-defragmentation-rides-the-rotating-window) — description overhead relative to `size`. Counts `ZeroByDefault` fragments, which are real entries with real memory cost |
 | `statement_bytes` | when a statement for this id is created, or when one's pins reach zero | pricing defragmentation, paired with `fragment_count` |
 | `mentions` | `+1` per statement naming the id written or read at open; `−1` when one is physically dropped | one thing only: releasing a tombstone anchor's pin when the count falls to 1 |
+| `last_written` | whenever the application's writes reach the id — a flush that writes, resizes, or allocates it | the age of [description defragmentation's candidates](consolidation.md#where-it-is-called-and-how-it-is-executed) |
 | `anchor`, `grow_witness` | `anchor`: when a `Shrink` or `Tombstone` is written. `grow_witness`: when a `Grow` is written, and when `size` moves past its bound | moving the anchor pin; telling a consolidator that a victim page holds an anchor it must replace |
 
 `size` is maintained **incrementally**, never recomputed: it is `max(anchor's n, Grow bounds and content extents above anchor_epoch)`, and every operation that could change it knows which term it changed.
+
+**`last_written` measures content age, where an epoch measures location age.**
+A statement's epoch [is its page's](#cost), so every restatement re-stamps it — the header re-stamps everything it holds on every flush — whereas `last_written` moves only when the application writes the id.
+It counts flushes in 32 bits from a base the session sets at open, and a session that would outrun them rebases every entry in one pass.
+At load it is seeded from the newest epoch among the id's statements, which can only understate the age, since restatements make epochs newer and never older; so it errs toward treating an id as recently written.
 
 ### A tombstoned id keeps no allocation-map entry
 
@@ -175,19 +189,57 @@ The counter is 32 bits rather than page-sized, because a page's live bytes excee
 Pages are bucketed by live fraction, a handful of buckets suffices, together with an age mark.
 That makes victim selection `O(1)` rather than a priority queue's `O(log P)`, with `O(1)` bucket moves as counters change.
 `Data` and non-header `AddressTable` pages are bucketed [separately](consolidation.md#the-structures-behind-the-ranking), and header pages in neither.
-Excluding the header is correct, and nothing is lost by it: a header is rewritten every flush, so it is never a victim, and its statements are accounted for by being [restated into every flush's statement queue](consolidation.md#one-statement-queue-and-why-its-length-is-computed-last) rather than by its coverage.
+The header is excluded here since it is rewritten every flush, so it is never a victim, and its content is accounted for by being [taken and stated again by every flush](consolidation.md#one-dirty-set-and-why-statements-are-derived-last) rather than by its coverage.
 
-An `AddressTable` page carries one more field: its parent's page number, four bytes, updated whenever the parent is replaced.
+The in-memory state of an `AddressTable` page carries one more field: its parent's page number, four bytes, updated whenever the parent is replaced.
 [Unlinking an emptied page](consolidation.md#unlinking-an-emptied-page) needs it, since a page may be named by an interior page rather than by the header.
 
-A free list tracks reusable pages under the [two-generation quarantine](../spec/durability.md#the-reuse-rule): a page dropped by commit `E` becomes writable in flush `E + 2`.
+An ordered set tracks reusable pages under the [two-generation quarantine](../spec/durability.md#the-reuse-rule), handing out the lowest first: a page dropped by commit `E` becomes writable in flush `E + 2`.
 
 ## Derived structures
 
 Two more, rebuilt at open and never persisted:
 
 - **The id allocator** — the next fresh id, plus the recyclable set described above. See [Id recycling](id-recycling.md).
-- **The eviction clock** — over the statements currently buffered in the header page, recording how many flushes each has gone untouched. See [The flush](flush.md#the-header-as-write-buffer).
+- **The eviction clock** — over the fragments the header states, recording how many flushes each has gone untouched. See [The flush](flush.md#the-header-as-write-buffer).
+
+## During a flush
+
+A flush changes the structures above in two steps: it **takes** the fragments it changes as it goes, and it **states** them only when it cuts the address table.
+[Why the two are separate](consolidation.md#each-fragment-is-stated-once-per-epoch) belongs to consolidation; between them, three pieces of transient state exist, all dropped when the flush commits.
+
+**Pending fragments.**
+A fragment the flush has taken names an entry in a per-flush table rather than a statement:
+
+```rust
+struct Pending {
+    origin: Origin,    // where its bytes are now
+    place: Place,      // where they will be stated from
+    heat: u32,         // flushes untouched, for the header's split
+}
+
+enum Origin {
+    Arena(ArenaPos),   // written this flush
+    File(Address),     // already in the file
+    None,              // zeros: nothing to read
+}
+
+enum Place {
+    Unplaced,          // a chunk: `pack` gives it a data page
+    Data(Address),     // in a data page, placed or left where it was
+    Inline,            // in the address table, as an `Inline` payload
+    Zero,              // a `Zero` statement's range
+}
+```
+
+A pending fragment has no owner and so holds no pin; pins are handed out when the cut binds its statement.
+Its coverage follows its place: a fragment in `Data` is charged to that page exactly as a `Bytes` fragment is, an `Unplaced` one is charged when `pack` places it, and an `Inline` payload when the cut decides which table page carries it.
+
+**The dirty set.**
+Every key range the flush has taken, kept merged and sorted, and per touched id a record of what the fragment map cannot say: the size and existence the id had when the flush began, whether it was freed, and whether a page the flush retires held its anchor or grow witness.
+The cut [derives every statement](consolidation.md#one-dirty-set-and-why-statements-are-derived-last) from these two.
+
+**Heat** rides on the pending entries rather than on statements, since statements are derived afresh every flush: a statement derived from several fragments takes the hottest of them.
 
 ## Cost
 
@@ -196,3 +248,4 @@ Maintenance of all of the above costs `O(log F)` per fragment created or destroy
 **Epochs belong to pages, not to statements.**
 A statement inherits the epoch of the page it currently sits in, so moving a statement re-stamps it.
 The header is rewritten every flush and states resolved truth, so everything in the header always carries the current epoch, and multi-epoch disagreement can exist only between the header and evicted leaves, or between two leaves.
+It also means an epoch says when a statement was last *moved*, not when its content was last written, which is why the allocation map keeps [`last_written`](#3-the-allocation-map) as well.

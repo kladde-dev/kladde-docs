@@ -28,6 +28,10 @@ For an `Inline` there is no data page: the payload *is* the content, so charging
 **Framing bytes are charged to the statement's own page**, and released in one step when the statement loses its last reason to live.
 The two charges cover disjoint byte ranges of the encoding, so they cannot double-count.
 
+**During a flush, releases come first and charges wait for locations.**
+A range the flush [takes](address-table-operations.md#takeid-range-pending-dirty) is released from its old owners at once, so victim selection within the same flush already sees what the flush will leave.
+Its bytes are charged to a page once they have one — at once when they stay where they are, when `pack` places them when they move, and when the cut picks a table page for an inline payload — and the new statement's framing when the cut binds it.
+
 ## Pins
 
 A statement is live exactly while `pins > 0`, and `pins` is a **single counter over heterogeneous holders**.
@@ -48,6 +52,8 @@ This is a refcount whose holders are of different kinds, so `liveness` would rea
 "Pin", in the buffer-manager sense of *something prevents this from being reclaimed*, is exactly the relationship.
 
 **Pins can rise after creation.** Growing an allocation can bring a range into existence that an existing `Shrink` wins.
+
+**A fragment the flush has taken holds no pin**, since the statement that will own it does not exist until the cut [binds it](address-table-operations.md#bindstmt-page-run); the old owner's pin was released by the take.
 
 ## The droppability rule
 
@@ -152,9 +158,10 @@ This is not a defect — the statement then behaves exactly as a `Grow(id, 30)` 
 ## Emission: when a resize must write a statement
 
 The rule splits by direction, and only the shrink half is undecidable.
+Both halves are applied at the cut, from the id's record, once everything the flush states is known; see [what the cut states for a touched id](address-table-operations.md#what-the-cut-states-for-a-touched-id).
 
-**A grow emits `Grow(id, S_new)` iff nothing this flush writes reaches offset `S_new`.**
-Exact and `O(1)`: everything *not* written by this flush is bounded by the old size, so the flush need only inspect its own output.
+**A grow emits `Grow(id, S_new)` iff nothing this flush states reaches offset `S_new`.**
+Exact: everything *not* stated by this flush is bounded by the old size, so the flush need only inspect its own output — which at the cut is complete.
 The added extent needs no protection either, since the anchor already denies the exposed territory.
 So the common append pattern — growing *and* writing at the new end — emits nothing at all, and a grow without writing costs one three-byte statement that plants no latent content claim.
 

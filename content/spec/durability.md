@@ -33,17 +33,18 @@ Page states are **derived, not stored**.
 Define the **world** of a header as everything reachable from it: its address-table pages, the data pages those reference, and every page of the *next* epoch's **journal segment**, of which the header names only the first page; the rest are reached from it.
 At any moment the two on-disk header slots define at most two worlds that can (and typically do) overlap, and every page is in exactly one of three states:
 
-- **live** — reachable from the newer on-disk header's world;
-- **fallback** — reachable from the older on-disk header's world but not from the newer;
-- **reusable** — reachable from neither.
+- **live** — in the world of the newer on-disk header;
+- **fallback** — in the world of the older on-disk header but not in the world of the newer on-disk header, and the newer header hasn't been `fsync`ed yet;
+- **reusable** — in neither on-disk header's world, or only in the older header's world after the newer header has been `fsync`ed.
 
 ```mermaid
 stateDiagram-v2
   nonexistent --> reusable: file grows, bringing page<br>into existence
   reusable --> live: (a) written during flush E<br>and in header E's world<br>or (b) appended to journal
-  reusable --> nonexistent: file shrinks once no live or<br>fallback page with higher<br>page number exists
-  live --> fallback: header E+k written, whose<br>world no longer contains the page
-  fallback --> reusable: header E+k+1 written,<br>overwriting the only<br>header whose world still<br>contained the page
+  reusable --> nonexistent: file shrinks once every<br>higher page is reusable<br>or the journal's empty<br>last page
+  live --> nonexistent: file shrinks past the<br>journal's empty last page
+  live --> fallback: header E+k written, whose<br>world no longer contains<br>the page
+  fallback --> reusable: header E+k is fsynced<br>(at latest in flush E+k+1)
   live --> live: append transaction<br>(journal pages only)
 ```
 
@@ -52,18 +53,23 @@ stateDiagram-v2
 > **A flush may write only to reusable pages, or extend the file.**
 
 The whole durability argument rests on this.
-It means a page that the commit of epoch `E` stopped referencing becomes writable in flush `E + 2`: during flush `E + 1` the on-disk headers are those of `E` and `E − 1`, and the page — live in world `E − 1` — is still reachable from the latter; only when commit `E + 1` overwrites header slot `E − 1` does it become unreachable from both.
+It means a page that the commit of epoch `E` stopped referencing becomes writable in flush `E + 2`: it stays fallback until header `E` is durable, and within a session the `fsync` that makes it so is that of flush `E + 1`, which comes only after that flush has written its pages.
 
-The same rule covers reopening after a crash: whatever headers are on disk define the worlds to respect.
-The one deliberate exception is that a load may [[#Recovery / loading a kladde file|retire the older world immediately]], once it has made the governing header durable.
+The same rule covers reopening a file: whatever headers are on disk define the worlds to respect.
+A load cannot know whether the governing header is durable, so the older world's pages stay fallback until an `fsync` makes it so; [[#Recovery / loading a kladde file|the `fsync` at open]] does, and retires the older world at once.
 
 ### The truncation rule
 
-> **A file may shrink only past pages that are reusable.**
+> **A file may shrink only past pages that are reusable, and only to a page boundary.**
 
-Truncation is the other way a page can be lost, and it answers to the same argument as reuse: every page beyond the new end must be unreachable from both on-disk headers.
-That includes the first journal page each header names, even while nothing has been written to it, since the header's claim that the journal starts there must stay satisfiable.
+Truncation is the other way a page can be lost, and it answers to the same argument as reuse: no header that recovery could choose may reach past the new end.
+The one exception is the current journal's last page while no transaction has been appended to it: the file may shrink past that page too, since it holds nothing to lose and a reader treats [[file-format#The journal pointer|a journal page past the end of the file]] as empty as well.
+So the file can end at its last page of content, which suits the last flush before a file is closed, and an application that leaves a file untouched for a while.
 A truncation is not a step of the flush protocol and needs no `fsync` of its own: a power cut that loses it leaves the file longer than necessary, and nothing worse.
+
+**The file always ends at a page boundary.**
+It never shrinks into the last page's padding, and a journal page is added to the file whole, before the first transaction is appended to it.
+Were the file to end inside a page, the file system would rewrite the block holding that page's end — when a truncation zeroes the rest of the block, and on some file systems again when the file grows past it — and a power cut during that write can corrupt the whole block, even though the page's own bytes do not change.
 
 ## The flush protocol
 
@@ -99,9 +105,9 @@ It needs no protection from I1: it validates itself, transaction by transaction,
 *Consequence:* a header found on disk implies that everything in its world except the journal segment it names is durable.
 There is no such thing as a valid header pointing at a missing page (except for the journal page it names, which does not need to exist until its first transaction is recorded), so recovery never has to validate a world before trusting it — only the journal it replays.
 
-**I2 — a flush writes only to pages unreachable from both on-disk headers, with one exception: the commit in step 8 overwrites the slot holding the *older* of the two headers** (the reuse rule).
+**I2 — a flush writes only to reusable pages, with one exception: the commit in step 8 overwrites the slot holding the *older* of the two headers** (the reuse rule).
 
-*Consequence:* no matter where a power cut lands, the newer of the two headers and its world are physically intact, and so is the older world up to the moment its slot is overwritten.
+*Consequence:* no matter where a power cut lands, the newer of the two headers and its world are physically intact, and so is the older world for as long as recovery could still choose it.
 
 ### Why one `fsync` suffices
 

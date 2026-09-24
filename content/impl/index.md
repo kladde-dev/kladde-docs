@@ -66,7 +66,7 @@ It matters once [segments](../drafts/segments.md) arrive: each segment will live
 **Drop the data-page mirror once loading is done.**
 After the load, application reads are served by the values' own in-memory representations and never touch the file, so a `Bytes` fragment's `(page, offset)` is dereferenced only when a flush relocates those bytes or a `Copy`/`Splice` reads them — both rare, and both able to afford a fresh read.
 
-**Address-table pages stay resident by default**, for a reason data pages do not share: `Inline` payloads live *inside* them, and [both table-side consolidation mechanisms](consolidation.md#why-address-table-pages-have-two-mechanisms) copy those payloads on every consolidating flush — the [page rewrite](address-table-operations.md#rewrite_pagevictim-queue), which also decodes its victim, and the rotating window.
+**Address-table pages stay resident by default**, for a reason data pages do not share: `Inline` payloads live *inside* them, and [both table-side consolidation mechanisms](consolidation.md#why-address-table-pages-have-two-mechanisms) copy those payloads on every consolidating flush — the [page rewrite](address-table-operations.md#rewrite_pagevictim-dirty), which also decodes its victim, and the rotating window.
 They are also small — on the order of 8 MB for a million allocations.
 Nothing depends on it, though: only the header must stay, being the write buffer, and dropping the leaves after load, as data pages are dropped, costs one read per table victim and one per table page whose inline payload the window restates.
 
@@ -84,10 +84,11 @@ Over the mirror, such a cursor costs no syscalls at all.
 
 1. **The fragment map** — the resolved content view, keyed by `(id, offset)`. Everything else hangs off it.
 2. **The statement slab** — one record per *live* statement: where its encoding lives, and how many reasons it has to stay.
-3. **The allocation map** — per-id metadata: size, anchor, and two counters that no per-page number could replace: how much description this allocation costs, and how many statements still name its id.
+3. **The allocation map** — per-id metadata: size, anchor, when the application last wrote it, and two counters that no per-page number could replace: how much description this allocation costs, and how many statements still name its id.
 4. **The page table** — per-page kind, epoch, and live-byte counter, bucketed for `O(1)` victim selection.
 
 Plus two derived structures rebuilt at open and never persisted: the **id allocator** and the **eviction clock**.
+A flush adds transient state of its own — the fragments it has taken but not yet stated, and the dirty set it states them from — which it drops when it commits; see [During a flush](in-memory-state.md#during-a-flush).
 
 Content is never copied out of the mirror while the mirror holds it.
 Both `Ref` and `Inline` content have a file address — an `Inline` payload lives inside an address-table page, but it is bytes at a known address all the same — so a resolved fragment names a location rather than owning bytes, and a range that resolves to zero needs no bytes at all.

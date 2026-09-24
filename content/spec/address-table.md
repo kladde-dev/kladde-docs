@@ -194,6 +194,8 @@ An implementation must support these, and must fail cleanly rather than silently
 - The `size` fields of the **live `Ref` statements pointing into any one `Data` page** must sum to at most `2^32 - 1`, so that a reader can track a page's live bytes in a 32-bit counter.
   The [[#statement types|writer invariant]] holds that sum below one page's worth.
   This bound binds only files that let several `Ref` statements claim the same byte, which is legal, which a reader must therefore survive, and which without a bound would let the sum reach `2^47`.
+- The size of an encoded [transaction](journal.md#framing) (without framing) must not exceed `2^32 - 1` bytes, so that its length prefix fits in 32 bits.
+  Trying to encode a larger transaction must fail rather than silently cutting the transaction in parts.
 
 ## Design directions
 

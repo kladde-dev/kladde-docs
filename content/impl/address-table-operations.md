@@ -389,6 +389,7 @@ fn split(id: Id, at: AllocationOffset) {
     let shifted = match fragment {
         Bytes { page, offset, statement } =>
             Bytes { page, offset: offset + (at - range.start), statement },
+        Pending(p) => Pending(pending.split(p, at - range.start)),   // shifts origin and place
         other => other,                              // zero fragments carry no offset
     };
     if let Some(s) = shifted.statement() { pin(s); } // the statement now owns two
@@ -410,9 +411,10 @@ fn overwrite(id: Id, range: Range, new: Fragment) {
     for (key, old) in fragments.drain(range) {        // strictly inside
         if let Some(s) = old.statement() { unpin(s); }
         allocations[id].fragment_count -= 1;
-        if let Bytes { page, .. } = old { coverage[page] -= length_of(key); }
+        if let Some(page) = old.data_page() { coverage[page] -= length_of(key); }
     }
     if let Some(s) = new.statement() { pin(s); }
+    if let Some(page) = new.data_page() { coverage[page] += range.len(); }
     fragments.insert((id, range.start), new);
     allocations[id].fragment_count += 1;
     coalesce_around(id, range);
@@ -420,12 +422,14 @@ fn overwrite(id: Id, range: Range, new: Fragment) {
 ```
 
 The only non-trivial primitive: split at both boundaries, drop what is strictly inside, insert the new one.
+`data_page()` is the page a fragment's bytes sit in — a `Bytes` fragment's, or a pending one's whose place is `Data` — so a range taken in place is released and charged again to the same page, and a pending fragment [carries its coverage](in-memory-state.md#during-a-flush) exactly as a stated one does.
 
 ### `coalesce_around(id, range)`
 
 Merge each new boundary with its neighbour when both fragments resolve identically **and** name the same statement.
 Two `ZeroByDefault` ranges merge; a `Shrink`-owned zero range and a `ZeroByDefault` one must not.
 Two `Bytes` fragments merge only when they are contiguous in the same page *and* owned by the same statement.
+Pending fragments are left alone: they have no statement to compare yet, and the cut merges them when it derives one.
 
 Merging releases one pin and decrements `fragment_count`.
 
@@ -449,40 +453,51 @@ fn unpin(s: StatementRef) {
 
 The ordering in the `pins == 0` branch is the obligation named in [In-memory state](in-memory-state.md#2-the-statement-slab): the page number must be read before the field becomes a free-list link.
 
-## Applying a statement
+## Taking and stating
 
-What a flush does for each statement it writes, and what a page rewrite does for each statement it re-emits.
+A flush changes the fragment map in two steps, and only the second creates statements: every source **takes** the fragments it changes while the flush runs, and the cut **binds** a statement to them once it knows what to state and in which page.
+[Why the two are kept apart](consolidation.md#each-fragment-is-stated-once-per-epoch) is consolidation's story; the mechanics are these.
+
+### `take(id, range, pending, dirty)`
 
 ```rust
-fn apply(stmt: Statement, page: PageNumber, framing: u8) {
-    let id = stmt.id();
-    let s = slab.alloc(page, framing);                 // pins = 0 for now
-    allocations[id].mentions += 1;
-    allocations[id].statement_bytes += framing;
-    coverage[page] += framing;
+/// Re-owns `range` for the flush in progress. Its old owners lose their pins and
+/// its coverage now; the statement that will own it is the cut's to derive.
+fn take(id: Id, range: Range, p: Pending, dirty: &mut Dirty) {
+    overwrite(id, range.clone(), Fragment::Pending(pending.push(p)));
+    dirty.ranges.insert(id, range);                  // merged with whatever it touches
+}
+```
 
+Taking is how every source changes content — the fold writing, a victim's survivors moving, a description defragmentation rewrite, a page rewrite or the rotating window restating, the header being carried forward.
+What differs between them is only the [`Pending` entry](in-memory-state.md#during-a-flush): whether the bytes stay where they are, need a page, go inline, or are zeros.
+
+### `bind(stmt, page, run)`
+
+```rust
+/// Gives `stmt` its slot and its fragments, once the cut has decided which page it
+/// goes in. `run` is the pending fragments the cut derived it from.
+fn bind(stmt: Statement, page: PageNumber, run: &[Key]) {
+    let (id, framing) = (stmt.id(), framing_of(&stmt));   // encoded length minus payload
+    let s = slab.alloc(page, framing);                 // pins = 0 for now
+    *mentions_of(id) += 1;                             // the recyclable set's, for a `Tombstone`
+    *statement_bytes_of(id) += framing;
+    coverage[page] += framing;
+    for &key in run {                                  // Pending → Bytes or ZeroExplicitly
+        fragments[key] = fragments[key].stated_by(s, page);
+        pin(s);
+        if stmt.is_inline() { coverage[page] += length_of(key); }   // payload, per byte
+    }
     match stmt {
-        Ref { offset, size, address } => {
-            grow_size_to(id, offset + size);
-            overwrite(id, offset..offset+size,
-                      Bytes { page: address.page, offset: address.offset, statement: s });
-        }
-        Inline { offset, size, .. } => {                // payload lives in `page`
-            grow_size_to(id, offset + size);
-            overwrite(id, offset..offset+size,
-                      Bytes { page, offset: payload_offset(stmt), statement: s });
-            coverage[page] += size;                     // payload charged per byte
-        }
-        Zero { offset, size } => {
-            grow_size_to(id, offset + size);
-            overwrite(id, offset..offset+size, ZeroExplicitly { statement: s });
-        }
-        Grow { n }   => { grow_size_to(id, n); set_grow_witness(id, s, n); }
-        Shrink { n } => { set_anchor(id, s); shrink_size_to(id, n); }
-        Tombstone    => { set_anchor(id, s); tombstone(id, s); }
+        Grow { n }                => set_grow_witness(id, s, n),
+        Shrink { .. } | Tombstone => set_anchor(id, s),
+        _                         => {}
     }
 }
 ```
+
+Everything else a statement implies has already happened by then: the take released the old owners, and the size changes happened when the flush [made them](#mutation-at-flush-time).
+What `bind` adds is ownership, framing, and the anchor — the three things that need the statement to exist.
 
 ### `grow_size_to(id, n)` and `shrink_size_to(id, n)`
 
@@ -529,65 +544,60 @@ fn set_anchor(id: Id, new: StatementRef) {
 
 ## Mutation, at flush time
 
-### `write_bytes(id, offset, bytes)`
+What the flush calls for each id its fold touched, once per flush and with the fold's net result: each call takes what it changes, applies the size change at once, and leaves the id a record for the cut.
 
-The flush has already decided which data page the bytes go to; this records the effect.
+### `write_bytes(id, offset, len, origin)`
 
 ```rust
-fn write_bytes(id: Id, offset: AllocationOffset, len: u32, dest: Address) {
-    emit(Ref { id, offset, size: len, address: dest });
-    // `apply` above does the rest: grow_size_to covers a write past the end,
-    // overwrite re-owns the range and releases whatever held it before.
+fn write_bytes(id: Id, offset: AllocationOffset, len: u32, origin: Origin, dirty: &mut Dirty) {
+    touch(id, dirty);                                 // records the id; sets `last_written`
+    grow_size_to(id, offset + len);                   // a write past the end
+    take(id, offset..offset + len, Pending::bytes(origin), dirty);
 }
 ```
 
-A write past the current end produces **two** fragments — the gap `[size, offset)` and the written range — which is the only way one statement adds two.
+No page is chosen here: `pack` places the bytes later — unless they are short enough to be stated [`Inline`](flush.md#the-inline-threshold) — and the cut states them.
+A write past the current end produces **two** fragments — the gap `[size, offset)` and the written range — which is the only way one write adds two.
 
-### `resize(id, n)`
+### `resize(id, n)`, `allocate(id, n)`, and `free(id)`
 
 ```rust
-fn resize(id: Id, n: u32) {
-    let old = size(id);
-    if n > old {
-        // Emit only if nothing this flush writes reaches n. Exact and O(1).
-        if !this_flush_reaches(id, n) { emit(Grow { id, n }); }
-        else                          { grow_size_to(id, n); }
-    } else if n < old {
-        emit(Shrink { id, n });        // always; see Liveness, "Emission"
-    }
+fn resize(id: Id, n: u32, dirty: &mut Dirty) {
+    touch(id, dirty);                                 // records the size before the change
+    if n > size(id) { grow_size_to(id, n); } else { shrink_size_to(id, n); }
 }
-```
 
-### `allocate(id, n)`
-
-```rust
-fn allocate(id: Id, n: u32) {
+fn allocate(id: Id, n: u32, dirty: &mut Dirty) {
+    touch(id, dirty);                                 // records that it did not exist
     allocations.insert(id, AllocationMeta::empty());
-    if n == 0 { emit(Grow { id, n: 0 }); }   // the only evidence it exists
-    else      { resize(id, n); }             // a grow from 0
+    grow_size_to(id, n);
 }
-```
 
-### `free(id)`
-
-```rust
-fn free(id: Id) {
-    emit(Tombstone { id });
-    // apply() sets the anchor, which releases the previous anchor's pin;
-    // shrink_size_to(0) then destroys every fragment, so every content
-    // statement for the id drops to zero pins in the same step.
+fn free(id: Id, dirty: &mut Dirty) {
+    touch(id, dirty);
+    shrink_size_to(id, 0);                            // every fragment goes, and with it `F`
     let meta = allocations.remove(id);
-    ids.recyclable.insert(id, RecyclableId {
-        mentions: meta.mentions,             // after this flush's own drops
-        tombstone: Some(the_new_tombstone),
-    });
+    release_anchor_and_witness(&meta);               // the cut states the tombstone
+    ids.recyclable.insert(id, RecyclableId { mentions: meta.mentions, tombstone: None });
 }
 ```
 
-The allocation-map entry goes away at the free; only `mentions` and the tombstone reference survive, in the recyclable set.
+None of them states anything: `touch` records, the first time the flush meets an id, the size and existence it had, and the cut reads that record back.
+The allocation-map entry goes away at the free; only `mentions` and, once the cut binds it, the tombstone reference survive, in the recyclable set.
 
-**Free and re-allocate in one flush** is the one case that emits no tombstone, since a tombstone and the new incarnation would make contradicting existence claims in one epoch.
-Emit statements that fully cover the new extent instead — `Zero(id, 0, n)`, plus `Shrink(id, n)` if the new allocation is smaller than the old one.
+### What the cut states for a touched id
+
+The fragment map says what an id's bytes are, but not how its size and existence changed, so these statements come from the id's record:
+
+| how the id changed during the flush | the cut states |
+| --- | --- |
+| it existed and was freed | `Tombstone(id)` |
+| it existed, was freed, and was allocated again | no tombstone, which would contradict the new incarnation in the same epoch; the fold takes the whole new extent instead, so that `Zero` covers what it did not write, plus `Shrink(id, size)` if the new allocation is smaller than the old one |
+| it shrank | `Shrink(id, size)` — always, for the reason [Liveness](liveness.md#emission-when-a-resize-must-write-a-statement) gives |
+| it grew, or is new | `Grow(id, size)` unless a statement the cut states for the id reaches `size` — so an allocation of size 0, which nothing reaches, always gets its `Grow(id, 0)`, the only evidence it exists |
+| a page this flush retires held its anchor or grow witness | [`replacement_anchor(id)`](#replacement_anchorid--the-one-correctness-obligation), or a fresh `Grow`, unless a row above already states one |
+
+At most one of these per id, so they cannot contradict one another in one epoch, and because the cut evaluates them last, "a statement the cut states reaches `size`" is exact.
 
 ### `drop_physically(stmt)`
 
@@ -614,91 +624,62 @@ Clearing the tombstone reference at the pin release rather than at the eventual 
 
 ## Page rewrites
 
-Both eviction and consolidation are the same operation — **rewrite a page as resolved truth** — differing only in which page and why.
+The header being carried forward and both table-side consolidation mechanisms are the same operation — **take a page's live content in place, and let the cut state it again** — differing only in which content and why.
 
-### `rewrite_page(victim, queue)`
+### `rewrite_page(victim, dirty)`
 
 ```rust
-fn rewrite_page(victim: PageNumber, queue: &mut Queue) {
+fn rewrite_page(victim: PageNumber, dirty: &mut Dirty) {
     let page = decode(victim);
-    let mut out = Vec::new();
-
     for stmt in page.statements {
-        let id = stmt.id();
-        match keep(stmt) {
-            Keep::Drop        => drop_physically(stmt),
-            Keep::AsResolved  => {
-                for f in owned_fragments(stmt) { out.push(restate(f)); }   // location pending
-                if is_anchor(stmt) { out.push(replacement_anchor(id)); }
-                drop_physically(stmt);
+        if keep(stmt) == Keep::AsResolved {
+            // The bytes stay where they are; only the statement stating them is new.
+            for (key, len) in owned_fragments(stmt) {
+                take(stmt.id(), key..key + len, Pending::in_place(key), dirty);
             }
+            if is_anchor(stmt) || is_grow_witness(stmt) { dirty.record(stmt.id()).replace = true; }
         }
+        drop_physically(stmt);
     }
     adopt_children(page.children);   // into the header if it has room, else the replacement
-
-    // The delta encoding wants (id, offset) order, but only the offsets are unsorted;
-    // see below. `chunk_by_mut` splits `out` into one run per id.
-    for run in out.chunk_by_mut(|a, b| a.id() == b.id()) { run.sort_by_key(|s| s.offset()); }
-    re_own(&out);                    // the fragments are the restatements' from now on
-    queue.push_run(out);             // one sorted run; the queue merges runs when it is cut
 }
 ```
 
-**It writes no page of its own.**
-Its restatements join the flush's [shared statement queue](consolidation.md#one-statement-queue-and-why-its-length-is-computed-last), and which page they land in is decided when the queue is cut; they take their fragments at once, so that nothing else the flush restates can [state the same fragment twice](consolidation.md#each-fragment-is-stated-once-per-epoch).
+**It writes no page of its own, and states nothing itself.**
+What it takes joins the flush's [dirty set](consolidation.md#one-dirty-set-and-why-statements-are-derived-last), and the cut derives the statements, merged with whatever else the flush took nearby, into whichever page the cut chooses.
+So a later source that takes the same fragments — an evacuation of their data page, say — simply changes what the cut will state, and cannot [state the same fragment twice](consolidation.md#each-fragment-is-stated-once-per-epoch).
 
-**The sort is per id rather than global, because nothing in the loop can change an id.**
-`owned_fragments(stmt)` scans only within `(id, …)`, `restate` keeps the fragment's key, and `replacement_anchor(id)` names the id it was handed.
-So `out` inherits the victim's id order, which is already increasing by [fact 2](#three-facts-about-the-physical-format-that-decide-the-algorithm), and only offsets *within* one id can be out of order.
+Order does not matter either.
+A statement's owned fragments interleave with its neighbours' — with `Ref(id, 0, 100)` shadowed over `[20, 25)` by `Zero(id, 20, 5)`, the `Ref` owns `[0, 20)` and `[25, 100)` and the `Zero` the gap between — so the ranges arrive in the victim's id order but not in offset order within an id, and the dirty set, which keeps its ranges merged and sorted, absorbs that.
 
-They genuinely can be, which is why the sort cannot be dropped altogether.
-With `Ref(id, 0, 100)` shadowed over `[20, 25)` by `Zero(id, 20, 5)`, the statements arrive in offset order but their fragments do not: the `Ref` emits at 0 and at 25, and only then does the `Zero` emit at 20.
-A `replacement_anchor` is pushed wherever its anchor statement sat, which is likewise unrelated to its own offset.
+### `rewrite_key_range(lo, hi, dirty)`
 
-The saving is `Σ nᵢ log nᵢ` rather than `n log n` over a page's ~700 statements, and it is larger than that arithmetic suggests: most ids contribute one or two statements to any one page, so most runs have length one or are already sorted, and an insertion sort with an early exit makes the common case linear.
-
-[`rewrite_key_range`](#rewrite_key_rangelo-hi-sink) needs no sort at all, which is the contrast worth noticing: it is driven by the fragment map, which is already in `(id, offset)` order, whereas this rewrite is driven by *statements*, whose owned fragments interleave.
-
-### `rewrite_key_range(lo, hi, sink)`
-
-[The rotating window](consolidation.md#the-rotating-window) rewrites a **key range**, not a page, and it is the one rewrite that decodes nothing at all.
+[The rotating window](consolidation.md#the-rotating-window) takes a **key range**, not a page, and it is the one rewrite that decodes nothing at all.
 
 ```rust
-fn rewrite_key_range(lo: Key, hi: Key, sink: &mut QueuePage) {
-    let mut out = Vec::new();
-    let mut touched = SmallSet::new();                   // pages this rewrite restates from
-
-    // The fragment map is resolved truth, so it is the source. Fragments arrive
-    // sorted by (id, offset), which is the order the delta encoding wants.
+fn rewrite_key_range(lo: Key, hi: Key, dirty: &mut Dirty) {
+    let mut touched = SmallSet::new();                   // pages it restates from
+    // The fragment map is resolved truth, so it is the source.
     for (key, fragment) in fragments.range(lo..hi) {
-        let Some(s) = fragment.statement() else { continue };   // ZeroByDefault: states nothing
-        if states_this_flush(s) { continue; }            // already stated at this epoch
+        // `ZeroByDefault` has nothing to state, and a pending fragment is taken already.
+        let Some(s) = fragment.statement() else { continue };
         touched.insert(slab.page_of(s));
-        match fragment {
-            ZeroExplicitly{..} => out.push(Zero { id: key.id, offset: key.offset, .. }),
-            Bytes{..}          => out.push(restate(fragment)),          // location pending
-        }
+        take(key.id, key.offset..end_of(key), Pending::in_place(key), dirty);
     }
-
-    // Anchors are invisible in the fragment map, so they are transferred by hand —
-    // but only where it pays, since a fresh anchor costs bytes.
+    // Anchors are invisible in the fragment map, so their replacement is recorded by
+    // hand — but only where it pays, since a fresh anchor costs bytes.
     for id in ids_in(lo..hi) {
-        if let Some(a) = anchor(id) {
-            if touched.contains(slab.page_of(a)) && !states_this_flush(a) {
-                out.push(replacement_anchor(id));
-            }
+        if anchor(id).is_some_and(|a| touched.contains(slab.page_of(a))) {
+            dirty.record(id).replace = true;
         }
     }
-
-    re_own(&out);                                        // supersedes the old statements
-    sink.extend(out);
 }
 ```
 
 **No statement is dropped physically here**, and that is deliberate: the old statements stay in their pages, `mentions` does not move, and what changes is that they lose their fragments and therefore their pins.
 `unpin` releases their framing from their pages' coverage at the `1 → 0` transition, which is how pages that were never touched become reusable.
 
-`ZeroByDefault` fragments emit nothing and stay `ZeroByDefault` afterwards, because they are the *absence* of a statement rather than a statement about zero — re-emitting them as `Zero` would be correct on content and wrong on cost, turning free gaps into bytes.
+`ZeroByDefault` fragments are left as they are, because they are the *absence* of a statement rather than a statement about zero — taking them would make the cut state them as `Zero`, correct on content and wrong on cost, turning free gaps into bytes.
 
 ### `owned_fragments(stmt)`
 
@@ -717,7 +698,7 @@ A page is rewritten as resolved truth, and one cannot emit resolved truth withou
 Its cost is predictable in advance from `fragment_count`, which lets the ranking price a candidate before committing to it.
 
 A page rewrite decodes exactly **one** page: its victim.
-It never needs an id's physically present statements across the table, because it only rewrites what the victim holds — and a [key-range rewrite](#rewrite_key_rangelo-hi-sink) decodes none at all, since it reads the fragment map instead.
+It never needs an id's physically present statements across the table, because it only rewrites what the victim holds — and a [key-range rewrite](#rewrite_key_rangelo-hi-dirty) decodes none at all, since it reads the fragment map instead.
 
 ### `replacement_anchor(id)` — the one correctness obligation
 
@@ -727,40 +708,42 @@ Concretely: with `Ref(7,0,1000,P1)`@3 in another page and `Shrink(7,10)`@5 in th
 
 > **A page holding a statement with an `A` pin cannot be rewritten without transferring the anchor.**
 
-The replacement depends on what the anchor is doing:
+The replacement depends on what the anchor is doing, and the cut decides it for every id whose record asks for one:
 
 ```rust
-fn replacement_anchor(id: Id) -> Statement {
+/// Evaluated at the cut, after every drop this flush makes — so the anchor being
+/// replaced is no longer among the id's `mentions`.
+fn replacement_anchor(id: Id) -> Option<Statement> {
     match anchor_kind(id) {
-        Shrink                      => Shrink { id, n: size(id) },
-        Tombstone if exists(id)     => Shrink { id, n: size(id) },  // re-allocated
-        Tombstone if mentions(id) > 1 => Tombstone { id },          // still needed
-        Tombstone                   => Nothing,                     // last statement
+        Shrink                        => Some(Shrink { id, n: size(id) }),
+        Tombstone if exists(id)       => Some(Shrink { id, n: size(id) }),  // re-allocated
+        Tombstone if mentions(id) > 0 => Some(Tombstone { id }),            // still needed
+        Tombstone                     => None,                              // nothing left to deny
     }
 }
 ```
 
-A `Shrink` there would resurrect a non-existent id, and emitting nothing when `mentions > 1` would let an older statement decide existence again.
+A `Shrink` there would resurrect a non-existent id, and stating nothing while some older statement still names the id would let that statement decide existence again.
 
-A `Grow` carries no such obligation, since it anchors nothing — but the grow witness must still be re-emitted if the victim held it and it is still the sole witness of the size.
+A `Grow` carries no such obligation, since it anchors nothing — but the grow witness must still be stated again if the victim held it and it is still the sole witness of the size.
 
-### Eviction from the header
+### The header
 
-The header is rewritten every flush and states resolved truth, so it is a **write buffer**: every statement a flush produces lands there first, at zero additional page writes.
-When it overflows, the coldest statements are evicted into a fresh leaf.
+**The header is taken whole at the start of every flush and stated again at the cut**, which is what makes it the address table's [write buffer](flush.md#the-header-as-write-buffer): everything it holds is rewritten every flush at no extra page write, and the cut decides afresh which statements stay in it.
 
 ```rust
-fn evict(n_bytes: usize) -> PageNumber {
-    let batch = eviction_clock.coldest(n_bytes);   // flushes gone untouched
-    let target = allocate_reusable_page();
-    // Eviction re-stamps: a statement moving into a page of epoch E becomes a
-    // statement at epoch E. Since the header always held resolved truth, the
-    // evicted statements are already narrowed and need no re-resolution.
-    write_page(target, batch, epoch: current);
-    for s in batch { reassign_page(s, target); }
-    target
+fn take_header(dirty: &mut Dirty) {
+    for stmt in header.statements() {
+        for (key, len) in owned_fragments(stmt) {
+            take(stmt.id(), key..key + len, Pending::in_place(key).with_heat(clock[key]), dirty);
+        }
+        if is_anchor(stmt) || is_grow_witness(stmt) { dirty.record(stmt.id()).replace = true; }
+        drop_physically(stmt);        // the new header replaces it in the governing world
+    }
 }
 ```
+
+It is `rewrite_page` for the one page every flush retires, with one addition: the [eviction clock](flush.md#the-header-as-write-buffer)'s entries ride along as the pending fragments' heat, so that the cut can keep the hottest statements in the header and send the rest to leaves.
 
 Because the header is rewritten unconditionally, a `Shrink` or `Grow` carried in it becomes a *new* statement record at the new epoch each flush, so the anchor re-points and the `A` pin moves every flush.
 That is routine rather than churn — header pages are exempt from coverage-driven victim selection — but it is why the anchor must be a movable pin rather than a flag baked into the statement.

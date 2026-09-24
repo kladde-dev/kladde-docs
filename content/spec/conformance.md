@@ -29,7 +29,7 @@ Placement, compaction, and fold timing are all free, so two implementations will
   Silent misinterpretation is a conformance failure, not a quality-of-implementation issue.
 - **Stable ids.** Preserve every allocation's id across flushes and across consolidation.
 - **Ownership.** Maintain exactly one owning pointer per allocation.
-- **The reuse rule.** Write only to pages unreachable from both on-disk headers, or extend the file ([I2](durability.md#the-two-invariants)).
+- **The reuse rule.** Write only to [reusable](durability.md#page-states) pages, or extend the file ([I2](durability.md#the-two-invariants)).
 - **One `fsync` before the header.** Issue a header only after an `fsync` that covered everything it references and the previous header ([I1](durability.md#the-two-invariants)); treat a failed `fsync` as fatal for the session.
 - **Page framing.** Write the `kind`, `content_size`, `epoch` and `crc` on every non-header page, and ignore any page whose CRC does not validate.
 - **Journal framing.** Frame every transaction with a length prefix and a chained, epoch-salted CRC, and recover a torn tail by truncating to the longest valid prefix — without skipping a hole.
@@ -55,7 +55,8 @@ Placement, compaction, and fold timing are all free, so two implementations will
 ## Must not
 
 - Change an allocation's id, size, or content during consolidation.
-- Overwrite a page reachable from either on-disk header, or truncate the file below one ([the truncation rule](durability.md#the-truncation-rule)).
+- Overwrite a page that is not [reusable](durability.md#page-states), or truncate the file below one or to anything but a page boundary ([the truncation rule](durability.md#the-truncation-rule)).
+  This rule is relaxed for the last journal page, which may be appended to, and if it is empty (i.e., if its prefix of CRC-valid transactions is empty) then the file may be truncated below it.
 - Continue a session after a failed `fsync`.
 - Return anything but zero for a byte that has not been explicitly written.
 - Depend on the descriptor table's index assignment for any semantic purpose.

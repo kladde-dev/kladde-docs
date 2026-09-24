@@ -34,15 +34,15 @@ Outside of journal appends, an implementation **writes whole pages only**, and o
 
 Every page except the pages that make up the current journal concatenates the following fields, in order, without delimiters:
 
-| field          | width                        | meaning                                                                                             |
-| -------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| `header`       | 0 unless it is a header page | only present in [[#header pages]]                                                                   |
-| `kind`         | 1 byte                       | one of `AddressTable` (`0x01`) or `Data` (`0x02`). For header pages: always `AddressTable` (`0x01`) |
-| `epoch`        | 8 bytes                      | the flush counter at the time the page was written                                                  |
-| `content_size` | 2 bytes                      | the size of `content` in bytes                                                                      |
-| `content`      | `content_size` bytes         | the payload of the page, encoded depending on `kind`                                                |
-| `crc`          | 4 bytes                      | checksum over all preceding bytes of the page except `content_size` (but including `header`)        |
-| `padding`      | to the page boundary         | arbitrary, excluded from the CRC, may be absent on the file's last page                             |
+| field          | width                        | meaning                                                                                                          |
+| -------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `header`       | 0 unless it is a header page | only present in [[#header pages]]                                                                                |
+| `kind`         | 1 byte                       | one of `AddressTable` (`0x01`) or `Data` (`0x02`). For header pages: always `AddressTable` (`0x01`)              |
+| `epoch`        | 8 bytes                      | the flush counter at the time the page was written                                                               |
+| `content_size` | 2 bytes                      | the size of `content` in bytes                                                                                   |
+| `content`      | `content_size` bytes         | the payload of the page, encoded depending on `kind`                                                             |
+| `crc`          | 4 bytes                      | checksum over all preceding bytes of the page except `content_size` (but including `header`)                     |
+| `padding`      | to the page boundary         | arbitrary, excluded from the CRC, [present even on the file's last page](durability.md#the-truncation-rule)      |
 
 A page whose CRC does not validate **must be ignored** during loading.
 This is safe because the durability protocol guarantees that no committed state ever references a page whose write did not complete, so an invalid CRC can only belong to garbage that nothing references.
@@ -77,16 +77,16 @@ Page 0 must always have an even `epoch` field, and if page 1 is present then it 
 
 Each header page holds a fixed-size `header` field in the [[#page framing]], which concatenates the following fields with no delimiters:
 
-| field                  | width    | purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ---------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| magic                  | 11 bytes | identifies the file type as kladde and catches accidental opens of unrelated files; present even in page 1 to simplify size calculations. See [[#the magic\|below]]                                                                                                                                                                                                                                                                                             |
-| log2(page size)        | 1 byte   | binary logarithm of the page size; currently, the only allowed value is `12`, indicating a 4 KiB page size, but the spec is designed not to prevent `13`, `14`, `15`, or `16` (for powers of 2 from 8 KiB through 64 KiB) in the future if measurements deem them useful.                                                                                                                                                                                       |
-| format version         | 2 bytes  | the specification version this file was written against; currently only version `0` is allowed, indicating "pre-stable".                                                                                                                                                                                                                                                                                                                                        |
-| minimum reader version | 2 bytes  | the oldest specification version that can still read this file; currently only version `0` is allowed                                                                                                                                                                                                                                                                                                                                                           |
-| root allocation id     | 4 bytes  | the [allocation](allocations.md) holding the root value                                                                                                                                                                                                                                                                                                                                                                                                         |
-| schema table id        | 4 bytes  | the allocation holding the [descriptor table](schema/canonical-encoding.md#table-encoding)                                                                                                                                                                                                                                                                                                                                                                      |
-| root fingerprint       | 16 bytes | the [schema fingerprint](schema/fingerprints.md) of the root type                                                                                                                                                                                                                                                                                                                                                                                               |
-| first journal page     | 4 bytes  | the page holding the beginning of the journal that will be used after the flush that created this header page (must point to either an existing page `>= 2` that is not part of nor reachable from the address table, or to `max(2, num_pages_in_file)` to indicate that the journal page should be appended when the first op is journaled, if necessary after extending the last page to its page boundary and appending a slot for an unused header page 1). |
+| field                | width    | purpose                                                                                                                                                                                                                                                                   |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `magic`              | 11 bytes | identifies the file type as kladde and catches accidental opens of unrelated files; present even in page 1 to simplify size calculations. See [[#the magic\|below]]                                                                                                       |
+| `log2(page size)`    | 1 byte   | binary logarithm of the page size; currently, the only allowed value is `12`, indicating a 4 KiB page size, but the spec is designed not to prevent `13`, `14`, `15`, or `16` (for powers of 2 from 8 KiB through 64 KiB) in the future if measurements deem them useful. |
+| `format_version`     | 2 bytes  | the specification version this file was written against; currently only version `0` is allowed, indicating "pre-stable".                                                                                                                                                  |
+| `min_reader_version` | 2 bytes  | the oldest specification version that can still read this file; currently only version `0` is allowed                                                                                                                                                                     |
+| `root_allocation`    | 4 bytes  | ID of the [allocation](allocations.md) holding the root value                                                                                                                                                                                                             |
+| `schema_table`       | 4 bytes  | ID of the allocation holding the [descriptor table](schema/canonical-encoding.md#table-encoding)                                                                                                                                                                          |
+| `root_fingerprint`   | 16 bytes | the [schema fingerprint](schema/fingerprints.md) of the root type                                                                                                                                                                                                         |
+| `journal_pointer`    | 4 bytes  | the page number of the page holding the beginning of the journal that will be used after the flush that created this header page. See [[#The journal pointer]].                                                                                                           |
 
 The header page **is** the root [address-table](address-table.md) page, so the address table is reached without indirection, and the commit that publishes a new header publishes a new root table page in the same write.
 
@@ -101,6 +101,17 @@ Both slots corrupting simultaneously is unrecoverable without a scan, but they a
 
 The **root fingerprint** is in the header rather than only in the schema table so that the common case — an application opening a file it wrote itself, with an unchanged schema — is a single 16-byte comparison with no need to parse the descriptor table at all.
 See [Fingerprints](schema/fingerprints.md#as-a-fast-path).
+
+### The journal pointer
+
+The `journal_pointer` field of the header must be `≥ 2` and either point past the file or reference a page that would not be in either header's world were it not for this pointer (also not part of the other header slot's journal).
+If the page exists then a reader will try to decode it as a journal page assuming an epoch that is one higher than the header page's epoch and consider the largest CRC-valid prefix (which may be empty) as the current journal, following links to subsequent journal pages if present.
+
+If the `journal_pointer` points past the end of the file then the journal is considered empty, and the first journal page must be created before recording the first transaction in the journal — as a whole page, since the file [always ends at a page boundary](durability.md#the-truncation-rule).
+Implementations should avoid writing a `journal_pointer` that points unnecessarily far past the end of the file since this would cause unnecessary file growth once the first transaction is recorded.
+However, readers must not assume that `journal_pointer` points at most directly after the file since violating this assumption is unavoidable in edge cases: a flush may create a file that ends in a fallback page and set `journal_pointer` to point to the page immediately past the file.
+Closing and reopening the file introduces another `fsync`, which transitions the last page from fallback to reusable, at which point the implementation is allowed to truncate the file past it, resulting in a file whose `journal_pointer` seemingly points unnecessarily far past the end.
+Readers must be able to handle such a file.
 
 ### The magic
 
