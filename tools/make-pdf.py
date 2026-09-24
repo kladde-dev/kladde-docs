@@ -44,7 +44,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pages import ORDER, ROOT, CONTENT, split_front_matter  # noqa: E402
+from pages import (  # noqa: E402
+    ORDER, ROOT, CONTENT, FRONT_MATTER, split_front_matter)
 
 # Prose and headings.  Alternatives that ship with `fonts-texgyre` and have a
 # matching math companion: "TeX Gyre Termes" (Times), "TeX Gyre Schola"
@@ -837,7 +838,54 @@ def wrap_diagrams(body):
     return "\n".join(out)
 
 
-def preamble(title, subtitle=None, documentclass="report", toc=True):
+# CULINECHBAR puts a `\cbstart`/`\cbend` pair around every marked *fragment*,
+# and changebar is by far the most expensive thing in a diff build: neutralising
+# it on a densely-changed 23-page proxy took the compile from 77s to 4s, while
+# neutralising ulem's `\uwave`/`\sout` changed nothing measurable. Cost is
+# linear in the number of bars (doubling the document doubled the time, 93s ->
+# 189s -> 407s), so one lever is emitting fewer of them; the bigger one, not
+# drawing them until the pagination has settled, is below.
+#
+# Moving the bars from each fragment to the region brackets that enclose them
+# covers the same text with far fewer pairs, because adjacent fragments
+# coalesce into one bar: 3152 bars -> 934, and 77s -> 15s on that proxy.
+# `\DIFmodbegin`/`\DIFmodend` are included so that a changed code block, which
+# latexdiff marks with neither `\DIFadd` nor `\DIFaddbegin`, still gets a bar.
+REGION_BARS = [
+    "  \\makeatletter",
+    "  \\AtBeginDocument{%",
+    "    \\renewcommand{\\DIFaddtex}[1]{{\\protect\\color{blue}\\uwave{#1}}}%",
+    "    \\renewcommand{\\DIFdeltex}[1]{{\\protect\\color{red}\\sout{#1}}}%",
+    "    \\renewcommand{\\DIFaddbegin}{\\cbstart{}}"
+        "\\renewcommand{\\DIFaddend}{\\cbend{}}%",
+    "    \\renewcommand{\\DIFdelbegin}{\\cbstart{}}"
+        "\\renewcommand{\\DIFdelend}{\\cbend{}}%",
+    "    \\renewcommand{\\DIFmodbegin}{\\cbstart{}}"
+        "\\renewcommand{\\DIFmodend}{\\cbend{}}}",
+    # Drawing the bars is ruinous while the page numbers are still moving: a
+    # pass whose `.aux` disagrees with the pagination it produces takes 590s
+    # on the 50-page set, against ~4s once the pagination has settled. So
+    # `compile_tex` runs the first passes with `\kladdenobars` defined, which
+    # turns the bars off and lets the pagination converge cheaply, then turns
+    # them on for the rest. Bars are drawn in the margin and move no page
+    # break, so what settles without them stays settled with them.
+    #
+    # `\ifdefined`, not `\@ifundefined`: pandoc only passes a backslash through
+    # as raw LaTeX when letters follow it, so a line opening with `\@` comes out
+    # as the text "@ifundefined" with its braces escaped.
+    "  \\ifdefined\\kladdenobars",
+    "    \\AtBeginDocument{\\let\\cbstart\\relax \\let\\cbend\\relax"
+        " \\let\\cbdelete\\relax}",
+    "  \\fi",
+    "  \\makeatother",
+]
+
+# How many of those cheap bars-off passes to run before switching the bars on.
+SETTLE_PASSES = 2
+
+
+def preamble(title, subtitle=None, documentclass="report", toc=True,
+             for_diff=False):
     """The pandoc YAML metadata block both modes share.
 
     Only the class and the front matter differ: the whole set is a `report`
@@ -892,6 +940,7 @@ def preamble(title, subtitle=None, documentclass="report", toc=True):
                 " page numbers would be off by one}{}}",
         "  \\fi",
         "  \\makeatother",
+        *(REGION_BARS if for_diff else []),
         "fontsize: 10pt",
         "---",
         "",
@@ -901,7 +950,7 @@ def preamble(title, subtitle=None, documentclass="report", toc=True):
 def build_markdown(pages, problems, figdir=None, warnings=None,
                    subtitle="Specification and design documentation",
                    by_content=False, for_diff=False):
-    chunks = preamble("Kladde", subtitle)
+    chunks = preamble("Kladde", subtitle, for_diff=for_diff)
     # Two passes: every mermaid source in the document is collected first so
     # that node is started once rather than once per diagram.
     bodies = {}
@@ -937,7 +986,8 @@ def build_standalone(text, rel, problems, figdir=None, warnings=None,
     body = substitute_mermaid(body, figures)
     # No synthesised H1: the title comes from the metadata block, and pandoc
     # renders it properly rather than as a first section.
-    chunks = preamble(page["title"], subtitle, documentclass="article", toc=False)
+    chunks = preamble(page["title"], subtitle, documentclass="article", toc=False,
+                      for_diff=for_diff)
     chunks.append(size_tables(body if for_diff else wrap_diagrams(body)).strip())
     chunks.append("")
     return "\n".join(chunks), len(sources)
@@ -1255,10 +1305,15 @@ def latexdiff(old_tex, new_tex, out_tex):
     if proc.returncode != 0:
         sys.exit(f"latexdiff failed:\n{proc.stderr}")
     tex = proc.stdout
-    for command in ("DIFaddbegin", "DIFaddend", "DIFdelbegin", "DIFdelend"):
+    # REGION_BARS renews these, which fails on a macro that does not exist, and
+    # NOALIGN_CLASH drops the ones that land next to a table rule -- safe only
+    # while they are latexdiff's own empty brackets rather than something that
+    # prints. Both assumptions hold exactly as long as this line does.
+    for command in ("DIFaddbegin", "DIFaddend", "DIFdelbegin", "DIFdelend",
+                    "DIFmodbegin", "DIFmodend"):
         if f"\\providecommand{{\\{command}}}{{}}" not in tex:
             sys.exit(f"latexdiff no longer defines \\{command} as empty; "
-                     "NOALIGN_CLASH would now be dropping visible markup")
+                     "REGION_BARS and NOALIGN_CLASH both assume it does")
     # NOALIGN_CLASH first: it strips the empty brackets that would otherwise
     # look like stranded row content to `close_dangling_rows`.
     tex = restore_deleted_braces(drop_orphan_items(close_dangling_rows(
@@ -1267,17 +1322,16 @@ def latexdiff(old_tex, new_tex, out_tex):
     return out_tex
 
 
-# Two passes settle a table of contents.  `changebar` needs a third: it writes
-# each bar's position to a `.cb` file and only draws it on the run that reads
-# that back, and moving a bar can move a page break, which moves a bar.
+# After the settle passes, changebar still needs one pass to record each bar's
+# position and another to read it back and draw it, so the earliest the output
+# can be stable is the second bars-on pass.
 #
-# The stopping test is that `.cb` came out the same twice, *not* changebar's
-# own "Rerun to get the bars right".  Measured on a 25-page diff, the bar
-# positions are stable from the third pass on and that message still appears
-# on every pass to the sixth -- so believing it means five 30-second passes
-# for output that stopped changing after three.
-MIN_PASSES = 2
-MAX_PASSES = 5
+# The stopping test is that the `.cb` and `.aux` came out the same twice, *not*
+# changebar's own "Rerun to get the bars right".  Measured on a 25-page diff,
+# the bar positions are stable from the third pass on and that message still
+# appears on every pass to the sixth -- believing it means paying for passes
+# whose output stopped changing.
+MAX_PASSES = SETTLE_PASSES + 4
 
 
 def compile_tex(tex_path, out_path):
@@ -1285,12 +1339,20 @@ def compile_tex(tex_path, out_path):
     if not shutil.which("xelatex"):
         sys.exit("xelatex not found")
     workdir = tex_path.parent
-    bars = tex_path.with_suffix(".cb")
+    # Both, not just the bars: the bars can only be stable once the pagination
+    # they are placed against is, and that lives in the `.aux`.
+    settling = (tex_path.with_suffix(".cb"), tex_path.with_suffix(".aux"))
     previous = None
     for pass_no in range(1, MAX_PASSES + 1):
+        # `-jobname` so the bars-off passes share the `.aux` and `.toc` with
+        # the bars-on ones; `\def` before `\input` is how the flag gets in.
+        bars_off = pass_no <= SETTLE_PASSES
+        source = ([f"-jobname={tex_path.stem}",
+                   f"\\def\\kladdenobars{{}}\\input{{{tex_path.name}}}"]
+                  if bars_off else [str(tex_path)])
         proc = subprocess.run(
             ["xelatex", "-interaction=nonstopmode", "-halt-on-error",
-             f"-output-directory={workdir}", str(tex_path)],
+             f"-output-directory={workdir}", *source],
             capture_output=True, text=True, cwd=workdir)
         if proc.returncode != 0:
             log = tex_path.with_suffix(".log")
@@ -1298,13 +1360,15 @@ def compile_tex(tex_path, out_path):
             sys.exit(f"xelatex failed on the diff:\n  "
                      + "\n  ".join(errors[:5] or ["(see the log)"])
                      + f"\nits input is at {tex_path}, its log at {log}")
-        settled = bars.read_bytes() if bars.is_file() else b""
-        if pass_no >= MIN_PASSES and settled == previous:
+        settled = tuple(p.read_bytes() if p.is_file() else b"" for p in settling)
+        # Only once the bars are actually being drawn does agreeing twice mean
+        # anything; the bars-off passes always agree about having no bars.
+        if pass_no > SETTLE_PASSES + 1 and settled == previous:
             break
         previous = settled
     else:
-        print(f"warning: the change bars had not settled after {MAX_PASSES} "
-              "passes; some may be misplaced", file=sys.stderr)
+        print(f"warning: the diff had not settled after {MAX_PASSES} passes; "
+              "some change bars or page references may be off", file=sys.stderr)
     _shutil.copyfile(tex_path.with_suffix(".pdf"), out_path)
 
 
@@ -1458,6 +1522,30 @@ def render_pages(args):
     return 1 if sum(render_one(path, out, args) for path, out in paths) else 0
 
 
+UNCHANGED_NOTE = "*Unchanged between these two versions; body omitted.*"
+
+
+def heading_skeleton(text):
+    """A page reduced to its front matter and headings, body dropped.
+
+    Used for pages that read the same at both refs. Their headings stay so
+    that anchors elsewhere in the document still resolve and the contents
+    page still lists them; everything else is weight the diff does not need.
+    """
+    if text is None:
+        return None
+    head = FRONT_MATTER.match(text)
+    out = [text[: head.end()].rstrip("\n")] if head else []
+    out += ["", UNCHANGED_NOTE]
+    body, in_fence = text[head.end():] if head else text, False
+    for line in body.splitlines():
+        if FENCE.match(line):
+            in_fence = not in_fence
+        elif not in_fence and HEADING.match(line):
+            out += ["", line]
+    return "\n".join(out) + "\n"
+
+
 def render_whole_diff(args):
     """The whole of content/, as the difference between two of its versions."""
     old_ref, new_ref = parse_diff_spec(args.diff)
@@ -1469,12 +1557,24 @@ def render_whole_diff(args):
     subtitle = f"changes from {describe(old_ref)} to {describe(new_ref)}"
     problems, warnings = [], []
 
+    def read(rel, ref):
+        return (version_at(repo, f"{prefix}/{rel}", ref) if ref is not None
+                else version_at(repo, f"{prefix}/{rel}", None))
+
+    # A page that reads the same at both refs contributes nothing to the diff
+    # but still costs its share of the typesetting, so it is reduced to its
+    # headings.  That keeps every `#anchor` a cross-reference might target,
+    # and keeps the contents page honest about what the document contains.
+    untouched = {rel for rel in ORDER if read(rel, old_ref) == read(rel, new_ref)}
+
     def build(ref, figdir):
         # A page missing at the old ref is simply absent from that side, so it
         # shows up as wholly added.  One deleted since is the mirror image, and
         # does not appear at all -- ORDER is the current reading order.
-        source = None if ref is None else (
-            lambda rel: version_at(repo, f"{prefix}/{rel}", ref))
+        def source(rel):
+            text = read(rel, ref)
+            return heading_skeleton(text) if rel in untouched else text
+
         pages = collect(ORDER, source)
         return build_markdown(pages, problems, figdir, warnings,
                               subtitle=subtitle, by_content=True, for_diff=True)
