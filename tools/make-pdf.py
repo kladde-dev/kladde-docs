@@ -889,6 +889,19 @@ REGION_BARS = [
         "\\renewcommand{\\DIFdelend}{\\cbend{}}%",
     "    \\renewcommand{\\DIFmodbegin}{\\cbstart{}}"
         "\\renewcommand{\\DIFmodend}{\\cbend{}}}",
+    # In running text changebar records a bar's start where it stands but
+    # defers its end to after the line, via `\vadjust`.  So "A ends, B starts"
+    # within one line is recorded as "B starts, A ends".  At each page break
+    # changebar replays those records and matches every end with the latest
+    # start, which then closes B instead of A: B, still open across the break,
+    # goes undrawn from where it starts to where it ends on the next page.
+    # Recording the end in place, at the foot of the line, keeps the records
+    # in text order.
+    "  \\AtBeginDocument{\\patchcmd{\\cb@end}{\\vadjust{\\cb@setEndPoints}}"
+        "{\\vbox to\\z@{\\vskip\\dp\\strutbox\\cb@setEndPoints"
+        "\\vskip-\\dp\\strutbox}}{}"
+        "{\\PackageError{kladde}{cannot patch cb@end;"
+        " bars across page breaks would go missing}{}}}",
     # Drawing the bars is ruinous while the page numbers are still moving: a
     # pass whose `.aux` disagrees with the pagination it produces takes 590s
     # on the 50-page set, against ~4s once the pagination has settled. So
@@ -1301,15 +1314,9 @@ def bar_whole_tables(tex):
 
 
 # latexdiff closes one region and opens the next back to back all the time --
-# `\DIFdelend \DIFaddbegin` for every replaced phrase.  In running text
-# changebar records a `\cbend` only at the end of the line, via `\vadjust`, but
-# a `\cbstart` at once, so the pair is recorded the wrong way round.  That is
-# harmless on its own, but when the bar opened there is still open at a page
-# break, changebar continues the wrong one onto the next page -- one that has
-# already ended -- and the lines at the top of that page go unbarred.
-#
-# The two bars would touch anyway, so merging them into one loses nothing, and
-# there is then no pair to misorder.
+# `\DIFdelend \DIFaddbegin` for every replaced phrase.  The two bars would
+# touch anyway, so merging them into one loses nothing and leaves changebar,
+# whose cost grows with the number of bars, fewer to draw.
 ADJACENT_BARS = re.compile(
     r"\\DIF(?:add|del|mod)end\s*\\DIF(?:add|del|mod)begin\b[ \t]*")
 
