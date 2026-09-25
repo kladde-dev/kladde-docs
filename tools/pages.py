@@ -40,6 +40,7 @@ ORDER = [
     "impl/write-phase-state.md",
     "impl/flush.md",
     "impl/consolidation.md",
+    "impl/consolidator-state.md",
     "impl/transactions-and-batches.md",
     "impl/related-work.md",
     # Rust: tutorial before design, since the tutorial motivates the traits.
@@ -71,6 +72,7 @@ ORDER = [
     "drafts/open-issues.md",
     "drafts/move-op.md",
     "drafts/segments.md",
+    "drafts/ripeness.md",
 ]
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)

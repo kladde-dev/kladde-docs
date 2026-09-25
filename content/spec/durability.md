@@ -58,6 +58,11 @@ It means a page that the commit of epoch `E` stopped referencing becomes writabl
 The same rule covers reopening a file: whatever headers are on disk define the worlds to respect.
 A load cannot know whether the governing header is durable, so the older world's pages stay fallback until an `fsync` makes it so; [[#Recovery / loading a kladde file|the `fsync` at open]] does, and retires the older world at once.
 
+**The rule assumes that every page consists of whole blocks of the file system.**
+A file system that overwrites a block in place writes all of it, and a power cut during that write can corrupt all of it, even the bytes that did not change.
+Were a block to span two pages, writing one of them — or appending to the journal's last page — could therefore damage the other, which is exactly what the rule exists to prevent.
+4 KiB pages consist of whole blocks on common file systems; a file system with larger blocks needs pages at least as large.
+
 ### The truncation rule
 
 > **A file may shrink only past pages that are reusable, and only to a page boundary.**
@@ -70,6 +75,21 @@ A truncation is not a step of the flush protocol and needs no `fsync` of its own
 **The file always ends at a page boundary.**
 It never shrinks into the last page's padding, and a journal page is added to the file whole, before the first transaction is appended to it.
 Were the file to end inside a page, the file system would rewrite the block holding that page's end — when a truncation zeroes the rest of the block, and on some file systems again when the file grows past it — and a power cut during that write can corrupt the whole block, even though the page's own bytes do not change.
+A page boundary is safe because it is also a block boundary, as [the reuse rule](#the-reuse-rule) assumes.
+
+### Deallocating reusable pages
+
+> **A reusable page's blocks may be given back to the file system without shrinking the file.**
+
+Punching a hole — `fallocate` with `FALLOC_FL_PUNCH_HOLE` on Linux, `fcntl` with `F_PUNCHHOLE` on macOS, `FSCTL_SET_ZERO_DATA` on a sparse file on Windows — releases the page's blocks, and the page reads as zeros until it is written again.
+Zeros serve a reusable page as well as any stale bytes do, since nothing reads it.
+Like a truncation, it needs no `fsync` of its own: a power cut that loses it leaves the blocks allocated, and nothing worse.
+And because every page consists of whole blocks, it never touches a block that holds any part of a live or fallback page.
+It returns the space of reusable pages anywhere in the file, where truncation returns only those at its end; the file keeps its length, which tools that copy it without preserving holes will notice.
+
+**A deallocated page needs its blocks back before it is written again.**
+A write into a hole can find the disk full only at write-back, which is the [ungraceful way](#detecting-that-the-disk-is-full) to learn it, since a failed `fsync` ends the session.
+So an implementation allocates a deallocated page's blocks before writing to it, as it would when extending the file.
 
 ## The flush protocol
 

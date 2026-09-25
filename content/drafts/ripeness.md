@@ -132,8 +132,9 @@ With it, a frozen page is ripe up to the fill `u_cold` for which `h(u_cold) = R_
 **A new page starts from what it holds.**
 Its `rho` is the byte-weighted mean of its content's rates: moved content at its source page's rate, and fresh content at a running estimate of what pages lose in the epoch after they are written.
 
-**Open seeds every page from its fill and its age**, since no history is persisted.
-It assumes the page was written full and has drained at one rate ever since, `rho = ln(1/u) / age`, and sets `at` to the current epoch; `age` counts from the epoch the session's first flush will have, so that no page is younger than one epoch.
+**Open restores each page's estimate from the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add), and seeds a page the state cannot vouch for from its fill and its age.**
+The seed assumes that the page has drained at one rate since it was written, from the fill its framing records, `content_size`, to its current coverage: `rho = ln(content_size / coverage) / age`, with `at` set to the current epoch.
+`age` counts from the epoch the session's first flush will have, so that no page is younger than one epoch.
 That averages over the page's whole life, so a page that drained early and then froze looks at first like one still draining slowly; a few multiples of `1/β` epochs of the session's own observations correct it.
 
 ### Ranking pages by ripeness
@@ -189,7 +190,7 @@ If that ever shows in a profile, note that the current value of `ln I` lies in a
 A table page drains as the fold supersedes its statements, and a page of space and a page write cost the same whichever kind they are, so indexes compare across kinds and the budget loop takes the highest of either.
 
 **At open, the index resembles LFS's score.**
-With the seeded estimate, `I = h(u) · age / ln(1/u)`, which for a nearly full page is `(1 − u) · age / 2` to first order, as LFS's score is.
+With the seeded estimate, a page written full has `I = h(u) · age / ln(1/u)`, which for a nearly full page is `(1 − u) · age / 2` to first order, as LFS's score is.
 As `u` falls toward 0 it grows without bound, where LFS's score levels off at `age`: a nearly empty page costs almost nothing to clean, whatever its age.
 
 ### The budget, and the price
@@ -268,7 +269,7 @@ In [compaction mode](../impl/consolidation.md#compaction-mode), the tail page st
 - [The churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) would give way to ripeness, and `λ` to `κ`; the controller would move `κ` toward `τ`, and the budget would remain a cap.
 - [A free sink changes the arithmetic](../impl/consolidation.md#victims-are-pulled-one-at-a-time) — "free filling takes any victim that fits" — would no longer hold: free filling would take small ripe victims and the cursor's survivors.
 - [Free filling's order](../impl/consolidation.md#packing-in-id-order-with-look-ahead) would shrink to those two sources, with the cursor page taking the place of the victim too big to take whole.
-- [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 8 bytes per page.
+- [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 8 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add) would carry it, with `κ`, from one session to the next.
 - [The constants still to be chosen](../impl/consolidation.md#constants-still-to-be-chosen) would lose `λ` and gain `κ`'s controller, `β`, `R_MIN`, and `W`.
 
 ## Open questions

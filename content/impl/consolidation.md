@@ -176,7 +176,7 @@ Both terms are lower bounds on how long the application has left the tile's cont
 - **A fragment's age** — flushes since the statement that owns it was placed, or zero if the flush in progress has taken it — sees through writes elsewhere in a large allocation, which reset the allocation's age but not the tile's.
 
 `ZeroByDefault` fragments have no statement, and are left out of the minimum.
-Neither term survives a reopen for statements in the header — `last_written` is seeded from epochs at load, and the header re-stamps — so a workload of many short sessions keeps seeing header-resident allocations as young.
+The allocation's age survives a reopen through the [consolidator state](consolidator-state.md#content-ages); rebuilt from the file alone, it would make every allocation with inline content in the header look young at every open, since the header rewrites what it holds.
 
 The age term is the same *prediction* it is in [data-page scoring](#scoring-a-data-page): a range the application patched recently is likely to be patched again, which would re-stipple it and waste the rewrite.
 So a cold allocation's candidate rises the longer it waits, however marginal its gain, and the reserved share guarantees that it is reached.
@@ -185,6 +185,9 @@ So a cold allocation's candidate rises the longer it waits, however marginal its
 So it is re-checked when it is chosen, after the executing flush's fold has taken what it changes: its gain and age are recomputed from the fragments now in its range, which is cheap, and it is dropped unless its gain is still positive and **its age is at least one flush**.
 That filter is what keeps a rewrite off bytes the executing flush is writing — a tile holding a fragment the fold just took has both terms at zero — and it has to be a filter rather than only a factor in the score, since a zero score can still be chosen while the share has room.
 The walk itself may weigh fragments the flush has already taken only by estimate, since the statements that will own them are not bound yet; the re-check makes that harmless.
+
+**A session's first flush draws on a read-only walk at open**, over the window the previous session's last walk covered, which the [consolidator state](consolidator-state.md#the-rotating-windows-position) records, or else from wherever [open seeds the rotation](#the-rotating-window).
+Otherwise the candidates that last walk found would be lost at close, and a session of one flush would find candidates and never execute any.
 
 Executing one needs no new operation: it is a [take](address-table-operations.md#takeid-range-pending-dirty) of the whole range, with the range's resolved content — read from the file and the resident table pages, gaps `memset` to zero, assembled in the journal's arena — as the bytes to write.
 Taking replaces everything under the range with one pending fragment and releases the old owners' pins, and the cut states it as one `Ref`, or one `Inline` if the range is short enough.
@@ -553,7 +556,7 @@ It means the distribution of live fractions is bimodal enough that most pages si
 The two knobs therefore do different jobs, and only one of them is a floor:
 
 - **`λ` is a churn floor.** It stops the cleaner grinding when there is nothing worth cleaning, and it belongs *low* — near 1, i.e. near `u = 1/2` — precisely so that it is not what decides the file's fill.
-- **The per-flush budget is the throttle**, and it is what converges the file on a target fill `τ`: measure `live_bytes / (pages · C)` after each commit and move the budget up while it sits below `τ`, down while above.
+- **The per-flush budget is the throttle**, and it is what converges the file on a target fill `τ`: measure `live_bytes / (pages · C)` after each commit and move the budget up while it sits below `τ`, down while above; the [consolidator state](consolidator-state.md#the-budget) carries the budget it has reached from one session to the next.
 
 That also sharpens [the bound this buys](#the-bound-this-buys): `live_size / τ` is reached by spending budget, and the floor's only job is to stop spending it on pages that cannot repay.
 
@@ -705,9 +708,10 @@ The walk meets fragments the flush has already taken, whose statements the cut h
 An allocation whose live statements alone outgrow the room is simply resumed mid-allocation by the next window, where a cursor keyed by id alone would never get past it.
 Anchors need no position in the window: [`rewrite_key_range`](address-table-operations.md#rewrite_key_rangelo-hi-dirty) transfers an anchor only when the anchor's page is one the window restates from, which is a question about pages rather than about how much of the id the window covered.
 
-**A new session resumes the rotation somewhere new.**
-The cursor lives in memory, so a session that started it at the beginning of the key space every time would, over many short sessions — a command-line tool that a script invokes over and over, say — only ever reach the low ids.
-So open seeds it at the first statement of one table page, chosen by the governing header's CRC modulo the number of table pages: deterministic for a given file, so tests reproduce, and spread evenly over pages across sessions, which is spread evenly over statements to within how full the pages are.
+**A new session resumes the rotation where the last one left it, or else somewhere new.**
+The cursor lives in memory, so the [consolidator state](consolidator-state.md#the-rotating-windows-position) carries it from one session to the next.
+Without a usable state, a session that started it at the beginning of the key space every time would, over many short sessions — a command-line tool that a script invokes over and over, say — only ever reach the low ids.
+So open then seeds it at the first statement of one table page, chosen by the governing header's CRC modulo the number of table pages: deterministic for a given file, so tests reproduce, and spread evenly over pages across sessions, which is spread evenly over statements to within how full the pages are.
 
 ### Unlinking an emptied page
 

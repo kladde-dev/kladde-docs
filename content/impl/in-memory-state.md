@@ -161,7 +161,7 @@ Nothing ever iterates the allocation map in id order at run time; consolidation'
 **`last_written` measures content age, where an epoch measures location age.**
 A statement's epoch [is its page's](#cost), so every restatement re-stamps it — the header re-stamps everything it holds on every flush — whereas `last_written` moves only when the application writes the id.
 It counts flushes in 32 bits from a base the session sets at open, and a session that would outrun them rebases every entry in one pass.
-At load it is seeded from the newest epoch among the id's statements, which can only understate the age, since restatements make epochs newer and never older; so it errs toward treating an id as recently written.
+At load it is restored from the [consolidator state](consolidator-state.md#content-ages); an id the state has no current record for falls back to the youngest page that holds one of its fragments, which can only understate the age, since content is never younger than the page that holds it; so it errs toward treating an id as recently written.
 
 ### A tombstoned id keeps no allocation-map entry
 
@@ -201,7 +201,7 @@ An ordered set tracks reusable pages under the [two-generation quarantine](../sp
 Two more, rebuilt at open and never persisted:
 
 - **The id allocator** — the next fresh id, plus the recyclable set described above. See [Id recycling](id-recycling.md).
-- **The eviction clock** — over the fragments the header states, recording how many flushes each has gone untouched. See [The flush](flush.md#the-header-as-write-buffer).
+- **The eviction clock** — over the fragments the header states, recording how many flushes each has gone untouched, which open seeds from their allocations' `last_written`. See [The flush](flush.md#the-header-as-write-buffer).
 
 ## During a flush
 

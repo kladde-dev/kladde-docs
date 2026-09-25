@@ -29,6 +29,7 @@ The operating system rewrites a whole page even when the application modifies on
 16 KiB may pay on platforms with 16 KiB native pages, which is a measurement question rather than a design one — nothing in this specification depends on the value.
 
 Outside of journal appends, an implementation **writes whole pages only**, and only to pages that are reusable under the [reuse rule](durability.md#the-reuse-rule).
+A page must also consist of whole blocks of the file system that stores the file, which the reuse rule [relies on](durability.md#the-reuse-rule); 4 KiB pages do on common file systems.
 
 ## Page framing
 
@@ -85,6 +86,7 @@ Each header page holds a fixed-size `header` field in the [[#page framing]], whi
 | `min_reader_version` | 2 bytes  | the oldest specification version that can still read this file; currently only version `0` is allowed                                                                                                                                                                     |
 | `root_allocation`    | 4 bytes  | ID of the [allocation](allocations.md) holding the root value                                                                                                                                                                                                             |
 | `schema_table`       | 4 bytes  | ID of the allocation holding the [descriptor table](schema/canonical-encoding.md#table-encoding)                                                                                                                                                                          |
+| `consolidator_state` | 4 bytes  | ID of an allocation in which an implementation keeps state of its own from one session to the next, or `0` if there is none. See [[#The consolidator state]].                                                                                                             |
 | `root_fingerprint`   | 16 bytes | the [schema fingerprint](schema/fingerprints.md) of the root type                                                                                                                                                                                                         |
 | `journal_pointer`    | 4 bytes  | the page number of the page holding the beginning of the journal that will be used after the flush that created this header page. See [[#The journal pointer]].                                                                                                           |
 
@@ -112,6 +114,25 @@ Implementations should avoid writing a `journal_pointer` that points unnecessari
 However, readers must not assume that `journal_pointer` points at most directly after the file since violating this assumption is unavoidable in edge cases: a flush may create a file that ends in a fallback page and set `journal_pointer` to point to the page immediately past the file.
 Closing and reopening the file introduces another `fsync`, which transitions the last page from fallback to reusable, at which point the implementation is allowed to truncate the file past it, resulting in a file whose `journal_pointer` seemingly points unnecessarily far past the end.
 Readers must be able to handle such a file.
+
+### The consolidator state
+
+**`consolidator_state` names an allocation in which an implementation may keep whatever it wants to carry from one session to the next, or is `0` if there is none.**
+Its content is up to the implementation.
+A consolidator's heuristics, for instance, learn from what happens over many flushes, and a session that could start only from what the file records anyway would forget all of it at every close.
+[Consolidator state](../impl/consolidator-state.md) describes what the reference implementation keeps there.
+
+Four rules govern it:
+
+- **Nothing in it affects what the file contains.**
+  A reader that ignores the field resolves every allocation to the same content, and nothing reachable from the root names the allocation.
+- **In every other respect it is an allocation like any other.**
+  The field owns it, as `schema_table` owns the descriptor table, so it stays alive for as long as the field names it; and it never has id `0`, which the field reserves for "none".
+- **Any writer may keep it, replace it, or clear the field.**
+  A writer that keeps it keeps its id and content, as it would any allocation's, whether or not it understands them; a writer that replaces it or clears the field frees the allocation the field named.
+- **It may be stale, or another implementation's.**
+  Flushes by a writer that kept it without maintaining it, or by its owner if the owner updates it lazily, leave it describing an older state of the file.
+  So an implementation must treat a state it does not recognize as its own as absent, and must check what it does recognize against the file before relying on it.
 
 ### The magic
 

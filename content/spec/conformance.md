@@ -52,17 +52,20 @@ Placement, compaction, and fold timing are all free, so two implementations will
   Nothing above the storage layer is constrained.
 - Read none of an allocation's bytes while loading a value from it.
   A data type may leave any part of its content untouched, and a tool that only compacts or only edits one subtree reads no content at all — so what a file keeps resident must follow from the file, never from which types happened to look.
+- Keep state of its own in the [consolidator state](file-format.md#the-consolidator-state), and keep, replace, or clear a state it finds there.
+- Give a reusable page's blocks back to the file system ([deallocating reusable pages](durability.md#deallocating-reusable-pages)).
 
 ## Must not
 
 - Change an allocation's id, size, or content during consolidation.
-- Overwrite a page that is not [reusable](durability.md#page-states), or truncate the file below one or to anything but a page boundary ([the truncation rule](durability.md#the-truncation-rule)).
+- Overwrite or deallocate a page that is not [reusable](durability.md#page-states), or truncate the file below one or to anything but a page boundary ([the truncation rule](durability.md#the-truncation-rule)).
   This rule is relaxed for the last journal page, which may be appended to, and if it is empty (i.e., if its prefix of CRC-valid transactions is empty) then the file may be truncated below it.
 - Continue a session after a failed `fsync`.
 - Return anything but zero for a byte that has not been explicitly written.
 - Depend on the descriptor table's index assignment for any semantic purpose.
 - Make a page's residency, or any storage-layer decision, depend on whether a data type read from it.
 - Emit a fingerprint that depends on table layout, traversal order, or any runtime-incidental state.
+- Let the consolidator state affect what any allocation contains, or rely on one without first checking that it is its own and still current ([the consolidator state](file-format.md#the-consolidator-state)).
 
 ## The suite
 
@@ -85,7 +88,7 @@ Files written by each implementation are added to the corpus, so that the suite 
 - *Flush interruption.* For each of a set of flushes, simulate a power cut after every individual page write — including reordering the writes, since write-back is not ordered — and assert that the file opens and lands on either the previous committed state or the new one, never in between.
   This is the mechanical check on [I1 and I2](durability.md#the-two-invariants).
 
-A complementary check is a **leak detector**: walk every allocation reachable from the root via the type structure, compare against the set the address table says is live, and assert they match.
+A complementary check is a **leak detector**: walk every allocation reachable from the root via the type structure, add the allocations the header names directly, compare against the set the address table says is live, and assert they match.
 That checks the "clean up" half of the ordering discipline, which the prefix test does not.
 
 ## Open questions

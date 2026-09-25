@@ -22,6 +22,7 @@ Those decisions are documented in the language-specific documentations (currentl
 | [Write-phase state](write-phase-state.md) | what is tracked between flushes, and why it is derived from the journal |
 | [The flush](flush.md) | folding the journal into pages: piece tables, hoisting, scheduling, and what gets written |
 | [Consolidation](consolidation.md) | reclaiming garbage: victim selection, the three candidate kinds, and the budget |
+| [Consolidator state](consolidator-state.md) | what consolidation carries from one session to the next, and how it checks that it is still current |
 | [Transactions and batches](transactions-and-batches.md) | grouping operations into transactions, and the buffering state machine |
 | [Related work](related-work.md) | where the design comes from, and where it parts company |
 
