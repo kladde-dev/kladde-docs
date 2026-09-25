@@ -195,12 +195,18 @@ def live_fraction(runs, out, size=64 * MIB):
 
 def write_breakdown(runs, out):
     """Where the bytes written to the file went, per byte the application
-    wrote, at the end of each scenario."""
+    wrote, over each whole scenario, runs side by side. The rest of the data
+    pages -- neither the application's new content nor content consolidation
+    moved -- is the room pages closed with, and the consolidator state."""
     labels, parts = [], defaultdict(list)
-    for label, run in runs.items():
-        for scenario in ("uniform", "skewed", "append", "churn", "typed"):
-            for (variant, size), rows in sorted(run.get(scenario, {}).items()):
-                if variant != "on" or (scenario in ("uniform", "skewed") and size != 64 * MIB and size != 8 * MIB):
+    for scenario in ("uniform", "skewed", "append", "churn", "typed"):
+        sizes = sorted({size for run in runs.values() for (_, size) in run.get(scenario, {})})
+        for size in sizes:
+            if scenario in ("uniform", "skewed") and size not in (8 * MIB, 64 * MIB):
+                continue
+            for label, run in runs.items():
+                rows = run.get(scenario, {}).get(("on", size))
+                if not rows:
                     continue
                 r = rows[-1]
                 app = max(r["app_bytes"], 1)
@@ -210,11 +216,11 @@ def write_breakdown(runs, out):
                 parts["journal"].append(r["journal_bytes"] / app)
                 parts["data pages: new content"].append(fresh / app)
                 parts["data pages: consolidation"].append(min(consolidation, data - fresh) / app)
-                parts["data pages: slack"].append(max(data - fresh - consolidation, 0) / app)
+                parts["data pages: other"].append(max(data - fresh - consolidation, 0) / app)
                 parts["address-table pages"].append(r["table_written"] * PAGE / app)
                 parts["headers"].append(r["headers_written"] * PAGE / app)
                 name = f"{scenario}\n{size_label(size)}"
-                labels.append(name if len(runs) == 1 else f"{label}\n{name}")
+                labels.append(name if len(runs) == 1 else f"{name}\n{label}")
     if not labels:
         return
     fig, ax = plt.subplots(figsize=(7.5, 3.4))
@@ -308,29 +314,37 @@ def description(runs, out):
 
 
 def flush_latency(runs, out):
-    """How long a flush takes, including its fsync, per scenario."""
-    labels, med, p90, p99 = [], [], [], []
+    """How long a flush takes, including its fsync, per scenario: the median
+    and the 90th and 99th percentiles of one run, or, of several, each run's
+    median as a bar and its 99th percentile as a tick."""
+    order, times = [], defaultdict(dict)
     for label, run in runs.items():
         for scenario in ("uniform", "skewed", "append", "churn", "typed"):
             for (variant, size), rows in sorted(run.get(scenario, {}).items()):
-                if variant != "on":
-                    continue
                 t = sorted(r["flush_us"] / 1000 for r in rows)
-                if not t:
+                if variant != "on" or not t:
                     continue
-                name = f"{scenario}\n{size_label(size)}"
-                labels.append(name if len(runs) == 1 else f"{label}\n{name}")
-                med.append(statistics.median(t))
-                p90.append(t[int(0.9 * (len(t) - 1))])
-                p99.append(t[int(0.99 * (len(t) - 1))])
+                if (scenario, size) not in times:
+                    order.append((scenario, size))
+                times[(scenario, size)][label] = (statistics.median(t), t[int(0.9 * (len(t) - 1))], t[int(0.99 * (len(t) - 1))])
+    labels = [f"{scenario}\n{size_label(size)}" for scenario, size in order]
     fig, ax = plt.subplots(figsize=(7.5, 3.0))
     xs = range(len(labels))
-    ax.bar([x - 0.25 for x in xs], med, width=0.25, label="median", color="#4c72b0")
-    ax.bar(xs, p90, width=0.25, label="90th percentile", color="#dd8452")
-    ax.bar([x + 0.25 for x in xs], p99, width=0.25, label="99th percentile", color="#c44e52")
+    if len(runs) == 1:
+        (label,) = runs
+        for i, (name, color) in enumerate((("median", "#4c72b0"), ("90th percentile", "#dd8452"), ("99th percentile", "#c44e52"))):
+            ax.bar([x + (i - 1) * 0.25 for x in xs], [times[k][label][i] for k in order], width=0.25, label=name, color=color)
+    else:
+        width = 0.8 / len(runs)
+        for i, (label, color) in enumerate(zip(runs, ["#4c72b0", "#c44e52", "#55a868", "#8172b3"])):
+            at = [x + (i - (len(runs) - 1) / 2) * width for x in xs]
+            ax.bar(at, [times[k].get(label, (float("nan"),) * 3)[0] for k in order], width=width * 0.9, color=color,
+                   label=f"{label}: median")
+            ax.scatter(at, [times[k].get(label, (float("nan"),) * 3)[2] for k in order], marker="_", s=80, color=color,
+                       label=f"{label}: 99th percentile", zorder=3)
     ax.set_xticks(list(xs), labels, fontsize=7)
     ax.set_ylabel("flush time (ms)")
-    legend(ax)
+    legend(ax, ncols=1 if len(runs) == 1 else 2)
     save(fig, out, "flush-latency")
 
 
@@ -363,37 +377,101 @@ def throughput(runs, out):
     save(fig, out, "throughput")
 
 
+SYMBOLS = {"lambda": "λ", "tau": "τ", "share": "defrag share"}
+KNOBS = {"lambda": "churn floor λ", "tau": "target fill τ", "share": "defragmentation share"}
+
+
 def pretty(variant):
     """`lambda=0.5` as `λ = 0.5`."""
     name, _, value = variant.partition("=")
-    name = {"lambda": "λ", "tau": "τ", "share": "defrag share"}.get(name, name)
+    name = SYMBOLS.get(name, name)
     return f"{name} = {value}" if value else name
 
 
+def steady(rows):
+    """The steady state of a run: its file size over live size, averaged
+    over the second half of its flushes, and the bytes it wrote per byte the
+    application wrote during that half."""
+    mid, end = rows[len(rows) // 2], rows[-1]
+    space = statistics.mean(r["file_pages"] * PAGE / max(r["alloc_bytes"], 1) for r in rows[len(rows) // 2:])
+    writes = (written(end) - written(mid)) / max(end["app_bytes"] - mid["app_bytes"], 1)
+    return writes, space
+
+
 def tradeoff(runs, out):
-    """Space against writes, for variants of the churn floor and the target
-    fill, at the end of the overwrite workloads."""
-    tables = [(s, run[f"tuning-{s}"]) for run in runs.values() for s in ("uniform", "skewed") if f"tuning-{s}" in run]
-    if not tables:
+    """Space against writes in the steady state of the overwrite workloads'
+    variants: a curve through the variants of the knob a run varies most
+    (the churn floor `λ`, or else the target fill `τ`), and the other
+    variants as points, labelled."""
+    scenarios = [s for s in ("uniform", "skewed") if any(f"tuning-{s}" in r for r in runs.values())]
+    if not scenarios:
         return
-    fig, axes = plt.subplots(1, len(tables), figsize=(7.5, 3.2), sharey=True, squeeze=False)
-    for ax, (scenario, series) in zip(axes[0], tables):
-        points = {}
-        for (variant, size), rows in series.items():
-            r = rows[-1]
-            points[variant] = (written(r) / max(r["app_bytes"], 1), r["file_pages"] * PAGE / max(r["alloc_bytes"], 1))
-        lam = sorted((v for v in points if v.startswith("lambda")), key=lambda v: float(v.split("=")[1]))
-        ax.plot([points[v][0] for v in lam], [points[v][1] for v in lam], "-o", color="#4c72b0", ms=4, lw=1, label="churn floor λ")
-        tau = [v for v in points if v.startswith("tau")]
-        ax.plot([points[v][0] for v in tau], [points[v][1] for v in tau], "s", color="#dd8452", ms=4, label="target fill τ, with λ = 1")
-        for v, (x, y) in points.items():
-            ax.annotate(pretty(v), (x, y), textcoords="offset points", xytext=(5, 4), fontsize=7)
-        ax.set_title(f"{scenario} overwrites, {size_label(size)}")
+    fig, axes = plt.subplots(1, len(scenarios), figsize=(7.5, 3.4), sharey=True, squeeze=False)
+    colors = ["#4c72b0", "#c44e52", "#55a868", "#8172b3"]
+    for ax, scenario in zip(axes[0], scenarios):
+        size = None
+        for n, (color, (label, run)) in enumerate(zip(colors, runs.items())):
+            series = run.get(f"tuning-{scenario}", {})
+            points = {}
+            for (variant, size), rows in series.items():
+                points[variant] = steady(rows)
+            if not points:
+                continue
+            knobs = defaultdict(list)
+            for v in points:
+                knobs[v.split("=")[0]].append(v)
+            curve = max(knobs, key=lambda k: len(knobs[k]))
+            ordered = sorted(knobs[curve], key=lambda v: float(v.split("=")[1]))
+            prefix = "" if len(runs) == 1 else f"{label}: "
+            ax.plot([points[v][0] for v in ordered], [points[v][1] for v in ordered], "-o", color=color, ms=4, lw=1,
+                    label=f"{prefix}{KNOBS.get(curve, curve)}")
+            rest = [v for v in points if v not in ordered]
+            if rest:
+                other = rest[0].split("=")[0]
+                ax.plot([points[v][0] for v in rest], [points[v][1] for v in rest], "s", color=color, ms=4, mfc="white",
+                        label=f"{prefix}{KNOBS.get(other, other)}")
+            # The first run labels above its points, the next below, so that
+            # labels of nearby points of two runs stay apart.
+            offset = (4, 4) if n % 2 == 0 else (4, -10)
+            for v, (x, y) in points.items():
+                ax.annotate(pretty(v), (x, y), textcoords="offset points", xytext=offset, fontsize=6.5, color=color)
+        ax.set_title(f"{scenario} overwrites" + (f", {size_label(size)}" if size else ""))
         ax.set_xlabel("bytes written to the file / by the application")
         ax.set_ylim(1, None)
     axes[0][0].set_ylabel("file size / live size")
     legend(axes[0][-1])
     save(fig, out, "tradeoff")
+
+
+def kappa(runs, out):
+    """The price of space the controller sets, where a run records it."""
+    series = [(label, run) for label, run in runs.items()
+              if any("kappa" in rows[0] for table in run.values() for rows in table.values())]
+    if not series:
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(7.5, 3.0), sharey=True)
+    for style, (label, run) in zip(RUN_STYLES, series):
+        for scenario in ("uniform", "skewed"):
+            ls = style if scenario == "uniform" else "--"
+            for (variant, size), rows in sorted(run.get(scenario, {}).items()):
+                if variant == "on":
+                    axes[0].plot(x_writes(rows, size), [r["kappa"] for r in rows], ls, color=SIZE_COLORS.get(size),
+                                 label=f"{scenario}, {size_label(size)}", lw=1)
+            tuning = run.get(f"tuning-{scenario}", {})
+            shades = plt.cm.viridis([i / max(len(tuning) - 1, 1) for i in range(len(tuning))])
+            ordered = sorted(tuning.items(), key=lambda kv: float(kv[0][0].split("=")[1]))
+            for shade, ((variant, size), rows) in zip(shades, ordered):
+                if scenario == "uniform":
+                    axes[1].plot(x_writes(rows, size), [r["kappa"] for r in rows], ls, color=shade,
+                                 label=pretty(variant), lw=1)
+    axes[0].set_title("default target fill")
+    axes[1].set_title("uniform overwrites, 8 MiB, by target fill")
+    axes[0].set_ylabel("price of space κ")
+    for ax in axes:
+        ax.set_xlabel("bytes written / live size")
+        plain_log(ax)
+        legend(ax, ncols=2 if ax is axes[0] else 1, loc="lower right", frameon=True, framealpha=0.9, edgecolor="none")
+    save(fig, out, "kappa")
 
 
 def defrag_share(runs, out):
@@ -459,6 +537,7 @@ def main():
     throughput(runs, args.out)
     tradeoff(runs, args.out)
     defrag_share(runs, args.out)
+    kappa(runs, args.out)
     if args.summary:
         summary(runs)
 
