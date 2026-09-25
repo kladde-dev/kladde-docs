@@ -194,7 +194,7 @@ All four are fixed in the measured commit, and each has a test of its own.
 4. **Compaction mode ran almost permanently in small files** (fixed in `26dcc08`), because it counted pages in quarantine as holes, although they are working space that the next flushes reuse by themselves.
    In the 1 MiB uniform file it ran in 30 of 33 flushes, and the file ended 6 % larger than it does with the fix.
 
-`implementation-notes.md` in kladde-rust records the details, under "Consolidation".
+`implementation-notes.md` in kladde-rust records the first, under "Flush"; [Compaction mode](../impl/consolidation.md#compaction-mode) now states the rules the last two fixes follow.
 
 ## What to change
 
