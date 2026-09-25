@@ -284,7 +284,7 @@ fn pack(mut chunks: Lookahead<Chunk>, elastic: &mut Elastic) -> Vec<Page> {
         //    They include the description defragmentation rewrites the share paid for.
         if let Some(c) = chunks.take_first_fit(open.room()) { open.place(c); continue; }
         // 2. None fits: free filling, with whatever fits, in the order that pays most.
-        while let Some(e) = elastic.take_fitting(open.room()) { open.place_all(e); }
+        while let Some(e) = elastic.take_fitting(open.room(), open.number()) { open.place_all(e); }
         if chunks.is_empty() { break; }          // the flush's last page: short only if nothing fits
         // 3. Still more than θ empty: cut the next chunk so the page closes full —
         //    a genuine one of the flush's own, unless only rewrites are within reach.
@@ -492,8 +492,10 @@ fn flush(journal: Journal, budget: Budget) {
         let Some(offer) = [evacuation.offer_page(), page_rewrite.offer_page()]
                               .into_iter().flatten()
                               .max_by_key(|o| o.reclaimed / o.written) else { break };
-        if offer.reclaimed < budget.lambda * offer.written { break; }   // the churn floor
-        if offer.fill() < 1.0 - THETA { break; }
+        if !offer.holds_tail() {        // compaction mode's tail passes both floors
+            if offer.reclaimed < budget.lambda * offer.written { break; }   // the churn floor
+            if offer.fill() < 1.0 - THETA { break; }
+        }
         offer.take(&mut data, &mut dirty);
     }
 
@@ -514,7 +516,7 @@ fn flush(journal: Journal, budget: Budget) {
 Their victims fill one plan, and what they compete for is the one budget, a page at a time; each source's offers decline as it takes more, so one greedy pass over the two is the right amount of machinery.
 
 **Free filling happens inside steps 2 and 4, and step 3 is the only place a page is opened for consolidation's sake.**
-It opens one only when the offer fills it to `1 − θ`, which is what keeps a victim too many from costing a nearly empty page.
+It opens one only when the offer fills it to `1 − θ`, which is what keeps a victim too many from costing a nearly empty page; only an offer holding [compaction mode's tail](#compaction-mode) is exempt.
 An offer is what the page would hold: whole victims first, by best fit, and then — if that leaves more than `θ` empty — one more victim with a survivor cut at the page boundary, exactly as `pack` cuts the flush's own chunk.
 A cut's tail leads the next page, which is therefore opened whatever its own offer, so the loop cuts nothing on its last page, and every chain of cuts it starts ends within the budget.
 The flush's data pages form one such chain: the last page `pack` returns may cut a victim's survivor too whenever the loop goes on to open another, so only the flush's very last data page can close short.
@@ -637,12 +639,14 @@ That is the whole of the distinction between [the two forms](#two-forms-of-conso
 
 ```rust
 impl Evacuation {
-    /// The victim whose survivors fit `room`, evacuated, or None: in compaction mode the
-    /// tail if it is a data page and fits, otherwise the best-scoring sampled victim that
-    /// fits. A victim that would overshoot is passed over for one that fits, never cut.
-    fn take_fitting(&mut self, room: u32) -> Option<Survivors> {
+    /// The victim whose survivors fit `room` in page `filling`, evacuated, or None: in
+    /// compaction mode the tail if it is a data page above `filling` and fits, otherwise
+    /// the best-scoring sampled victim that fits. A victim that would overshoot is passed
+    /// over for one that fits, never cut.
+    fn take_fitting(&mut self, room: u32, filling: PageNumber) -> Option<Survivors> {
         // `tail()` is the highest non-journal live page, and None outside compaction mode.
-        if let Some(top) = compaction.tail().filter(|&p| is_data(p) && coverage[p] <= room) {
+        let tail = compaction.tail().filter(|&p| is_data(p) && p > filling);
+        if let Some(top) = tail.filter(|&p| coverage[p] <= room) {
             return Some(self.evacuate(top));
         }
         let bucket = self.buckets.lowest_non_empty()?;
@@ -651,9 +655,10 @@ impl Evacuation {
     }
 
     /// What one budgeted page would hold and reclaim, without taking anything: whole
-    /// victims by best fit — the tail first, in compaction mode — the churn floor applied
-    /// to each, then, unless this is the budget's last page, one more victim cut at the
-    /// boundary if the page would otherwise close more than θ empty.
+    /// victims by best fit — the tail first, in compaction mode, whatever its fill — the
+    /// churn floor applied to each but the tail, then, unless this is the budget's last
+    /// page, one more victim cut at the boundary if the page would otherwise close more
+    /// than θ empty.
     fn offer_page(&self) -> Option<Offer> { … }
 }
 ```
@@ -667,6 +672,7 @@ A caveat on the arithmetic rather than on the policy: `coverage` counts [aliased
 ### The page rewrite
 
 Victims come from the address-table buckets — sparsest first, `K` sampled and scored as [data pages are](#scoring-a-data-page), or the tail first [in compaction mode](#compaction-mode) — and a victim is taken only where all of its restatements fit: in the room of the cut's last page, which costs nothing, or on a budgeted leaf.
+Compaction mode's tail is the exception: it is taken whatever its size, and restatements that do not fit one leaf spill into the cut's next.
 Executing one is [`rewrite_page`](address-table-operations.md#rewrite_pagevictim-dirty): decode the victim, take the fragments its live statements still own so that the cut states them again, and record any anchor or grow witness that lived there for the cut to replace.
 
 Its cost is those restatements' encoded bytes, estimated from the victim's coverage while it is only being offered, and known exactly once the cut has derived them — possibly less, since they merge with whatever else the flush states nearby; its benefit is the whole victim.
@@ -810,15 +816,25 @@ At close, only fallback pages can keep the file from ending at its last page of 
 ### Compaction mode
 
 Placement and truncation return the tail only if the pages there die by themselves, and cold, full pages never do.
-So while **holes** — reusable pages below the highest live one — exceed a share `h` of the file, the highest non-journal live page is offered to [the budget loop](#the-budget-loop) ahead of every other victim, whatever its fill: evacuated if it is a data page, rewritten if it is a table page, with lowest-first placement landing its content in holes.
+So while **holes** — pages below the highest live one that are reusable now, not in [quarantine](flush.md#where-the-pages-come-from) — exceed a share `h` of the file, the highest non-journal live page is offered to [the budget loop](#the-budget-loop) ahead of every other victim, whatever its fill: evacuated if it is a data page, rewritten if it is a table page, with lowest-first placement landing its content in holes.
 
 **The mode needs no hysteresis**, because switching in and out of it costs nothing.
 A tail page once moved stays moved, so leaving the mode loses no progress; and near `h`, where compaction lowers the share of holes and ordinary cleaning raises it again — every sparse page it frees below the tail is a new hole — a mode that alternates flush by flush merely splits the budget between the two debts.
 
-A tail victim at fill `u` returns a whole page to the file system for `u · C` written, a ratio of `1 / u` that passes a churn floor near 1 even for a full page — so it is the budget that paces the mode.
+**An offer holding the tail passes the churn floor and the fill floor whatever else it holds, and a table tail is taken even when its restatements need more than one leaf, so it is the budget alone that paces the mode.**
+The floors weigh what a page returns to the pool, and a tail victim returns more: a whole page to the file system.
+For a data page the exemption waives nothing the churn floor would catch, since moving it at fill `u` writes `u · C`, a ratio of `1 / u` that passes a floor near 1 even for a full page; the fill floor it can fail, when nothing else fills the page it moves into.
+A table page's restatements can take more than its coverage, since fragments that shadowing split need a statement each and restated statements lose their neighbours' delta encoding, so a nearly full table page fails the churn floor as well, and may not fit one budgeted leaf.
+A mass free makes one the tail as a matter of course: the flush that states the frees, and the one after it, cannot reuse the pages the frees release yet, so their leaves — the tombstones, and whatever they state `Inline` — extend the file.
+Were the tail held to the floors, the mode would stop at the first such page, and the budget loop with it, until the rotating window had drained the page a few statements a flush.
+
 The return is realised only once every page above the victim has gone too, which is why the mode works strictly from the top down; journal pages are skipped, since the next flush moves the journal to the lowest hole by itself.
 
-**Free filling takes part in the mode too**, since a tail victim riding in a page the flush writes anyway costs nothing at all: while the mode lasts, each source's [`take_fitting`](#victims-are-pulled-one-at-a-time) offers the highest non-journal live page ahead of the sparsest, whenever that page is of its kind and its content fits the room.
+**The tail moves only while a page that is reusable now lies below it.**
+Right after a mass free, the pages it released sit in quarantine for two commits, so the lowest reusable page can lie above the tail, or there can be none; content moved then lands in pages the file grows by, which become the next tail, and the same content moves again.
+Holes count only reusable pages for a related reason: the pages the last commits released are working space, which the next flushes reuse by themselves, and counting them would keep a file whose flushes rewrite much of it in the mode for good.
+
+**Free filling takes part in the mode too**, since a tail victim riding in a page the flush writes anyway costs nothing at all: while the mode lasts, each source's [`take_fitting`](#victims-are-pulled-one-at-a-time) offers the highest non-journal live page ahead of the sparsest, whenever that page is of its kind, lies above the page being filled, and its content fits the room.
 The tail wins that comparison because holes are what the file has too many of: freeing one more page for reuse gains little, while every tail page moved brings a truncation closer.
 
 Finding the highest live page needs no structure of its own: a cached index, lowered past reusable pages as the tail empties and raised when a page above it is written, passes each page once per change of state, which is `O(1)` amortised.
