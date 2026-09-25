@@ -86,16 +86,16 @@ At `λ = 1`, the 8 MiB files reach a whole-file fill of 0.63, table pages and fr
 **The controller does reach targets that the churn floor allows, but by swinging between its bounds rather than settling.**
 With `τ = 0.6`, the 8 MiB files end at whole-file fills of 0.58 (uniform) and 0.59 (skewed), and with `τ = 0.5` at 0.53 and 0.51.
 Under uniform overwrites, the budget meanwhile swings between one page and the cap, a swing taking one to two live sizes of writes.
-Multiplying the budget by `exp(4 · (τ − fill))` after every flush makes the controller an integral one, and the fill answers the budget only as pages drain, so it overshoots.
+Multiplying the budget by `exp(4 · (τ − fill))` after every flush makes the controller an integral one, and the fill it measures, the whole file's, answers the budget only once new writes reuse the pages cleaning frees, so it overshoots.
 
-**To trade space for writes, `λ` is the better knob under uniform overwrites and `τ` under skewed ones.**
+**To trade space for writes, `λ` is the better knob: a lower target moves the file along a worse curve, since its budget swings.**
 
-![File size against bytes written, at the end of the 8 MiB overwrite runs, for three churn floors and two lower targets.](figures/consolidation/tradeoff.svg)
+![File size against bytes written in the steady state of the 8 MiB overwrite runs, the second half of each, for three churn floors and two lower targets.](figures/consolidation/tradeoff.svg)
 
-Under uniform overwrites, `λ = 2` writes as little as `τ = 0.5` (2.55 against 2.56 bytes per byte) and leaves a file 20 % smaller (1.97 against 2.46 times its live size).
-Under skewed ones, `τ = 0.6` leaves a file 10 % smaller than `λ = 2` (1.76 against 1.96) for about the same writes (2.36 against 2.32).
-There, pausing the cleaner lets hot pages drain further before they are cleaned, which a fixed floor cannot do, and which is the effect [the ripeness draft](../drafts/ripeness.md) sets out to exploit on purpose.
-Under uniform overwrites every page drains at the same rate, so waiting gains nothing, and a fixed threshold is the right policy.
+The figure compares steady states: the file size averaged over the second half of each run, and the bytes written during that half per byte the application wrote.
+Under uniform overwrites, `λ = 2` writes about as much as `τ = 0.5` (2.59 against 2.57 bytes per byte) and leaves a file 7 % smaller (1.96 against 2.11 times its live size).
+Under skewed ones, `τ = 0.6` leaves a file of 1.77 times its live size for 2.68 bytes per byte, 5 % larger than the churn floor's curve passes at those writes.
+While the swinging budget is low, the file grows, and what cleaning frees afterwards are holes, which the file keeps until new writes fill them.
 
 ## Writes
 
@@ -199,10 +199,11 @@ All four are fixed in the measured commit, and each has a test of its own.
 ## What to change
 
 - **Make the constants agree.**
-  Either lower `τ` to what `λ` allows, which for `λ = 1` is a whole-file fill of about 0.63, or lower `λ` to what `τ` needs; or replace both with a threshold per page, as [the ripeness draft](../drafts/ripeness.md) proposes.
+  Either lower `τ` to what `λ` allows, which for `λ = 1` is a whole-file fill of about 0.63, or lower `λ` to what `τ` needs; or replace both with a threshold per page, as [the ripeness draft](../drafts/ripeness.md) proposes, which [Cleaning by ripeness](ripeness.md) measures.
   As they stand, the controller only ever raises the budget to its cap, and the cap bounds a flush's work only because the churn floor runs out of victims first.
-- **Damp the controller.**
-  A smaller step, or a proportional term, would settle the budget instead of swinging it between its bounds.
+- **Measure what the controller acts on.**
+  [Cleaning by ripeness](ripeness.md) moves a price with the same kind of controller, and its price cycled the same way while it measured the whole file; measured over the data pages and leaves, which answer within the flush, it held within a few percent.
+  The budget would likely settle the same way; holes are compaction mode's to return anyway.
 - **Scale description defragmentation with the rate at which statements accrue**, rather than reserving one page per flush: appends and patches both outrun it by an order of magnitude.
 - **Find out why flushes slow down as files grow**, with a profile of the 64 MiB uniform run.
 - **Measure small files with fewer operations per flush**, since with 1000 their free space is set by the quarantine rather than by consolidation.
