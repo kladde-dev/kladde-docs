@@ -6,6 +6,7 @@ directory holds the CSV tables `kladde-bench` wrote (`uniform.csv`, ...),
 plain or gzipped (`uniform.csv.gz`).
 With one run, the figures show that run; with several, the figures that
 compare policies overlay them, labelled.
+`--only` draws only the figures it names, such as `--only tradeoff,kappa`.
 The figures are SVG, written so that the same data gives the same bytes,
 with every coordinate rounded to a hundredth of a point.
 
@@ -410,6 +411,9 @@ def tradeoff(runs, out):
     colors = ["#4c72b0", "#c44e52", "#55a868", "#8172b3"]
     for ax, scenario in zip(axes[0], scenarios):
         size = None
+        # A variant is labelled at the first run that has it: a later run's
+        # curve through the same variants runs in the same order.
+        labelled = set()
         for n, (color, (label, run)) in enumerate(zip(colors, runs.items())):
             series = run.get(f"tuning-{scenario}", {})
             points = {}
@@ -434,7 +438,9 @@ def tradeoff(runs, out):
             # labels of nearby points of two runs stay apart.
             offset = (4, 4) if n % 2 == 0 else (4, -10)
             for v, (x, y) in points.items():
-                ax.annotate(pretty(v), (x, y), textcoords="offset points", xytext=offset, fontsize=6.5, color=color)
+                if v not in labelled:
+                    ax.annotate(pretty(v), (x, y), textcoords="offset points", xytext=offset, fontsize=6.5, color=color)
+            labelled.update(points)
         ax.set_title(f"{scenario} overwrites" + (f", {size_label(size)}" if size else ""))
         ax.set_xlabel("bytes written to the file / by the application")
         ax.set_ylim(1, None)
@@ -521,23 +527,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", required=True, type=Path, help="where the figures go, as SVG")
     parser.add_argument("--summary", action="store_true", help="also print the end states as a Markdown table")
+    parser.add_argument("--only", help="draw only these figures, comma-separated names such as tradeoff,kappa")
     parser.add_argument("runs", nargs="+", help="label=directory of CSV tables")
     args = parser.parse_args()
     runs = {}
     for spec in args.runs:
         label, _, directory = spec.partition("=")
         runs[label] = load(directory)
-    space_amplification(runs, args.out)
-    live_fraction(runs, args.out)
-    write_breakdown(runs, args.out)
-    budget(runs, args.out)
-    shrink(runs, args.out)
-    description(runs, args.out)
-    flush_latency(runs, args.out)
-    throughput(runs, args.out)
-    tradeoff(runs, args.out)
-    defrag_share(runs, args.out)
-    kappa(runs, args.out)
+    figures = [space_amplification, live_fraction, write_breakdown, budget, shrink, description, flush_latency,
+               throughput, tradeoff, defrag_share, kappa]
+    only = set(args.only.split(",")) if args.only else None
+    for figure in figures:
+        if only is None or figure.__name__.replace("_", "-") in only:
+            figure(runs, args.out)
     if args.summary:
         summary(runs)
 
