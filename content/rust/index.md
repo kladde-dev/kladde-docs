@@ -88,6 +88,6 @@ Where the implementation departs from the [implementation notes](../impl/), or f
 | Containers, derive macro, guards | implemented |
 | File format, address table, journal, recovery | implemented |
 | Flush and consolidation | implemented |
-| Transactions and batches | implemented, without the unwind behaviour |
+| Transactions and batches | implemented, with the [behaviour on unwind](transactions.md#behaviour-on-unwind) |
 | Freeing | implemented as a type-driven hook |
 | Schema evolution | designed, not built |

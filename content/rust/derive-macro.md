@@ -10,7 +10,7 @@ For a struct or enum, three things:
 
 1. a `Persistable` implementation — `INLINE_SIZE`, `store`, `load`, `free`, and the schema descriptor;
 2. a **guard type**, `MyTypeGuard`, with a `_mut()` accessor per field and a whole-value `set`;
-3. `Deref` and `DerefMut` implementations on the guard, so read-only methods stay available.
+3. a `Deref` implementation on the guard, so read-only methods stay available — and no `DerefMut`, which would hand out a `&mut` whose changes no journal record describes.
 
 ```rust
 #[derive(Persistable)]
