@@ -114,7 +114,7 @@ With $a = 0$, the page would be ripe at any fill below $u_0$, which the floor $R
 **It is the mixture that the problem describes, as far as a page's losses can tell it.**
 A page of hot and cold content is a draining share over a static one once its cold content has stopped dying, and until then the cold content is part of the draining share or the static one, whichever describes the page's losses better.
 A page that starts with two shares that both drain, one fast and one slowly, becomes a draining share over a static one as the fast share dies: the slow share is then the draining one, and whatever has stopped dying the static one.
-[The fit](#estimating-how-fast-a-page-still-drains) follows that change, with some lag.
+[The fit](#estimating-how-fast-a-page-still-drains) follows that change as far as the page's losses show it.
 
 **The rule follows from the same balance as before.**
 Waiting one more epoch costs $\kappa \, (1 - x)$ and saves what the bytes that die meanwhile would have cost: $r \, a$ of them, each of which would have been copied now and cost $V$ afterwards.
@@ -132,91 +132,135 @@ Once ripe, a page stays ripe, since $a$ and $x$ only fall as it drains; for a st
 
 **A second draining share would need more than a page's losses determine, and a numerical solve for every index; the static share needs neither.**
 With shares $a$ and $b$ draining at $r_1$ and $r_2$, the same argument makes a page ripe once $1 - x \geq a \, g\bigl(x^*(r_1/\kappa)\bigr) + b \, g\bigl(x^*(r_2/\kappa)\bigr)$, which has no closed form in $\kappa$, so every change to a page's estimate would need a root-finding to key it.
-The page's history determines a draining share and its rate exactly, with nothing to spare, as [the fit](#estimating-how-fast-a-page-still-drains) shows, while two draining shares need one more statistic and a nonlinear fit in three unknowns, and separating two decay rates from one noisy decay curve is notoriously ill-conditioned.
+Two running sums of a page's losses determine a draining share and its rate, as [the fit](#estimating-how-fast-a-page-still-drains) shows, while two draining shares need a third sum and a fit in three unknowns, and separating two decay rates from one noisy decay curve is notoriously ill-conditioned.
 The static share is the limit $r_2 \to 0$: $x^*(0) = 1$ and $g(1) = 0$, so the second term vanishes, and with it both problems.
 
 ### Estimating how fast a page still drains
 
-**Each page keeps a running average of its losses, and refits its split from how far those losses have slowed since the page was written.**
-The average forgets older losses at a rate $\beta$.
-The split then follows from the average, the bytes the page has lost since it was written, and its age, with no further state.
+**Each page fits a draining share and its rate to its own recent losses, forgetting older losses at a rate $\beta$, and keeps a static share only once its losses show one.**
 
-**The page's history determines the draining share and its rate exactly.**
-Under the model, a page written $t$ epochs ago with a draining share $a_0$ has since lost $D = a_0 \, (1 - e^{-r t})$ and now loses $\ell = r \, a_0 \, e^{-r t}$ per epoch.
-Dividing one by the other leaves a single unknown:
+**The fit is the maximum-likelihood fit of a falling loss rate to the page's discounted loss history.**
+Under the model, a page's losses fall exponentially: what it lost $k$ epochs ago has expectation $\ell \, e^{r k}$, where $\ell = r \, a$ is what the draining share loses per epoch now.
+Weighting the epoch $k$ epochs ago by $e^{-\beta k}$, and counting losses as if they were Poisson, the fit maximises
 
 $$
-\frac{\ell \, t}{D} = \psi(r t),
-\qquad \psi(w) = \frac{w}{e^w - 1},
+\mathcal{L}(\ell, r) = S_0 \ln \ell + r \, S_1 - \ell \, E(r),
+\qquad \text{with} \quad
+S_0 = \sum_k e^{-\beta k} L_k, \quad
+S_1 = \sum_k e^{-\beta k} \, k \, L_k, \quad
+E(r) = \sum_k e^{(r - \beta) k},
 $$
 
-where the left side is the page's current loss rate over its average since it was written, and $\psi$ falls from 1 at $w = 0$ toward 0.
+where $L_k$ is what the page lost $k$ epochs ago, the first two sums run over its losses, and the third over the epochs it has been watched.
+The maximum lies where
 
-- **If the losses have slowed**, $\ell t / D < 1$, the fit solves $\psi(r t) = \ell t / D$ for $r$, and the draining share is what the current losses imply at that rate: $a = \ell / r$, and $s = x - a$.
-  The more the losses have slowed, the faster the draining share must be dying, and the less of the page it can be.
-- **If they have not**, $\ell t / D \geq 1$, nothing on the page is known to be static: $s = 0$, $a = x$, and $r = \ell / x$, the estimate for content that dies at one rate.
+$$
+\ell = \frac{S_0}{E(r)}
+\qquad \text{and} \qquad
+\frac{S_1}{S_0} = \frac{E'(r)}{E(r)}:
+$$
 
-$\psi$ has no closed-form inverse, but it is smooth and monotonic, so a small table or a few Newton steps invert it, once per loss.
+the mean lag of the page's losses, weighted by their size and discounted, equals the mean lag the model predicts at rate $r$.
+The right side grows with $r$, and $E$ and $E'$ are geometric sums with closed forms, so a few Newton steps solve it, once per loss.
+The draining share is then what the current losses imply at that rate, $a = \ell / r$, and $s = x - a$.
+
+- **If the losses lie at longer lags than an even spread would put them**, they have fallen: the draining share dies at $r$ and is the smaller for it.
+- **If they do not**, $a \geq x$, and nothing on the page is known to be static: $s = 0$, and the page drains at $\ell / x$, as content that dies at one rate would.
+
+**Two running sums are the whole state of the fit, and both age in closed form.**
+When $d$ epochs pass, every loss is $d$ epochs older: $S_1 \leftarrow e^{-\beta d} \, (S_1 + d \, S_0)$ and $S_0 \leftarrow e^{-\beta d} \, S_0$.
+$E$ counts the epochs since the page was written, which its epoch gives, so it needs no state.
+
+**The fit models the lag of its own window, which the estimator it replaces did not.**
+That estimator compared a discounted average of the losses, standing in for $\ell$, with $D$, the bytes lost since the page was written: under the model, $\ell t / D = \psi(r t)$ with $\psi(w) = w/(e^w - 1)$.
+But an average over the last $1/\beta$ epochs of losses that fall at $r$ exceeds the current loss rate by a factor of about $\beta / (\beta - r)$, twice at $r = \beta/2$, so it took pages for less drained than they were.
+And $D$ never forgets, so a share that had died early went on weighing on the fit.
+The fit instead predicts what its own window should hold at each rate, and forgets as fast as the average did.
+
+**A static share must be earned: the fit keeps one only if it explains the losses better than one share draining alone, by $c$ statements' worth of log-likelihood.**
+One share draining alone is the same fit with $a = x$, so $\ell = r \, x$, which leaves one unknown.
+$\mathcal{L}$ counts bytes, but a statement dies whole, so the gain is divided by the file's mean statement size to count it in the units the losses really come in.
+Without the test, the fit reads a chance gap between the rare losses of a page that drains slowly as a fall in its loss rate, finds a static share that is not there, and has the page cleaned early: [in simulation](#checking-the-fit-in-simulation), that made it cost more than the estimator it replaces, and the test turned that into a quarter less.
+The draft takes $c = 3$.
 
 **Between losses, the split stays and the rate decays, which is what keeps the ranking cheap.**
 `Drain::lose` only needs to be called in epochs where the page loses a nonzero amount of bytes.
-Epochs that don't call `lose` are effectively treated as contributing zeros to the running discounted average, with the corresponding update of the running average performed lazily at the next call of `lose` and when the rate is inspected with `rate`.
-The draining share's rate is the average over the share, so it decays with the average, by $e^{-\beta}$ per epoch, on every page alike.
+The epochs in between are epochs watched without a loss, which the next call accounts for when it ages the sums and extends $E$.
+Until then, the ranking lets the fitted rate decay by $e^{-\beta}$ per epoch, on every page alike, as a discounted average of the losses would, and keeps the split.
+A refit would follow the missing losses more closely, but it would change every page's key every epoch.
 
 ```rust
-/// Per page, beside kind, epoch and coverage: 12 bytes.
+/// Per page, beside kind, epoch and coverage: 18 bytes.
 struct Drain {
-    loss: f32,   // natural losses per epoch, in bytes, at epoch `at`: a discounted average
+    s0:   f32,   // natural losses, in bytes, each discounted by e^(−β·lag), as of epoch `at`
+    s1:   f32,   // the same, each also weighted by its lag
+    rate: f32,   // the draining share's rate at epoch `at`
     at:   u32,   // the epoch of the page's last natural loss, from the session's base
     fast: u16,   // the live bytes of the draining share; the rest of the coverage is static
-    lost: u16,   // the bytes the page has lost naturally since it was written
 }
 
 impl Drain {
-    /// A flush's fold superseded `bytes` of the page's live bytes, `live` of which are left.
+    /// A flush's fold superseded `bytes` of the page's live bytes, `live` of which are left;
+    /// the page was written `age` epochs ago.
     fn lose(&mut self, bytes: u32, live: u32, age: u32, now: u32) {
-        self.loss = self.loss * (-BETA * (now - self.at) as f32).exp()
-                  + (1.0 - (-BETA).exp()) * bytes as f32;
+        let d = (now - self.at) as f32;
+        let decay = (-BETA * d).exp();
+        self.s1 = decay * (self.s1 + d * self.s0);
+        self.s0 = decay * self.s0 + bytes as f32;
         self.at = now;
-        self.lost += bytes as u16;
-        // How far have the losses slowed, against their average since the page was written?
-        let slowed = self.loss * age as f32 / self.lost as f32;
-        self.fast = if slowed < 1.0 {
-            let rate = psi_inverse(slowed) / age as f32;
-            (self.loss / rate).min(live as f32) as u16
+        let live = live as f32;
+        // The draining share's rate, and what it loses per epoch now.
+        let (rate, loss) = fit(self.s0, self.s1, age);
+        // One share draining alone: its rate, and how much worse it explains the losses.
+        let (one, worse) = fit_one_share(self.s0, self.s1, age, live);
+        let fast = loss / rate;
+        (self.rate, self.fast) = if fast < live && worse >= STATIC_EVIDENCE * mean_statement_size() {
+            (rate, fast as u16)
         } else {
-            live as u16
+            (one, live as u16)
         };
     }
 
     /// The draining share's rate, a fraction of it per epoch.
     fn rate(&self, now: u32) -> f32 {
-        self.loss * (-BETA * (now - self.at) as f32).exp() / self.fast as f32
+        self.rate * (-BETA * (now - self.at) as f32).exp()
     }
 }
 ```
 
-A page whose losses hold steady keeps $\ell t / D$ near 1, and is estimated as one draining population, at the rate of its losses.
-A page with no draining share left, `fast == 0`, has no rate, and is ranked by the floor alone.
-
-**The average needs no bias correction, because it never starts from zero.**
-Adam divides its averages by $1 - e^{-\beta (t - t_0)}$ because they start at 0, which would bias them toward 0 until the observations had built up.
-Here a page starts from a real estimate at its creation epoch $t_0$, as "A new page starts from what it holds" below describes, and after $k$ epochs the estimate is a weighted mean of that start and the losses observed since, with weights that already sum to 1:
-$e^{-\beta k} + (1 - e^{-\beta}) \sum_{j=0}^{k-1} e^{-\beta j} = e^{-\beta k} + (1 - e^{-\beta k}) = 1$.
-So the start plays the part of a prior worth about $1/\beta$ epochs of observations, and fades as they come in.
-Starting a page from 0 instead would be exactly the bias Adam corrects for, and worse here: the page would look frozen, and so ripe, until its first losses arrived.
+A page whose losses hold steady fits as one share, at the rate of its losses.
+A page with no draining share left, `fast == 0`, is ranked by the floor alone.
 Below, $\hat r$ stands for a page's `rate()`, and $R_\text{min}$ for `R_MIN`.
+
+**A page's starting estimate enters the fit as pseudo-observations, with a weight of its own: $n_0$ epochs.**
+A page starts from an estimate of its draining share $a_0$ and its rate $r_0$, as "A new page starts from what it holds" below describes.
+It enters the sums as the losses that estimate predicts for the page's first $n_0$ epochs, observed once more on top of what the page will really lose then: those epochs add to $S_0$, $S_1$, and $E$, and for a new page they lie ahead, at negative lags, which the sums take like any other.
+So the fit reproduces the start until the page's own losses say otherwise, and the start then weighs as much as $n_0$ epochs of them, fading as the page ages, with the page's own early losses.
+The estimator this replaces also started from an estimate, but with a weight fixed at about $1/\beta$ epochs, where Adam's bias correction would give it none; here the weight is a constant of its own.
+And it fitted its split from the page's own losses alone, so the first loss replaced an inherited split with one fitted to that loss, which could show no static share; the pseudo-observations carry an inherited split through, if the test lets it.
+In simulation, the weight matters little: from 3 to 30 epochs, a heavier start helps where it is right and hurts where it is wrong, about equally.
+The draft takes $n_0 = 10$.
 
 **Only natural losses count**: bytes that the application's writes, frees, and shrinks supersede, which reach a page through the fold.
 Bytes that consolidation moves out of a page say nothing about how fast the rest will die, so evacuation, the page rewrite, the rotating window, and [the cursor](#the-flushs-own-pages-take-survivors-from-the-previous-flush) leave the estimate alone.
-Where they move out part of a page, which share they came from is unknown, so they shrink `loss`, `fast`, and `lost` in proportion, which leaves the fit where it was.
+Where they move out part of a page, which share they came from is unknown, so they shrink $S_0$, $S_1$, and `fast` in proportion, which leaves the rate where it was.
 
-**The fit follows a page whose content changes character, if with a lag.**
+**The fit follows a page whose content changes character as far as its losses show it, and no further.**
 Take a page that starts with a share of 0.3 dying at 0.5 per epoch, a share of 0.3 dying at 0.02, and a share of 0.4 that does not die at all, with $u_0 = 1$.
-After 50 epochs, the first share is gone and 0.11 of the second is left, so the page is truly a draining share of 0.11 at 0.02 over a static share of 0.4, with an index of 137.
-Given its loss rate exactly, the fit finds a draining share of 0.044 at 0.05 over a static share of 0.47, with an index of 173.
-The first share's losses still count in $D$, so the losses seem to have slowed more than the second share's have: the fit takes the rate for higher and the draining share for smaller than they are, and the page for somewhat riper.
-At $\kappa = 0.01$, both indexes lie above $1/\kappa = 100$, and the page is ripe either way.
+It starts from the draft's starting estimate, a draining share of 0.6 at 0.26 over a static share of 0.4, and loses exactly what the shares predict, with $\beta = 0.1$, $n_0 = 10$, and statements of 144 bytes for the test.
+Its true index is that of the three shares it actually holds:
+
+| epoch | fill | true index | the estimator replaced | the fit | the tested fit |
+| --- | --- | --- | --- | --- | --- |
+| 10 | 0.65 | 24 | 1 | 40 | 40 |
+| 20 | 0.60 | 44 | 3 | 311 | 6 |
+| 50 | 0.51 | 137 | 72 | 285 | 41 |
+
+- **While the fast share dies**, its losses show the fall, and the test lets the fit keep a static share: 0.62 of the page, which takes most of the slow share for static, and the page for somewhat riper than it is.
+- **Once the fast share is gone**, the slow share loses a statement every eight epochs or so, about one within the fit's memory, which cannot tell a static share from a slow drain.
+  Weighed against those few, the fading losses of the fast share look like a steep fall, and the untested fit takes the page for far riper than it is.
+  The tested fit falls back to one share, and takes it for less ripe.
+- **The estimator replaced** took the page for far less ripe throughout: its loss average lagged the falling losses, and $D$ kept the fast share's.
 
 **The floor $R_\text{min}$ is the assumption that no content lasts forever: no page is riper than it would be if all of its live content drained at $R_\text{min}$.**
 Without it, a page whose draining share had died, or whose estimate had decayed to nothing, would be ripe at any fill below $u_0$.
@@ -233,20 +277,59 @@ For one with a static share, it is exact at both ends, and in between it takes t
 **A new page starts from what it holds.**
 Fresh content joins its draining share, at a running estimate of what pages lose in the epoch after they are written.
 Moved content brings its source page's split: what was static there is static here, and the rest joins the draining share at the source's rate.
-`loss` starts as the sum, over the parts of the draining share, of each part's rate times its size, and the page keeps its starting split until its first loss.
+The draining share's rate $r_0$ is the byte-weighted mean of its parts' rates, and the start enters the fit as [pseudo-observations](#estimating-how-fast-a-page-still-drains).
+
+**Matching the mixture's losses instead would call too much of it static.**
+One share over a static one can match both what a mixture loses now and how fast that falls, with
+
+$$
+r_0 = \frac{\sum_i r_i^2 \, a_i}{\sum_i r_i \, a_i},
+\qquad
+a_0 = \frac{\bigl(\sum_i r_i \, a_i\bigr)^2}{\sum_i r_i^2 \, a_i},
+$$
+
+which is the byte-weighted mean when the parts drain alike, and calls a part static when it drains far slower than the others.
+But what makes content static for ripeness is draining slowly against $\kappa$, not against other content: at $\kappa = 0.01$, a part that drains at 0.02 has a threshold of 0.23, however much faster its neighbour drains.
+[In simulation](#checking-the-fit-in-simulation), the page of the example above cost 9.0 % more than cleaning at its true index from that start, against 7.6 % from the byte-weighted one, and a page mixed from parts at 0.2 and 0.002 cost 2.4 % against 2.5 %, so the draft keeps the byte-weighted mean.
 
 **Open restores each page's estimate from the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add), and seeds a page the state cannot vouch for from its fill and its age.**
 The seed assumes that the page has drained at one rate since it was written, from the fill its framing records, `content_size`, to its current coverage, at $\hat r = \ln(\texttt{content\_size} / \mathrm{coverage}) / \mathrm{age}$.
-So all of its content is draining, `fast` is the coverage, `loss` is $\hat r$ times it, `lost` is $\texttt{content\_size} - \mathrm{coverage}$, and `at` is the current epoch.
+It enters the sums as the page's whole past, watched and seen to lose what that rate predicts, and as the pseudo-observations of a start with all of `content_size` draining.
+So all of its content is draining, `fast` is the coverage, `rate` is $\hat r$, and `at` is the current epoch.
 The age counts from the epoch the session's first flush will have, so that no page is younger than one epoch.
 The file records nothing that could reveal a static share, so the seed has none, and averages over the page's whole life: a page that drained early and then froze looks at first like one still draining slowly.
-The session's own observations correct it: the loss average decays, and the first losses refit the split.
+The session's own losses correct it, and must earn a static share against the seeded past, which counts as watched.
 
 **The seed counts the bytes consolidation moved out as losses, which errs on the safe side.**
 The file records neither how a page lost its bytes nor when, so this cannot be avoided without the state.
 Moved-out bytes make the page look as if it had drained faster than it did, which raises its rate, lowers its index, and so delays its cleaning: the error can hold garbage a little longer, but never makes a page ripe that the true rate would not.
 It is also rare.
 Evacuation, the page rewrite, and the rotating window move whole pages, which are then free rather than seeded; only the cursor and description defragmentation move part of a page, and the cursor empties its page within a flush or two.
+
+### Checking the fit in simulation
+
+**In simulation, the tested fit costs a quarter to a half less than the estimator it replaces, unless pages hold only a few statements, and about as much as the single-rate draft, which has no static share at all.**
+`tools/simulate-ripeness.py` simulates pages of statements, each statement belonging to a share with a rate of its own, and cleans each page once its estimated index reaches $1/\kappa$, at $\kappa = 0.01$.
+It charges each page what the model charges, $\kappa$ per epoch for each page of room that live content does not fill, plus the copy of its survivors, plus what they cost afterwards under the optimal policy, and compares that with cleaning each page once its true index reaches $1/\kappa$, the exact index of the shares it actually holds.
+Eight scenarios cover one share at rates from 0.01 to 0.2, with starting estimates that are right and wrong, a share over a static one, the page of the example above, a page mixed from a fast and an almost static source, and a page seeded at open.
+Their summed excess cost, at $\beta = 0.1$, $n_0 = 10$, and $c = 3$:
+
+| statements of | the estimator replaced | the fit | the tested fit | the single-rate draft |
+| --- | --- | --- | --- | --- |
+| 16 to 64 bytes | 64 % | 38 % | 28 % | 29 % |
+| 32 to 256 bytes | 62 % | 67 % | 46 % | 46 % |
+| 256 to 1024 bytes | 106 % | 109 % | 112 % | 121 % |
+
+- **The test is what makes the fit pay.**
+  Untested, the fit wins wherever a page holds a static share or started from a wrong estimate, but on pages that drain slowly as one share it invents static shares, and on statements of typical size it loses more than it wins.
+- **Pages of a few statements are beyond any estimator**: with four to sixteen statements a page, every estimator costs about a sixth more than cleaning at the true index in most scenarios, and the estimator replaced a little less than the fit, tested or not.
+- **The static share does not pay in these scenarios.**
+  The single-rate draft, which this one replaces and which survives on the branch `ripeness` of these docs, costs as little as the tested fit on statements of up to 256 bytes, and a little more on larger ones.
+  What a static share could be worth shows in the untested fit on small statements, where losses are plentiful: it costs a sixth as much as the tested fit, both on the page with a static share and on the seeded page.
+  But the test that keeps it from inventing static shares also keeps it from finding them quickly, and the gain goes.
+- **The tested fit is robust to its constants.**
+  From $\beta = 0.05$ to $0.2$, its summed excess cost stays between 46 % and 62 %, where the estimator replaced ranges from 61 % to 112 % and the single-rate draft from 46 % to 74 %.
+  $c$ from 1 to 3 and $n_0$ from 3 to 30 move it by three points at most.
 
 ### Ranking pages by ripeness
 
@@ -264,7 +347,7 @@ The current design samples only because its bucket queues order pages by fill, a
 
 $$
 \ln I(\texttt{now}) = K + \beta \cdot \texttt{now},
-\qquad \text{with} \quad K = \ln h(z) - \ln \frac{\texttt{loss}}{\texttt{fast}} - \beta \cdot \texttt{at}
+\qquad \text{with} \quad K = \ln h(z) - \ln \texttt{rate} - \beta \cdot \texttt{at}
 $$
 
 $K$ changes only when the page loses content, is written, or has content moved out of it, and then once per flush however many of its fragments changed.
@@ -345,7 +428,7 @@ A counterfactual defined by pairs — wait until two pages fit into one — woul
 **Once its fast share $a$ has died, a mixed page is just a page of fill $b$ whose content drains at $r_B$, so mixing is cheap when $b$ lies below that content's own threshold $u^*(r_B)$, and expensive when it lies above.**
 For the page of the mixture above:
 
-- **$b \leq u^*(r_B)$.** The page is ripe as soon as the fit has seen its losses slow, which takes the few multiples of $1/\beta$ epochs the loss average needs to fall, during which it holds its garbage $a$.
+- **$b \leq u^*(r_B)$.** The page is ripe as soon as the fit has seen its losses fall, which takes a few multiples of $1/\beta$ epochs and enough losses to earn the static share, during which it holds its garbage $a$.
   Cleaning it then copies the slow share once more.
   When that share was moved in from a victim, whose own cleaning would have copied it anyway, mixing defers a copy rather than adding one, and frees the victim early.
   The smaller $b$, the shorter the wait, since $h(b)$ grows like $1/b$.
@@ -421,8 +504,8 @@ In [compaction mode](../impl/consolidation.md#compaction-mode), the tail page st
 - [The churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) would give way to ripeness, and $\lambda$ to $\kappa$; the controller would move $\kappa$ toward $\tau$, and the budget would remain a cap.
 - [A free sink changes the arithmetic](../impl/consolidation.md#victims-are-pulled-one-at-a-time) — "free filling takes any victim that fits" — would no longer hold: free filling would take small ripe victims and the cursor's survivors.
 - [Free filling's order](../impl/consolidation.md#packing-in-id-order-with-look-ahead) would shrink to those two sources, with the cursor page taking the place of the victim too big to take whole.
-- [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 12 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add) would carry it, with $\kappa$, from one session to the next.
-- [The constants still to be chosen](../impl/consolidation.md#constants-still-to-be-chosen) would lose $\lambda$ and gain $\kappa$'s controller, $\beta$, $R_\text{min}$, and $W$.
+- [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 18 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add) would carry it, with $\kappa$, from one session to the next.
+- [The constants still to be chosen](../impl/consolidation.md#constants-still-to-be-chosen) would lose $\lambda$ and gain $\kappa$'s controller, $\beta$, $n_0$, $c$, $R_\text{min}$, and $W$.
 
 ## Ablation: without the logarithm
 
@@ -431,7 +514,7 @@ The ablated rule is the myopic one: a page is ripe once $g(z) = (1 - z)/z \geq r
 
 **The split would drop out, and with it the fit.**
 With $z = a/(1 - s)$ and $\hat r = \ell / a$, the index is $g(z)/\hat r = (1 - x)/\ell$: the page's garbage over its loss rate in bytes, whatever the split.
-So `Drain` would shrink back to the loss average and its epoch, 8 bytes, and neither $\psi$ nor the refit would be needed.
+So `Drain` would shrink to a discounted average of the losses and its epoch, 8 bytes, and neither the fit nor its test would be needed.
 The threshold would also have a closed form, $x^* = 1/(1 + r/\kappa)$, though nothing needs it.
 The keys would still be logarithms, and the ordered sets, the floor, and the controller would stay as they are.
 
@@ -476,10 +559,13 @@ Running the evaluation with $h$ replaced by $g$ would measure how much of a real
   [`last_written`](../impl/in-memory-state.md#3-the-allocation-map) could split a flush's chunks by whether their allocation was also written recently, at the price of key order; whether that pays is a question for measurement.
 - **Description defragmentation's rewrites** are cold by selection and today share pages with the flush's fresh content.
   Packing them with the survivors of ripe pages instead would keep them apart, at the price of a second page per flush that may close short.
-- **The fit's memory.**
-  $D$ and $t$ count from the page's write, so a share that died early keeps weighing on the fit, as in the example above, however long ago it died.
-  Discounting them as the loss average is discounted would forget it, but a discounted history can only measure rates below $\beta$, which the fast shares are not.
+- **Whether the static share pays.**
+  In [simulation](#checking-the-fit-in-simulation), the single-rate draft cleans as cheaply as this one, and a static share pays only where losses are plentiful enough to find it without a test.
+  Running both on kladde-bench's workloads would show whether real pages hold enough statements for it.
+- **Too few losses to tell.**
+  A share that drains slowly loses too few statements within the fit's memory of about $1/\beta$ epochs to be told from a static one, as in [the example](#estimating-how-fast-a-page-still-drains), so the tested fit takes it for draining and its page for less ripe.
+  A longer memory would see more of its losses, but also more of whatever died before them.
 - **A static share that turns out not to be.**
-  Losses on a page that had looked static make its current losses exceed their average, and the fit then treats the whole page as one share draining slowly, which is less ripe than before, until the loss average decays again.
+  Losses on a page that had looked static lie at shorter lags than the fit expects, so it takes the page for less static, or for one share, which is less ripe than before, until those losses have aged.
   Whether that delay costs anything on real workloads is a question for measurement.
 - **$\beta$** trades how soon a frozen page is recognised against noise: with a large $\beta$, a page that loses content in rare bursts looks frozen between them.
