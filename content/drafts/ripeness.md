@@ -20,10 +20,10 @@ So a page is written nearly full and afterwards only loses live bytes.
 Workloads are skewed — a small hot set is rewritten over and over, a cold majority seldom or never — and a page holds whatever one flush wrote together.
 Packed in key order, the allocations the application keeps rewriting sit next to ones it has just created and will not touch again.
 
-The pages of a file therefore fall into two populations.
-Pages whose content keeps dying cycle: written full, drained, cleaned, written again.
+Under a naive policy that cleans only below a fixed fill threshold, the pages of a file would therefore fall into two populations.
+Pages whose content keeps dying cycle: written full, drained to the threshold, cleaned, written again.
 Frozen pages stay wherever they stopped, and nothing about skew says where that is; all that is known about their fill is that it lies somewhere between the cleaning threshold and full.
-A policy that cleans only below a fixed fill keeps every frozen page above that fill for good, and its garbage with it.
+Such a policy keeps every frozen page above that fill for good, and its garbage with it.
 
 ### Why the current design never cleans a frozen page
 
@@ -49,33 +49,35 @@ This draft keeps both ideas, but derives the threshold from a cost model rather 
 
 ### When waiting no longer pays
 
-**Clean a page of fill $u$ whose content dies at rate $r$ once $h(u) \geq r / \kappa$, with $h(u) = (1 - u)/u - \ln(1/u)$.**
+**Clean a page of fill $u$ whose content dies at rate $r$ once $h(u/u_0) \geq r / \kappa$, with $h(x) = (1 - x)/x - \ln(1/x)$ and $u_0$ the fill at which survivors are packed.**
 Here $\kappa$ is the price of one page of space held for one epoch, measured in page writes: at $\kappa = 0.01$, a page of garbage kept for a hundred flushes costs as much as writing a page.
 Such a page is **ripe**.
+The rule sees a page's fill only relative to $u_0$, so write $x = u/u_0$ for it.
 
 The model behind it makes three assumptions:
 
 - A page's live content dies at a rate $r$, a fraction $r$ of it per epoch, however long it has lived, so survivors keep dying at $r$ after they are moved.
-- A policy pays $\kappa$ per page of garbage per epoch and 1 per page of survivors it copies, and is judged by its cost per epoch in the long run.
-- It cleans a page once its fill has fallen to a threshold $u^*$, and packs the survivors with content that dies at the same rate.
+- A policy pays $\kappa$ per epoch for each page of space that live content does not fill, the unfilled room of a page as well as its garbage, and 1 for each page it writes, and is judged by its cost per epoch in the long run.
+- It cleans a page once its fill has fallen to a threshold $u^* = x^* u_0$, and packs the survivors, with content that dies at the same rate, into pages of fill $u_0$.
 
-Follow one unit of content from the moment it is written into a full page.
-The page reaches $u^*$ after $T = \ln(1/u^*) / r$ epochs.
-If the unit dies at some $s < T$, it is garbage until $T$, which costs $\kappa \, (T - s)$; otherwise it is copied at $T$, which costs 1, and starts over in a fresh page.
+Follow one unit of content, measured in pages, from the moment it is packed.
+It takes up $1/u_0$ of a page, and its page reaches $u^*$ after $T = \ln(1/x^*) / r$ epochs.
+Until then, whatever of that $1/u_0$ is not live costs $\kappa$ per epoch, which comes to $\kappa \, \bigl(T/u_0 - (1 - x^*)/r\bigr)$ in expectation.
+With probability $x^*$ the unit survives to $T$, is copied, which costs $1/u_0$, and starts over.
 So its expected cost over its whole life, $V$, satisfies
 
 $$
 \begin{aligned}
-V &= \kappa \, \mathbb{E}\bigl[(T - s)^+\bigr] + u^* \, (1 + V),
-\qquad \text{with} \quad \mathbb{E}\bigl[(T - s)^+\bigr] = \frac{\ln(1/u^*) - (1 - u^*)}{r}, \\
-V &= \frac{\kappa \, \bigl(\ln(1/u^*) - (1 - u^*)\bigr) / r + u^*}{1 - u^*},
+V &= \kappa \, \Bigl(\frac{T}{u_0} - \frac{1 - x^*}{r}\Bigr) + x^* \, \Bigl(\frac{1}{u_0} + V\Bigr),
+\qquad \text{with} \quad T = \frac{\ln(1/x^*)}{r}, \\
+V &= \frac{\kappa \, \bigl(\ln(1/x^*)/u_0 - (1 - x^*)\bigr) / r + x^*/u_0}{1 - x^*},
 \end{aligned}
 $$
 
-and setting $\mathrm{d}V / \mathrm{d}u^* = 0$ gives $h(u^*) = r / \kappa$.
-The same threshold balances the two sides of waiting one more epoch at fill $u$: it costs $\kappa \, (1 - u)$ in garbage and saves $r \, u \, (1 + V)$, since each byte that dies meanwhile would have cost a copy now and $V$ afterwards.
+and setting $\mathrm{d}V / \mathrm{d}x^* = 0$ gives $h(x^*) = r / \kappa$: $u_0$ drops out, except as the unit in which fill is measured.
+The same threshold balances the two sides of waiting one more epoch at relative fill $x$: it costs $\kappa \, (1 - x)$, the page less the $x$ of a page its survivors would take, and saves $r \, x \, (1 + u_0 V)$, since each byte that dies meanwhile would have cost a copy now and $V$ afterwards.
 
-| $r / \kappa$ | $u^*$, cleaning at | the myopic rule $(1 - u)/u \geq r / \kappa$ would clean at |
+| $r / \kappa$ | $x^*$, cleaning at | the myopic rule $(1 - x)/x \geq r / \kappa$ would clean at |
 | --- | --- | --- |
 | 0 | any fill, up to the cap below | any fill |
 | 0.001 | 0.96 | 0.999 |
@@ -87,17 +89,24 @@ The same threshold balances the two sides of waiting one more epoch at fill $u$:
 Content that has stopped dying is cleaned at almost any fill, and content that dies fast only once it is nearly gone, which is LFS's behaviour, derived rather than tuned.
 
 **The churn floor is the special case in which every page drains at the same rate, without the logarithm.**
-$(1 - u)/u$ is the space a cleaning frees per byte it writes, which is exactly what the churn floor compares with $\lambda$.
-The $-\ln(1/u)$ term accounts for survivors that go on dying after they are moved; the myopic rule, which leaves it out, would clean every page too early, and pages that drain slowly far too early.
+$(1 - x)/x$ is the space a cleaning frees per byte it writes, which is exactly what the churn floor compares with $\lambda$.
+The $-\ln(1/x)$ term accounts for survivors that go on dying after they are moved; the myopic rule, which leaves it out, would clean every page too early, and pages that drain slowly far too early.
+However, the more important difference between the current "churn floor" design and the proposed ripeness design is that the current design compares its score $(1 - x)/x$ against the same threshold $\lambda$ for every page, whereas the proposed ripeness design uses a different threshold $r / \kappa$ for each page, where the rate $r$ is [[#Estimating how fast a page still drains|estimated per page]].
 Under uniform random updates every page does drain at one rate, so there ripeness reduces to a single fill threshold, as the churn floor is today.
+[The ablation](#ablation-without-the-logarithm) works out what the logarithm contributes.
 
-**No page above $1 - \theta$ is ripe, whatever its rate.**
-Packing promises no fuller page than that, so cleaning such a page might free nothing.
-This also keeps full pages, among them nearly every page a flush has just written, out of the ranking altogether.
+**No page at or above $u_0$ is ripe, whatever its rate.**
+Its survivors would take a whole page or more, so cleaning it would free nothing: $1 - x$, the space a cleaning gains, is not positive.
+The formula has to say so explicitly, since $h$, which falls to 0 at $x = 1$, rises again above it.
+The draft takes $u_0 = 1 - \theta$, the fill that packing promises for every page but a flush's last.
+Pages come out between $1 - \theta$ and full, so their expected fill is nearer $1 - \theta/2$; taking that instead would clean a little earlier, but would also make pages ripe whose survivors might fill a page of their own.
+The cap also keeps full pages, among them nearly every page a flush has just written, out of the ranking altogether.
 
 ### Estimating how fast a page still drains
 
 **Each page's rate is estimated from its own recent losses, with older losses forgotten at a rate $\beta$.**
+`Drain::lose` only needs to be called in epochs where the page loses a nonzero amount of bytes.
+Epochs that don't call `lose` are effectively treated as contributing zeros to the running discounted average, with the corresponding update of the running average performed lazily at the next call of `lose` and when the rate is inspected with `rate`.
 
 ```rust
 /// Per page, beside kind, epoch and coverage: 8 bytes.
@@ -121,6 +130,13 @@ impl Drain {
 ```
 
 A page that loses a fraction $f$ of its live bytes every epoch settles at a `rate()` of $f$.
+
+**The average needs no bias correction, because it never starts from zero.**
+Adam divides its averages by $1 - e^{-\beta (t - t_0)}$ because they start at 0, which would bias them toward 0 until the observations had built up.
+Here a page starts from a real estimate at its creation epoch $t_0$, as "A new page starts from what it holds" below describes, and after $k$ epochs the estimate is a weighted mean of that start and the losses observed since, with weights that already sum to 1:
+$e^{-\beta k} + (1 - e^{-\beta}) \sum_{j=0}^{k-1} e^{-\beta j} = e^{-\beta k} + (1 - e^{-\beta k}) = 1$.
+So the start plays the part of a prior worth about $1/\beta$ epochs of observations, and fades as they come in.
+Starting a page from 0 instead would be exactly the bias Adam corrects for, and worse here: the page would look frozen, and so ripe, until its first losses arrived.
 Below, $\hat r$ stands for a page's `rate()`, and $R_\text{min}$ for `R_MIN`.
 
 **Only natural losses count**: bytes that the application's writes, frees, and shrinks supersede, which reach a page through the fold.
@@ -131,7 +147,7 @@ A page holding a share $a$ of content that dies at $r_A$ and a share $b = 1 - a$
 Its rate, $-u'/u$, starts at $a \, r_A + b \, r_B$ and falls to $r_B$ as the fast share dies, and the estimate does the same: high while the losses come, and decaying once they stop.
 
 **The floor $R_\text{min}$ is the assumption that no content lasts forever**: without it, an estimate that had decayed to nothing would make a frozen page ripe at any fill up to the cap.
-With it, a frozen page is ripe up to the fill $u_\text{cold}$ for which $h(u_\text{cold}) = R_\text{min} / \kappa$ — at $R_\text{min} = 10^{-4}$ and $\kappa = 0.01$, that is 0.87.
+With it, a frozen page is ripe up to the relative fill $x_\text{cold}$ for which $h(x_\text{cold}) = R_\text{min} / \kappa$ — at $R_\text{min} = 10^{-4}$ and $\kappa = 0.01$, that is 0.87.
 
 **A new page starts from what it holds.**
 Its `rho` is the byte-weighted mean of its content's rates: moved content at its source page's rate, and fresh content at a running estimate of what pages lose in the epoch after they are written.
@@ -141,9 +157,15 @@ The seed assumes that the page has drained at one rate since it was written, fro
 The age counts from the epoch the session's first flush will have, so that no page is younger than one epoch.
 That averages over the page's whole life, so a page that drained early and then froze looks at first like one still draining slowly; a few multiples of $1/\beta$ epochs of the session's own observations correct it.
 
+**The seed counts the bytes consolidation moved out as losses, which errs on the safe side.**
+The file records neither how a page lost its bytes nor when, so this cannot be avoided without the state.
+Moved-out bytes make the page look as if it had drained faster than it did, which raises its rate, lowers its index, and so delays its cleaning: the error can hold garbage a little longer, but never makes a page ripe that the true rate would not.
+It is also rare.
+Evacuation, the page rewrite, and the rotating window move whole pages, which are then free rather than seeded; only the cursor and description defragmentation move part of a page, and the cursor empties its page within a flush or two.
+
 ### Ranking pages by ripeness
 
-**Rank every page below $1 - \theta$ by its ripeness index $I = h(u) / \hat r$, which is the $1/\kappa$ at which the page becomes ripe.**
+**Rank every page below $u_0$ by its ripeness index $I = h(x) / \hat r$, which is the $1/\kappa$ at which the page becomes ripe.**
 Because every estimate decays by the same factor $e^{-\beta}$ per epoch, every index grows by the same factor, so the order changes only when a page's own content does, and an ordered map keeps it.
 
 **Two ways would rank by a time-dependent score exactly, and the second is chosen.**
@@ -157,7 +179,7 @@ The current design samples only because its bucket queues order pages by fill, a
 
 $$
 \ln I(\texttt{now}) = K + \beta \cdot \texttt{now},
-\qquad \text{with} \quad K = \ln h(u) - \ln \texttt{rho} - \beta \cdot \texttt{at}
+\qquad \text{with} \quad K = \ln h(x) - \ln \texttt{rho} - \beta \cdot \texttt{at}
 $$
 
 $K$ changes only when the page loses content, is written, or has content moved out of it, and then once per flush however many of its fragments changed.
@@ -168,12 +190,12 @@ type Key = OrderedF32;
 
 struct Ripeness {
     draining: BTreeSet<(Key, PageNumber)>,   // K; the index grows as e^(β·now)
-    settled:  BTreeSet<(Key, PageNumber)>,   // ln h(u) − ln R_MIN; the index is constant
+    settled:  BTreeSet<(Key, PageNumber)>,   // ln h(x) − ln R_MIN; the index is constant
 }
 
 impl Ripeness {
-    /// The page with the highest index, if it is ripe at price `kappa`.
-    fn next_ripe(&mut self, now: u32, kappa: f32) -> Option<PageNumber> {
+    /// The page with the highest index, if it is ripe at price `e^(−neg_ln_kappa)`.
+    fn next_ripe(&mut self, now: u32, neg_ln_kappa: f32) -> Option<PageNumber> {
         // A draining page whose estimate has reached the floor is overstated by its key,
         // so it can surface here but never hide further down: it is settled lazily.
         while let Some(&(k, p)) = self.draining.last() {
@@ -183,20 +205,31 @@ impl Ripeness {
         }
         let draining = self.draining.last().map(|&(k, p)| (k + BETA * now, p));  // ln I(now)
         let (ln_index, p) = draining.max(self.settled.last().copied())?;
-        (ln_index >= -kappa.ln()).then_some(p)
+        (ln_index >= neg_ln_kappa).then_some(p)
     }
 }
 ```
 
+The controller keeps the price as $-\ln \kappa$, which is what the keys compare with, and a step in it changes $\kappa$ by a factor, which suits a price that ranges over orders of magnitude.
+
 This gives up the bucket queues' $O(1)$ for $O(\log P)$ per changed page and per victim.
+**An indexed binary max-heap would do as well as the B-trees, with less memory.**
+Each page's entry in the page table would hold its position in its heap, 4 bytes, so that a changed key can be sifted up or down from where it is; every swap updates the two pages' positions, which is why a stock heap will not do.
+The trees need no position, but hold the key and page number again in every node.
+Both are $O(\log P)$ per changed key, and the heap is $O(1)$ for the maximum, which `next_ripe` reads on every call.
 If that ever shows in a profile, note that the current value of $\ln I$ lies in a window of bounded width — $u$ is at least one byte in a page, and $\hat r$ is at least $R_\text{min}$ and at most 1 — so a circular array of buckets over quantised keys, turned like a timer wheel as $\beta \cdot \texttt{now}$ advances, would do the same in $O(1)$.
 
 **Both page kinds are ranked alike.**
 A table page drains as the fold supersedes its statements, and a page of space and a page write cost the same whichever kind they are, so indexes compare across kinds and the budget loop takes the highest of either.
 
-**At open, the index resembles LFS's score.**
-With the seeded estimate, a page written full has $I = h(u) \cdot \mathrm{age} / \ln(1/u)$, which for a nearly full page is $(1 - u) \cdot \mathrm{age} / 2$ to first order, as LFS's score is.
-As $u$ falls toward 0 it grows without bound, where LFS's score levels off at $\mathrm{age}$: a nearly empty page costs almost nothing to clean, whatever its age.
+**At open, the index resembles LFS's score for nearly full pages, and exceeds it by far for nearly empty ones.**
+Take a page written at $u_0$ and seeded with $\hat r = \ln(1/x) / \mathrm{age}$.
+Its index is $I = h(x) \cdot \mathrm{age} / \ln(1/x)$, proportional to its age, as LFS's score $(1 - x) \cdot \mathrm{age} / (1 + x)$ is; the two differ in how the factor depends on the fill.
+
+- Nearly full, $x \to 1$: $h(x) \approx (1 - x)^2/2$ and $\ln(1/x) \approx 1 - x$, so $I \approx (1 - x) \cdot \mathrm{age} / 2$, which is LFS's score to first order.
+  Both fall to 0.
+- Nearly empty, $x \to 0$: $h(x) \approx 1/x$ grows faster than $\ln(1/x)$, so $I \approx \mathrm{age} / \bigl(x \ln(1/x)\bigr)$ grows without bound, while LFS's factor rises only to 1, leaving its score at $\mathrm{age}$.
+  A nearly empty page costs almost nothing to clean, so ripeness takes it at any age, where LFS would still rank it by age.
 
 ### The budget, and the price
 
@@ -204,12 +237,16 @@ As $u$ falls toward 0 it grows without bound, where LFS's score levels off at $\
 The budget stays what it is, a cap on the work one flush does, and so does the check that an offer fills its page.
 
 **$\kappa$, not the budget, is what moves the file toward its target fill $\tau$.**
-Raising $\kappa$ raises every page's threshold, so a controller that measures the live fraction after each commit and moves $\kappa$ up while it lies below $\tau$, and down while above, converges on $\tau$ — the job the current design gives the budget.
+Raising $\kappa$ raises every page's threshold, so a controller that measures the live fraction after each commit and moves $\kappa$ up while it lies below $\tau$, and down while above, converges on $\tau$ wherever the budget allows — the job the current design gives the budget.
 $\lambda$ could not do that job, since it would clean frozen and draining pages at the same fill; $\kappa$ can, because the thresholds it sets depend on how fast each page drains.
 
-**Taking the highest index first is right when the budget binds.**
-A binding budget acts like a lower price for space, since writes then cost more than $\kappa$ says, and the pages ripe at a lower price are exactly those with the highest indexes.
-If it binds flush after flush, ripe pages queue up and the controller cannot reach $\tau$: the target and the cap conflict, and the cap wins, as it should.
+**The policy does not change when the budget binds: it always takes the highest index first, which matters only then.**
+While the budget does not bind, a flush cleans every ripe page, and the order is immaterial.
+When it binds, the flush can clean only some of them, and the order decides which.
+A binding budget means that page writes are scarcer than $\kappa$ assumes, which is the same as a lower price for space, $\kappa' < \kappa$; the pages that would be ripe at $\kappa'$ are those with $I \geq 1/\kappa'$, which are exactly the highest indexes.
+So the one rule is right in both cases, and no mode switch is needed.
+If the budget binds flush after flush, ripe pages queue up and the controller cannot reach $\tau$: the target and the cap conflict, and the cap wins, as it should.
+The controller must then not wind up: raising $\kappa$ would only lengthen the queue, so it holds $\kappa$ while the budget binds.
 
 ### Where survivors go
 
@@ -220,7 +257,7 @@ A counterfactual defined by pairs — wait until two pages fit into one — woul
 
 #### What a mixed page costs
 
-**Once its fast share has died, a mixed page is just a page of fill $b$ whose content drains at $r_B$, so mixing is cheap when $b$ lies below that content's own threshold $u^*(r_B)$, and expensive when it lies above.**
+**Once its fast share $a$ has died, a mixed page is just a page of fill $b$ whose content drains at $r_B$, so mixing is cheap when $b$ lies below that content's own threshold $u^*(r_B)$, and expensive when it lies above.**
 For the page of the mixture above:
 
 - **$b \leq u^*(r_B)$.** The page is ripe as soon as the estimate has seen its fast losses stop, a few multiples of $1/\beta$ epochs, during which it holds its garbage $a$.
@@ -233,13 +270,32 @@ For the page of the mixture above:
 So the room of a page is best filled with content that dies at about the rate of what the page already holds.
 Cold content in a hot page costs a wait that grows with its share, and above $u^*$ it costs the page's garbage for good.
 
+**So each source of survivors has one place it may go, decided by its temperature and its size, not by a partner.**
+The case distinction gives the rule: survivors may join a hotter page only as a share $b$ small enough to stay below their own threshold $u^*(r_B)$; otherwise they need a page of their own temperature.
+The next two sections apply it to the two kinds of page that take survivors:
+
+| source | its share $b$ in the host | where it goes | case |
+| --- | --- | --- | --- |
+| survivors of ripe pages, except the small ones below | any | pages the budget loop opens, each filled with survivors of many ripe pages | cold with cold: no hot content to wait for |
+| a ripe page whose survivors take at most $\theta$ of a page | at most $\theta$ | the room of a flush's own page | $b \leq u^*(r_B)$, as long as $\theta$ lies below the threshold of content that has stopped dying |
+| the survivors of the previous flush | whatever fits | the room of a flush's own page | little mixing: about the host's temperature |
+
+None of these needs a counterfactual about pairs: each source is judged by its own rate and size against a threshold, and the room is simply offered in that order.
+
 #### Budgeted pages take survivors of ripe pages
 
-**A page opened for consolidation holds survivors of ripe pages only, cold with cold, and stays full.**
-This is LFS's segregation, and the budget loop provides most of it already.
-What changes is which victims fill the page, in index order rather than by the churn floor, and that the loop's first page no longer takes the tail of a survivor cut on the flush's last page, whose room the cursor below fills instead.
+**A page opened for consolidation should hold survivors of ripe pages only, cold with cold, so that it stays full.**
+This is LFS's segregation.
+The current budget loop already comes close: a page it opens holds survivors of victims and nothing else.
+The proposal changes two things about it.
+First, the victims are the ripe pages, taken in index order, rather than pages that pass the churn floor.
+Second, the loop's first page no longer takes the rest of a victim cut to fill the flush's last page; the cursor below fills that room instead, so no victim is split between a hot page and a cold one.
 
 #### The flush's own pages take survivors from the previous flush
+
+**This is the placement half of the proposal, and apart from its first step it would help any cleaning policy.**
+Ripeness decides when to clean; this decides what goes into the room of the pages a flush writes anyway, so that fewer frozen pages are made in the first place.
+Only step 1 uses the index.
 
 **The room in every data page a flush writes anyway goes first to small ripe victims, then to the survivors of the previous flush's least-filled page.**
 
@@ -248,8 +304,14 @@ What changes is which victims fill the page, in index order rather than by the c
 2. The survivors of the **cursor page**, as many of its statements' as fit, a whole statement's at a time, so that the cursor never cuts a statement.
    The cursor page is the least-filled data page of the latest earlier epoch that wrote data pages, chosen at open among the governing header's epoch's pages and again whenever the current one is empty.
 
+**A statement too long for the room cannot stop the cursor for good.**
+The cursor takes whichever of the page's statements fit, not only the next in order, so a long one is skipped until a flush leaves room enough for it.
+If no flush does, the page grows old, and the rule below that gives up a page after $W$ epochs moves the cursor on and leaves the rest of the page to ripeness.
+A statement can be at most a page long, so it takes a flush whose last page leaves that much room; how often a page is abandoned this way is a question for measurement.
+
 **The previous flush's content is the closest in age to the flush's own that exists outside the flush itself.**
-Unless the previous flush's last page closed short, its least-filled page is the one the current flush's fold drained most, which is the hottest of what the previous flush wrote.
+A page *closes short* when it is written with more than $\theta$ of it empty, which only a flush's last page can, when the flush runs out of content and free filling finds nothing to fill the room with.
+Unless the previous flush's last page closed short, its least-filled page is the one the current flush's fold drained most, which is the hottest of what the previous flush wrote; a page that closed short is least filled because of how it was written, not because anything died.
 So the room of the flush's own pages fills with content of about their own temperature, and the shortfall of the flush's last page, about half a page on average, comes out of a page that the next flush or two empty and free, with no page written for it.
 With about half a page of room per flush and at most a page to empty, the cursor stays about two epochs behind the flush.
 
@@ -276,6 +338,42 @@ In [compaction mode](../impl/consolidation.md#compaction-mode), the tail page st
 - [Free filling's order](../impl/consolidation.md#packing-in-id-order-with-look-ahead) would shrink to those two sources, with the cursor page taking the place of the victim too big to take whole.
 - [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 8 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add) would carry it, with $\kappa$, from one session to the next.
 - [The constants still to be chosen](../impl/consolidation.md#constants-still-to-be-chosen) would lose $\lambda$ and gain $\kappa$'s controller, $\beta$, $R_\text{min}$, and $W$.
+
+## Ablation: without the logarithm
+
+**Dropping $-\ln(1/x)$ keeps the per-page threshold, and with it the cleaning of frozen pages, but cleans pages that drain slowly too early, and the extra writes grow the slower they drain.**
+The ablated rule is the myopic one: a page is ripe once $g(x) = (1 - x)/x \geq r/\kappa$, and its index is $g(x)/\hat r$.
+
+**Little would simplify.**
+The threshold would have a closed form, $x^* = 1/(1 + r/\kappa)$, where $h$ has to be inverted numerically; nothing needs that inverse, though, since the index uses $h$ itself.
+The index, $(1 - x)/(x \, \hat r)$, would be the page's garbage over its loss rate in bytes, so the estimate could track that rate without dividing by the live bytes.
+The keys would still be logarithms, and the ordered sets, the floor, and the controller would stay as they are.
+
+**It behaves as the full rule does in every limit but one.**
+
+- **All pages drain at one rate.**
+  Both rules reduce to a single fill threshold, as the churn floor does, and the controller moves $\kappa$ until that threshold gives $\tau$.
+  All three then clean the same pages: the logarithm changes only which $\kappa$ gets there.
+- **Nearly empty pages**, $x \to 0$: $h(x) \approx g(x) \approx 1/x$, so the two agree.
+- **Content that dies fast**, $r/\kappa \gg 1$: both clean once the page is nearly empty, at 0.07 and 0.09 for $r/\kappa = 10$.
+- **Content that drains slowly**, $r/\kappa \ll 1$, is the exception: near $x = 1$, $h(x) \approx (1 - x)^2/2$ but $g(x) \approx 1 - x$, so the thresholds are about $1 - \sqrt{2 r/\kappa}$ and $1 - r/\kappa$, exactly 0.87 and 0.99 for $r/\kappa = 0.01$.
+  The myopic rule ignores that a byte which dies now would otherwise have been copied again and again, so it copies such a page as soon as a percent of it is garbage.
+
+**Frozen pages are cleaned either way, since the floor makes every page's threshold its own.**
+With $R_\text{min}$ in place of $r$, the ablated rule makes a frozen page ripe below 0.99 rather than 0.87, at $R_\text{min}/\kappa = 0.01$.
+That page is copied once, its survivors never die, and so the early cleaning costs one copy, not a cycle of them.
+It does rank frozen pages much higher: at $x = 0.95$, $g/R_\text{min} = 526$ against $h/R_\text{min} = 13$, so under a binding budget they would take writes that would free more elsewhere.
+
+**Expect the same results on uniform workloads, and more page writes for the same space on skewed ones, most of them spent on warm content.**
+Over its whole life, content that drains at $r/\kappa$ costs $V$ at the myopic threshold against $V$ at the optimal one (taking $u_0 = 1$):
+
+| $r / \kappa$ | 10 | 1 | 0.1 | 0.01 |
+| --- | --- | --- | --- | --- |
+| cost of the myopic rule, relative to the optimum | 1.0 | 1.2 | 2.5 | 7 |
+
+Retuning $\kappa$ cannot undo this, since the error lies in how the thresholds of pages of different rates relate, not in their level, and there is no error when all pages drain at one rate.
+The warm content that pays is whatever lives for longer than $1/\kappa$ epochs but does die, 100 epochs at $\kappa = 0.01$.
+Running the evaluation with $h$ replaced by $g$ would measure how much of a real workload that is.
 
 ## Open questions
 
