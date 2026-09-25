@@ -20,8 +20,9 @@ A Rust workspace providing backed data structures: containers and derived types 
 
 <!-- kladde-example: name=notes file=src/main.rs mode=run deps=kladde,kladde-types
 before:
-  fn main() {
+  fn main() -> kladde::Result<()> {
 after:
+  Ok(())
   }
 -->
 ```rust
@@ -40,11 +41,12 @@ let mut notes = Kladde::new(Notes {
     lines: PersistableVec::new(),
 });
 
-notes.guard().lines_mut().push(PersistableString::from("wrote a doc"));
+notes.guard().lines_mut().push(PersistableString::from("wrote a doc"))?;
 ```
 
-The `push` updates the in-memory vector and records the change.
+The `push` updates the in-memory vector and appends the change to the journal before it returns.
 There is no save call.
+`Kladde::new` keeps its file in memory, which suits examples and tests; `Kladde::create` and `Kladde::open` do the same on a real file.
 
 ## The central problem
 
@@ -64,52 +66,28 @@ A Python implementation should use property hooks and have no guards at all.
 | document | contents |
 | --- | --- |
 | [Crate layout](crates.md) | the workspace, the dependency direction, and where the seam falls |
-| [Pointers](pointers.md) | the four handle types, and the ownership discipline they enforce |
-| [Persistable and guards](persistable-and-guards.md) | the central traits, and why mutation needs a guard at all |
+| [Pointers](pointers.md) | the two handle types, and the ownership discipline they enforce |
+| [Persistable and guards](persistable-and-guards.md) | the central traits, why mutation needs a guard, and why it returns a `Result` |
 | [Containers](containers.md) | how the built-in containers are laid out and why |
 | [The derive macro](derive-macro.md) | what it generates, and why guards are generated per type |
-| [Freeing](freeing.md) | recursive reclamation — designed, not built |
+| [Freeing](freeing.md) | the `free` hook, and where ownership ends |
 | [Transactions](transactions.md) | the RAII types, and what happens on unwind |
-| [Schema binding](schema-binding.md) | how a Rust type declares its descriptor |
-| [Memory layout](memory-layout.md) | the Rust-specific half of the [in-memory structures](../impl/in-memory-state.md) |
+| [Schema binding](schema-binding.md) | how a Rust type declares its descriptor, and the check at open |
+| [The store](store.md) | the Rust-specific half of the storage layer: interior mutability, I/O, and the in-memory structures |
 | [Tutorial](tutorial/) | for application authors |
 
 ## Status
 
-Not feature-complete, and the parts are at very different stages.
-The design documents describe the system as intended and mark where the implementation falls short.
+A first prototype of the whole design exists; nothing is frozen.
+Where the implementation departs from the [implementation notes](../impl/), or found them unclear, `implementation-notes.md` in the kladde-rust repository says so.
 
 | area | status |
 | --- | --- |
 | Schema descriptors, encoding, fingerprints | implemented and specified |
-| Schema binding to Rust types | implemented |
-| Containers, derive macro, guards | implemented against an in-memory backend |
-| `Persistable`, `Location` | implemented |
-| Storage abstraction | implemented (in-memory only) |
-| Journal | **known broken** — see below |
-| Address table, copy-on-write pages | designed, not built |
-| Real file storage | not started |
-| Crash consistency | designed, not built |
-| Freeing / reclamation | designed, not built |
+| Schema binding to Rust types, fingerprint check at open | implemented |
+| Containers, derive macro, guards | implemented |
+| File format, address table, journal, recovery | implemented |
+| Flush and consolidation | implemented |
+| Transactions and batches | implemented, without the unwind behaviour |
+| Freeing | implemented as a type-driven hook |
 | Schema evolution | designed, not built |
-
-The previous heap — a relocatable heap over a flat address space, with incremental compaction — *was* implemented, measured and tuned, and has since been [superseded](../superseded/) by the page-oriented design.
-
-### The journal, concretely
-
-`JournaledWriteBackend` keeps **two** records of a transaction with no order relating them: a `pending: HashMap<Pointer, Size>` state snapshot, and a `journal: Vec<(Pointer, Size, Vec<u8>)>` operation log.
-So any operation that invalidates an earlier log entry must reach into the log and repair it by hand, and exactly one does — the sizedness conversion scans the log re-anchoring writes, and nothing else repairs anything.
-
-Three failures follow, and they are symptoms of the one structural problem that [the log-as-authority model](../impl/write-phase-state.md) fixes:
-
-1. **`alloc → write → free` panics at flush.**
-   The allocate and free annihilate inside `pending`, so the id is never claimed; the buffered write survives in the other structure and its replay looks up an id the heap has never heard of.
-2. **A write followed by a shrinking resize silently corrupts a neighbour.**
-   The seek does no bounds check, so a write buffered while the allocation was large replays at an offset that now lies outside it.
-   Reproduced: allocate A at 128 bytes, write `0xAA` at offset 64, shrink A to 64, allocate B at 8 bytes; after the flush, B reads back as `[170; 8]`.
-3. **A sizedness conversion of an allocation claimed by an earlier flush loses its content.**
-   The immediate path is *mint → allocate new → copy `min(old, new)` → free old*; the deferred path performs only the mint, and the copy is not deferred or approximated but absent.
-   This one disappears outright with [sizedness](pointers.md#what-sizedness-was-and-why-it-is-gone).
-
-None of these is the fundamental problem.
-The fundamental problem is that **the log does not record every mutation**, which shows up without any annihilation at all — see the dangling-pointer case in [the record set](../spec/journal.md#record-kinds).

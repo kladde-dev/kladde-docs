@@ -35,6 +35,4 @@ Kladde is `O(size of the change)`, at the cost of a more constrained type vocabu
 
 ## Status warning
 
-Kladde is early.
-The parts this tutorial describes are implemented, but they currently run against an in-memory backend rather than a real file: `Kladde::new` exists, `Kladde::open` does not.
-Everything below is written for the intended API; where the current state differs, it says so.
+Kladde is early: the file format is a draft, and a file written today may not open with a later version.

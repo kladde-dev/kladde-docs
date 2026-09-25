@@ -60,7 +60,7 @@ ORDER = [
     "rust/freeing.md",
     "rust/transactions.md",
     "rust/schema-binding.md",
-    "rust/memory-layout.md",
+    "rust/store.md",
     # Kept for the reasoning, not the result.
     "superseded/index.md",
     "superseded/relocatable-heap.md",

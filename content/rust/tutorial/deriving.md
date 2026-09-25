@@ -38,7 +38,7 @@ struct Contact {
     starred: bool,
 }
 
-fn main() {
+fn main() -> kladde::Result<()> {
     let mut contact = Kladde::new(Contact {
         email: PersistableString::from("ada@example.com"),
         phones: PersistableVec::new(),
@@ -46,10 +46,11 @@ fn main() {
     });
 
     let mut guard = contact.guard();
-    guard.starred_mut().set(true);
+    guard.starred_mut().set(true)?;
     guard
         .phones_mut()
-        .push(PhoneNumber::Mobile(PersistableString::from("555-0100")));
+        .push(PhoneNumber::Mobile(PersistableString::from("555-0100")))?;
+    Ok(())
 }
 ```
 
@@ -59,21 +60,12 @@ If you need to name the trait explicitly in the same file, import it under an al
 
 ## Structs
 
-```rust
-#[derive(Persistable)]
-struct Contact {
-    email: PersistableString,
-    phones: PersistableVec<PhoneNumber>,
-    starred: bool,
-}
-```
-
-The macro generates a guard type — `ContactGuard` — with a `_mut()` accessor per field:
+The macro generates a guard type — `ContactGuard` — with a `_mut()` accessor per field, and a `set` that replaces the whole value:
 
 ```rust
 let mut contact = /* ... a ContactGuard ... */;
-contact.starred_mut().set(true);
-contact.phones_mut().push(number);
+contact.starred_mut().set(true)?;
+contact.phones_mut().push(number)?;
 ```
 
 **A struct owns no allocation of its own.**
@@ -85,26 +77,32 @@ That includes primitive fields.
 
 ## Enums
 
-```rust
-#[derive(Persistable)]
-enum PhoneNumber {
-    Mobile(PersistableString),
-    Landline(PersistableString),
-}
-```
-
 An enum is a discriminant followed by the selected variant's fields, each variant laid out like a struct in its own right.
 Its inline size is the discriminant width plus the largest variant's field sum — so, like a struct, it owns no allocation.
-
 Positional fields are named by their position: `Mobile(PersistableString)` has a field called `"0"`.
 
 **Only whole-value replacement is supported so far:**
 
 ```rust
-guard.set(PhoneNumber::Mobile(PersistableString::from("555-0100")));
+guard.set(PhoneNumber::Mobile(PersistableString::from("555-0100")))?;
 ```
 
+It stores the new value, then frees whatever the old one owned.
 Mutating a field *within* the current variant in place, and matching directly on a generated guard, are both intended and not yet built.
+
+## Generics
+
+Type parameters work, and each gets a `Persistable` bound:
+
+```rust
+#[derive(Persistable)]
+struct Labelled<T> {
+    label: PersistableString,
+    value: T,
+}
+```
+
+Lifetime and const parameters are not supported.
 
 ## What the derive needs
 
@@ -121,28 +119,19 @@ In practice that means:
 ## Non-persisted fields
 
 Sometimes a struct has a field that should not be stored — a cache, a handle, something derived.
+The derive macro has no attribute for this yet; the workaround is a [hand-written implementation](custom-persistable.md) that reads and writes only the fields you want persisted.
 
-The derive macro has no attribute for this yet.
-The workaround is a [hand-written implementation](custom-persistable.md) that reads and writes only the fields you want persisted.
-
-Worth knowing: doing so does **not** make your type opaque to the format.
+Doing so does **not** make your type opaque to the format.
 A hand-written implementation that writes exactly the bytes of a struct with two fields *has* that struct's [descriptor](../../spec/schema/type-descriptors.md).
 The presence of a third, non-persisted field in your Rust source is invisible.
-The descriptor describes a representation, not a Rust type.
-
-## Generics
-
-Generic types and types with where-clauses are **not yet supported** by the derive macro.
-The pattern is understood for plain types; extending it is outstanding work.
 
 ## Layout stability
 
 Two things you should know before you ship a file format built on a derived type.
 
 **Field order is layout.**
-Reordering fields in the source changes every subsequent field's offset, and therefore changes the type's [fingerprint](../../spec/schema/fingerprints.md).
+Reordering fields in the source changes every subsequent field's offset, and therefore changes the type's [fingerprint](../../spec/schema/fingerprints.md), and `Kladde::open` refuses a file whose fingerprint differs from your type's.
 Once [evolution](../../spec/schema/evolution.md) lands, reordering will be non-breaking, because fields are identified by name.
-Until then, it breaks the file.
 
 **Variant order is not layout.**
 Enum variants are canonicalized by discriminant value, so reordering them in the source — without changing their discriminants — changes nothing.

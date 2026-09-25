@@ -10,7 +10,7 @@ A backed data structure lives in two places at once.
 Nothing about reading touches the file.
 
 **In the file**, it is a compact binary representation that lags slightly behind, plus a *journal* of changes not yet folded into it.
-A mutation updates the in-memory value immediately and appends to the journal before returning.
+A mutation appends to the journal and then updates the in-memory value, before it returns.
 
 So: reads are as fast as the non-backed equivalent, writes cost one small append, and the bulk representation is brought up to date periodically rather than on every change.
 
@@ -23,11 +23,9 @@ A *Kladde* is a merchant's rough day-book — transactions scribbled down in ord
 after:
   mod chaining;
   mod nesting;
-  mod reading_back;
 -->
 ```rust
-use kladde::Kladde;
-use kladde::Persistable;
+use kladde::{Kladde, Persistable};
 use kladde_types::{PersistableString, PersistableVec};
 
 #[derive(Persistable)]
@@ -36,34 +34,48 @@ struct Journal {
     entries: PersistableVec<PersistableString>,
 }
 
-fn main() {
-    let mut journal = Kladde::new(Journal {
-        owner: PersistableString::from("ada"),
-        entries: PersistableVec::new(),
-    });
+fn main() -> kladde::Result<()> {
+    let path = std::env::temp_dir().join("getting-started.kladde");
+    let mut journal = Kladde::create(
+        &path,
+        Journal {
+            owner: PersistableString::from("ada"),
+            entries: PersistableVec::new(),
+        },
+    )?;
 
     journal
         .guard()
         .entries_mut()
-        .push(PersistableString::from("first entry"));
-
+        .push(PersistableString::from("first entry"))?;
     println!("{} entries", journal.get().entries.len());
+    journal.close()?;
+
+    let journal = Kladde::<Journal>::open(&path)?;
+    assert_eq!(journal.get().entries.len(), 1);
+    Ok(())
 }
 ```
 
-Three things are worth noticing.
+Four things are worth noticing.
 
 **`Kladde<T>` is the root.**
-It pairs your root value with a backend.
-Everything reachable from it is backed; a value you construct outside it is not.
+It pairs your root value with the file that backs it.
+Everything reachable from it is backed; a value you construct outside it is not, until you store it into something that is.
 
 **Reading goes through `get()`**, which hands you `&T` — the plain value.
 From there you use ordinary methods: `len()`, `iter()`, indexing.
-No guard, no backend, no cost beyond the read itself.
+No guard, no file access, no cost beyond the read itself.
 
 **Writing goes through `guard()`**, which hands you a `JournalGuard`.
 Every field of a derived type gets a `_mut()` accessor on its guard, which reborrows the same backend one level deeper.
-So `journal.guard().entries_mut()` is a `PersistableVecGuard`, and `push` on it both mutates the vector and records the change.
+So `journal.guard().entries_mut()` is a `PersistableVecGuard`, and `push` on it both records the change and mutates the vector.
+It returns a `Result`, because recording is I/O.
+
+**`open` reads it all back.**
+`close` folds the journal into the file first, but it does not have to: a file closed by a crash opens just the same, with every mutation that returned `Ok`.
+
+`Kladde::new(value)` does the same as `create` with a file that lives only in memory, which is handy for tests and for trying things out.
 
 ## Why the guard exists
 
@@ -87,15 +99,16 @@ before:
   use crate::Journal;
   use kladde::Kladde;
   use kladde_types::PersistableString;
-  fn nesting(journal: &mut Kladde<Journal>) {
+  fn nesting(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
 after:
+  Ok(())
   }
 -->
 ```rust
 let mut guard = journal.guard();
 let mut entries = guard.entries_mut();
-entries.push(PersistableString::from("second"));
-entries.push(PersistableString::from("third"));
+entries.push(PersistableString::from("second"))?;
+entries.push(PersistableString::from("third"))?;
 ```
 
 Or in one chain, when you only need one mutation:
@@ -104,41 +117,14 @@ Or in one chain, when you only need one mutation:
 before:
   use crate::Journal;
   use kladde::Kladde;
-  fn chaining(journal: &mut Kladde<Journal>) {
+  fn chaining(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
 after:
+  Ok(())
   }
 -->
 ```rust
-journal.guard().owner_mut().set("grace");
+journal.guard().owner_mut().set("grace")?;
 ```
 
 Hold a guard only as long as you need it.
-It borrows the root, so nothing else can touch the structure while it is alive — which is exactly the property that makes it safe for a flush to happen only between complete mutations.
-
-## Reading back
-
-<!-- kladde-example: name=journal file=src/reading_back.rs
-before:
-  use crate::Journal;
-  use kladde::Kladde;
-  fn reading_back(journal: &mut Kladde<Journal>) {
-after:
-  }
--->
-```rust
-let restored = journal.load();
-assert_eq!(restored.entries.len(), 1);
-```
-
-`load()` reconstructs a fresh value from what is actually stored, rather than returning the in-memory one.
-It is mostly useful in tests, where it is the round-trip check: mutate, flush, load, compare.
-
-Once real file storage exists, `Kladde::open` will do the same thing from a path.
-
-## What is not there yet
-
-`Kladde::new` takes a value and keeps it in memory.
-There is no `Kladde::open(path)` — real file storage is not implemented, so a `Kladde` currently lives only as long as the process.
-
-Everything above the storage layer works today; the storage layer is the gap.
-See [Durability](durability.md) for what the intended guarantees are.
+It borrows the root, so nothing else can touch the structure while it is alive.

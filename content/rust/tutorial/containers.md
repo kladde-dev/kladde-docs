@@ -13,10 +13,6 @@ It is a collection of types most applications turn out to want, offered so that 
 Everything in it is built on the same public `Persistable`/`Guard` surface available to any crate.
 There is no internal kladde magic here that a third-party library — or your own application — could not use equally well, and third-party libraries of general-purpose backed types are welcome.
 
-One exception exists today: [generic tooling](../../spec/tooling.md) will initially carry built-in knowledge of the opaque types this crate declares, so that a tool can render a vector or a map without knowing the library that wrote it.
-That is a stopgap rather than a privilege.
-The intended replacement is a mechanism by which *any* opaque type can optionally describe itself to tooling, at which point `kladde-types` becomes ordinary in that respect too.
-
 ## `PersistableVec<T>`
 
 A growable sequence.
@@ -30,23 +26,28 @@ before:
   struct Journal {
       entries: PersistableVec<PersistableString>,
   }
-  fn demo(journal: &mut Kladde<Journal>) {
+  fn demo(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
 after:
+  Ok(())
   }
 -->
 ```rust
 let mut guard = journal.guard();
 let mut v = guard.entries_mut();
-v.push(PersistableString::from("a"));
-v.push(PersistableString::from("b"));
+v.push(PersistableString::from("a"))?;
+v.push(PersistableString::from("b"))?;
+let first = v.remove(0)?;   // yours now, allocations and all
+v.push(first)?;             // so it moves without copying its bytes
+v.delete(0)?;               // removes and frees
 ```
 
-**Layout.** A fixed-size inline header plus a separate allocation holding a dense array of fixed-size element slots — the same shape as `Vec<T>`'s in memory.
-Growing resizes that allocation.
+**Layout.** A pointer inline, plus a separate allocation holding a dense array of fixed-size element slots — the same shape as `Vec<T>`'s in memory.
+The length is that allocation's size divided by the element size, so it is never stored separately.
 
-**Cost.** A push that does not grow is one write.
-A push that grows is a resize plus a write.
-Removal from the middle shifts the tail, exactly as `Vec` does.
+**Cost.** A push is one write, a pop one resize, and a removal from the middle one splice, which shifts the tail exactly as `Vec` does.
+
+**Removal.** `remove` and `pop` hand the element back with everything it owns, so you can store it elsewhere; `delete` and `clear` free it.
+An element you take out and then drop leaks its allocations in the file, the way a value passed to `std::mem::forget` leaks its memory.
 
 ## `PersistableString`
 
@@ -60,13 +61,16 @@ before:
   struct Journal {
       owner: PersistableString,
   }
-  fn demo(journal: &mut Kladde<Journal>) {
+  fn demo(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
   let mut guard = journal.guard();
 after:
+  Ok(())
   }
 -->
 ```rust
-guard.owner_mut().set("ada");
+let mut owner = guard.owner_mut();
+owner.set("ada")?;
+owner.push_str(" lovelace")?;
 ```
 
 It is a thin wrapper around `PersistableVec<u8>`, which is more interesting than it sounds.
@@ -103,25 +107,22 @@ before:
   struct Book {
       contacts: PersistableHashMap<PersistableString, Contact>,
   }
-  fn demo(book: &mut Kladde<Book>, contact: Contact) {
+  fn demo(book: &mut Kladde<Book>, contact: Contact) -> kladde::Result<()> {
   let mut guard = book.guard();
 after:
+  Ok(())
   }
 -->
 ```rust
 let mut contacts = guard.contacts_mut();
-contacts.insert(PersistableString::from("ada"), contact);
+contacts.insert(PersistableString::from("ada"), contact)?;
 ```
 
 **Layout.** An array of fixed-size slots, each a one-byte liveness tag followed by a `(K, V)` pair.
 The on-disk form does *not* support key lookup at all — that is what the in-memory map is for — so it needs no hashing structure on disk.
 
-**Removal is tombstoning**: the tag is cleared in place and nothing else moves.
+**Removal is tombstoning**: the tag is cleared in place and nothing else moves, and a later insertion reuses the slot.
 This is what lets each key be stored exactly once in memory, and is why `K: Clone` is not required.
-
-**The trade-off:** the on-disk array's length is a *capacity* — the highest slot ever used — not a live count.
-Sustained insert/remove churn grows it without bound until a compaction pass reclaims tombstoned slots.
-That pass does not exist yet.
 
 **Keys are immutable.**
 No guard is ever handed out for a key; `Persistable` on `K` governs only how its bytes are read and written.
@@ -154,13 +155,7 @@ Use it when a type is not yours to change and cannot get its own `Persistable` i
 **It is deliberately the worst option.**
 A blob is rewritten in full on every change, which forfeits kladde's central advantage; it is opaque to [tooling](../../spec/tooling.md); and it drags in a serialization dependency.
 Prefer a derived type or a hand-written implementation whenever you can.
-
-Gated behind `kladde-types`' `serde` feature — it is the only thing in the workspace that needs `serde` at all.
-
-Two constructors, and the difference matters for leaks:
-
-- `PersistableBlob::new(value, backend)` allocates eagerly, so it always has an allocation to reuse on the next store.
-- `PersistableBlob::default()` stays lazy, holding no allocation, paired with the invariant that its value is `T::default()`.
+It is gated behind `kladde-types`' `serde` feature — the only thing in the workspace that needs `serde` at all.
 
 ## What is missing
 

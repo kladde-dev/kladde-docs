@@ -67,7 +67,7 @@ What remains is the wording of the guarantees row: the resolution is presumably 
 
 ### 7. Conversion is gone, and the flush still reasons about it
 
-Sizedness conversion was removed along with sizedness, taking the `Convert` record with it ([Pointers](../rust/pointers.md#what-sizedness-was-and-why-it-is-gone)).
+Sizedness conversion was removed along with sizedness, taking the `Convert` record with it ([the superseded heap](../superseded/relocatable-heap.md#sizedness)).
 
 [The flush](../impl/flush.md#frees-first-is-a-preference-not-an-edge) still uses it as the motivating example in three load-bearing places: the three-cycle that forces frees-first to be a priority rather than an edge, the [content-blind fast path](../impl/flush.md#the-content-blind-fast-path)'s flag condition, and the [implementation order](../impl/flush.md#implementation-order)'s step 5.
 

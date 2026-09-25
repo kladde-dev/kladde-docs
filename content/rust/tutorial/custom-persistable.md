@@ -27,19 +27,20 @@ pub trait Persistable<P: PointerRepr = Pointer>: Sized {
     const INLINE_SIZE: usize;
 
     fn store<B: WriteBackend<Pointer = P>>(
-        &mut self,
-        backend: &B,
-        location: Location<P, B::Size>,
-    );
+        &mut self, backend: &B, location: Location<P, B::Size>,
+    ) -> Result<(), Error>;
 
     fn load<B: ReadBackend<Pointer = P>>(
-        backend: &mut B,
-        location: Location<P, B::Size>,
-    ) -> Self;
+        backend: &mut B, location: Location<P, B::Size>,
+    ) -> Result<Self, Error>;
+
+    fn free<B: WriteBackend<Pointer = P>>(&mut self, backend: &B) -> Result<(), Error> {
+        Ok(())
+    }
 }
 ```
 
-Plus a `Guard` type and a `guard()` method for the mutation side.
+Plus a `Guard` type and a `guard()` method for the mutation side, and `describe_local` for the schema.
 
 **`INLINE_SIZE`** is how many bytes your value occupies *inline*, in whatever allocation contains it.
 For a scalar, its own width.
@@ -50,13 +51,12 @@ This must be a constant, because it is what makes sibling fields' offsets static
 It is threaded down the same chain that carries the backend.
 
 **`store` takes `&mut self`**, which surprises people.
-The reason: a value that owns an allocation may not have one yet.
-A `PersistableVec` built by `from_iter` holds real content but no pointer, because nothing gave it a backend.
-`store` is where that allocation happens the first time — and it must record the new pointer in `self`, or the caller's copy stays permanently out of sync and any later guard on it is broken.
+A value that owns an allocation may not have one yet — a `PersistableVec` built by `from_iter` holds real content but no pointer, because nothing gave it a backend — and `store` is where that allocation happens the first time, so it must record the new pointer in `self`.
 
 **`load` takes `&mut B`**, not `&B`.
 Loads are sequential, so a single exclusive borrow reborrowed down the recursion suffices, and it lets the read path hand out a real seekable cursor.
-It also means the borrow checker forbids loading while any guard is alive, which is a free correctness property.
+
+**`free`** releases whatever your value owns; the default, for a type that owns nothing, does nothing.
 
 ## What to import
 
@@ -77,27 +77,28 @@ This is everything the trait requires: the inline size, a guard, the two halves 
 <!-- kladde-example: name=rgb file=src/lib.rs deps=kladde -->
 ```rust
 use kladde::{
-    Field, Guard, Location, Persistable, PointerRepr, ReadBackend,
-    SchemaBuilder, TypeDescriptor, WriteBackend,
+    Error, Field, Guard, Location, Persistable, PointerRepr, ReadBackend, SchemaBuilder,
+    TypeDescriptor, WriteBackend,
 };
 use std::io::Read;
 
-struct Rgb {
+pub struct Rgb {
     r: u8,
     g: u8,
     b: u8,
 }
 
-struct RgbGuard<'s, B: WriteBackend> {
+pub struct RgbGuard<'s, B: WriteBackend> {
     inner: &'s mut Rgb,
     backend: &'s B,
     location: Location<B::Pointer, B::Size>,
 }
 
 impl<'s, B: WriteBackend> RgbGuard<'s, B> {
-    fn set(&mut self, mut value: Rgb) {
-        <Rgb as Persistable<B::Pointer>>::store(&mut value, self.backend, self.location);
+    pub fn set(&mut self, mut value: Rgb) -> Result<(), Error> {
+        <Rgb as Persistable<B::Pointer>>::store(&mut value, self.backend, self.location)?;
         *self.inner = value;
+        Ok(())
     }
 }
 
@@ -131,17 +132,21 @@ impl<P: PointerRepr> Persistable<P> for Rgb {
         RgbGuard { inner: self, backend, location }
     }
 
-    fn store<B: WriteBackend<Pointer = P>>(&mut self, backend: &B, location: Location<P, B::Size>) {
-        backend.write(location.anchor, location.offset, &[self.r, self.g, self.b]);
+    fn store<B: WriteBackend<Pointer = P>>(
+        &mut self,
+        backend: &B,
+        location: Location<P, B::Size>,
+    ) -> Result<(), Error> {
+        backend.write(location.anchor, location.offset, &[self.r, self.g, self.b])
     }
 
-    fn load<B: ReadBackend<Pointer = P>>(backend: &mut B, location: Location<P, B::Size>) -> Self {
+    fn load<B: ReadBackend<Pointer = P>>(
+        backend: &mut B,
+        location: Location<P, B::Size>,
+    ) -> Result<Self, Error> {
         let mut buf = [0u8; 3];
-        backend
-            .read_at(location.anchor, location.offset)
-            .read_exact(&mut buf)
-            .expect("read rgb");
-        Rgb { r: buf[0], g: buf[1], b: buf[2] }
+        backend.read_at(location.anchor, location.offset)?.read_exact(&mut buf)?;
+        Ok(Rgb { r: buf[0], g: buf[1], b: buf[2] })
     }
 
     fn describe_local(builder: &mut SchemaBuilder) -> TypeDescriptor {
@@ -165,28 +170,26 @@ Four things worth noting.
 Every offset computed by a containing struct depends on that number being right.
 
 **The guard is a separate type**, generated for you by the derive macro but written out here.
-It holds the value, the backend and the location, and its mutating methods do both halves: write the bytes, then update the in-memory value.
+It holds the value, the backend and the location, and its mutating methods do both halves in order: record the bytes, then update the in-memory value, so that a failed append leaves the value as it was.
 
 **`describe_local` declares what the bytes are, not what the Rust type is.**
 `Rgb` writes three consecutive `u8`s, so it declares a `Struct` of three `u8` fields — even though the implementation is hand-written.
 Declare `Opaque` only when the representation genuinely is not decomposable; see [Your descriptor](#your-descriptor).
 
 The impl is generic over `P: PointerRepr`, so `Rgb` works at any pointer width.
-A type that *holds* a pointer cannot do that and is written for one `P`.
+A type that *holds* a pointer is written for one `P`.
 
 ## Owning an allocation
 
-If your type owns content, it holds a pointer and its inline representation is a fixed header.
+If your type owns content, it holds an `Option<UniquePointer>` — `None` until first stored — and its inline representation is that pointer.
 The pattern:
 
-- keep an `Option<UniquePointerResizable>` in the type — `None` until first stored;
-- in `store`, allocate if `None`, resize if the content grew, write the content, then write the header;
-- **order those writes** so the header — which is what makes the content reachable — is written *last*.
+- in `store`, allocate if `None` — `backend.alloc(size)` — and write the content;
+- write the pointer itself *last*, since it is what makes the content reachable;
+- in `free`, free what the content owns, then the allocation itself.
 
-That last point is not stylistic.
-It is the [prefix-replay discipline](../../spec/journal.md#ordering): a crash between the content write and the header write must leave a valid, if stale, state.
-Publishing the header first would leave a pointer to uninitialised space.
-
+That ordering is not stylistic.
+It is the [ordering discipline](../../spec/journal.md#ordering): a crash between the content write and the pointer write must leave a valid, if stale, state, and publishing the pointer first would leave it pointing at content that was never written.
 The rule generalizes to *prepare new state → one publishing write → clean up what it replaced*.
 
 ## Your descriptor
@@ -195,21 +198,9 @@ A hand-written implementation must also declare its [type descriptor](../../spec
 
 > Declare the descriptor that matches **the bytes you actually read and write**, not the shape of your Rust type.
 
-`Rgb` above writes three consecutive `u8`s, so its descriptor is a Struct with three `u8` fields — even though the implementation is hand-written.
 A struct with a non-persisted cache field declares the struct *without* that field.
-
 Declare `Opaque` only when your representation genuinely is not decomposable into fields and variants — a length-prefixed blob, an externally serialized payload.
 "Hand-written" and "opaque" are different axes, and conflating them makes your type needlessly invisible to [tooling](../../spec/tooling.md).
-
-## Freeing
-
-If your type owns an allocation, it must release it when it is dropped or overwritten.
-
-This mechanism — a type-driven recursive free hook — is **designed but not implemented**.
-Until it lands, replacing or dropping an owning value orphans its allocation.
-That is harmless against the current in-memory backend and will not be once there is a real file.
-
-See [Freeing](../freeing.md).
 
 ## The obligations you are taking on
 
@@ -219,7 +210,7 @@ You are promising:
 - `INLINE_SIZE` matches what `store` writes and `load` reads;
 - `store` and `load` are exact inverses;
 - writes within one mutation are ordered so every prefix is valid;
-- every allocation you take is eventually released;
+- `free` releases exactly what the value owns;
 - your declared descriptor matches your actual bytes.
 
 None of these are enforced by the compiler.

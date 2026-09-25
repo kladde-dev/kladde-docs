@@ -34,7 +34,7 @@ Another kladde implementation can read it; nothing else can.
 
 **Type coverage.**
 Serde works on essentially any Rust type, including `String`, `Vec<T>`, `HashMap`, tuples, and third-party types with derives.
-Kladde needs its own container types and does not yet support generics in its derive.
+Kladde needs its own container types.
 
 **Maturity.**
 Serde is one of the most-used crates in the ecosystem.
