@@ -65,6 +65,7 @@ ORDER = [
     "evaluation/index.md",
     "evaluation/consolidation.md",
     "evaluation/ripeness.md",
+    "evaluation/ripeness2.md",
     # Kept for the reasoning, not the result.
     "superseded/index.md",
     "superseded/relocatable-heap.md",
