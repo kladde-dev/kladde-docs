@@ -64,6 +64,7 @@ ORDER = [
     # Measurements of the Rust implementation, on the design's behalf.
     "evaluation/index.md",
     "evaluation/consolidation.md",
+    "evaluation/ripeness.md",
     # Kept for the reasoning, not the result.
     "superseded/index.md",
     "superseded/relocatable-heap.md",
