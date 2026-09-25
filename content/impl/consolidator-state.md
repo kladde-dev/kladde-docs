@@ -111,5 +111,5 @@ Otherwise the records it could not vouch for would become current by default, th
 ## What the ripeness draft would add
 
 The [ripeness draft](../drafts/ripeness.md) estimates how fast each page still drains from that page's own losses, which a session would otherwise have to observe afresh.
-It would add, for each page below `1 − θ`, `(page, epoch, coverage, rho, at)`, appended as the fold drains pages, and the price `κ` its controller had reached.
+It would add, for each page below `1 − θ`, `(page, epoch, coverage, loss, at, fast, lost)`, appended as the fold drains pages, and the price `κ` its controller had reached.
 A page's entry is current if the page's epoch still matches, and the coverage the page has lost since the entry was written is a loss that happened in the gap.

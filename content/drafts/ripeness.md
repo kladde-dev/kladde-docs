@@ -4,11 +4,12 @@ title: Cleaning by ripeness
 
 **Status: a proposal, not adopted.**
 It would replace data-page scoring, the churn floor, and part of free filling in [Consolidation](../impl/consolidation.md).
+[Cleaning by ripeness](../evaluation/ripeness.md) evaluates an earlier version, which estimated one rate per page.
 
 **Clean a page once waiting no longer pays, not once it has become sparse.**
 A page whose content is still dying should wait, since every byte that dies before the page is cleaned is a byte the cleaning need not copy.
 A page whose content has stopped dying gains nothing by waiting, however full it is, and its garbage stays until something moves it.
-This draft turns that into three things: a threshold per page, derived from a price for space; an estimate of how fast each page still drains, chosen so that pages can be ranked by the threshold without rescanning them as time passes; and a placement rule that makes fewer frozen pages in the first place.
+This draft turns that into three things: a threshold per page, derived from a price for space; an estimate of how much of each page still drains and how fast, chosen so that pages can be ranked by the threshold without rescanning them as time passes; and a placement rule that makes fewer frozen pages in the first place.
 
 ## The problem
 
@@ -102,34 +103,101 @@ The draft takes $u_0 = 1 - \theta$, the fill that packing promises for every pag
 Pages come out between $1 - \theta$ and full, so their expected fill is nearer $1 - \theta/2$; taking that instead would clean a little earlier, but would also make pages ripe whose survivors might fill a page of their own.
 The cap also keeps full pages, among them nearly every page a flush has just written, out of the ranking altogether.
 
+### A page holds a draining share and a static one
+
+**Model a page's live content as a share $a$ that drains at rate $r$ and a share $s$ that does not drain at all, and clean it once $h(z) \geq r / \kappa$, with $z = a/(1 - s)$.**
+Fills are relative to $u_0$, as above, so the page's fill is $x = a + s$.
+$z$ is the fill of the draining share on the page with the static share taken out: the static share is copied once whenever the page is cleaned, and nothing about that changes by waiting, so it has no say in when.
+With $s = 0$, this is the rule for content that dies at one rate.
+With $a = 0$, the page would be ripe at any fill below $u_0$, which the floor $R_\text{min}$, [below](#estimating-how-fast-a-page-still-drains), limits.
+
+**It is the mixture that the problem describes, as far as a page's losses can tell it.**
+A page of hot and cold content is a draining share over a static one once its cold content has stopped dying, and until then the cold content is part of the draining share or the static one, whichever describes the page's losses better.
+A page that starts with two shares that both drain, one fast and one slowly, becomes a draining share over a static one as the fast share dies: the slow share is then the draining one, and whatever has stopped dying the static one.
+[The fit](#estimating-how-fast-a-page-still-drains) follows that change, with some lag.
+
+**The rule follows from the same balance as before.**
+Waiting one more epoch costs $\kappa \, (1 - x)$ and saves what the bytes that die meanwhile would have cost: $r \, a$ of them, each of which would have been copied now and cost $V$ afterwards.
+At its own threshold $x^*$, content of rate $r$ balances the two, $\kappa \, (1 - x^*) = r \, x^* \, (1 + u_0 V)$, so $1 + u_0 V = (\kappa / r) \, g(x^*)$ with $g(x) = (1 - x)/x$, and waiting saves $\kappa \, a \, g(x^*)$.
+The page is ripe once that no longer covers the cost:
+
+$$
+1 - x \geq a \, g(x^*)
+\iff \frac{a}{a + 1 - x} \leq x^*
+\iff h\Bigl(\frac{a}{1 - s}\Bigr) \geq \frac{r}{\kappa},
+$$
+
+since $g$ and $h$ both fall on $(0, 1)$ and $a + 1 - x = 1 - s$.
+Once ripe, a page stays ripe, since $a$ and $x$ only fall as it drains; for a stopping problem of that kind, stopping at the first epoch at which one more epoch of waiting does not pay is optimal.
+
+**A second draining share would need more than a page's losses determine, and a numerical solve for every index; the static share needs neither.**
+With shares $a$ and $b$ draining at $r_1$ and $r_2$, the same argument makes a page ripe once $1 - x \geq a \, g\bigl(x^*(r_1/\kappa)\bigr) + b \, g\bigl(x^*(r_2/\kappa)\bigr)$, which has no closed form in $\kappa$, so every change to a page's estimate would need a root-finding to key it.
+The page's history determines a draining share and its rate exactly, with nothing to spare, as [the fit](#estimating-how-fast-a-page-still-drains) shows, while two draining shares need one more statistic and a nonlinear fit in three unknowns, and separating two decay rates from one noisy decay curve is notoriously ill-conditioned.
+The static share is the limit $r_2 \to 0$: $x^*(0) = 1$ and $g(1) = 0$, so the second term vanishes, and with it both problems.
+
 ### Estimating how fast a page still drains
 
-**Each page's rate is estimated from its own recent losses, with older losses forgotten at a rate $\beta$.**
+**Each page keeps a running average of its losses, and refits its split from how far those losses have slowed since the page was written.**
+The average forgets older losses at a rate $\beta$.
+The split then follows from the average, the bytes the page has lost since it was written, and its age, with no further state.
+
+**The page's history determines the draining share and its rate exactly.**
+Under the model, a page written $t$ epochs ago with a draining share $a_0$ has since lost $D = a_0 \, (1 - e^{-r t})$ and now loses $\ell = r \, a_0 \, e^{-r t}$ per epoch.
+Dividing one by the other leaves a single unknown:
+
+$$
+\frac{\ell \, t}{D} = \psi(r t),
+\qquad \psi(w) = \frac{w}{e^w - 1},
+$$
+
+where the left side is the page's current loss rate over its average since it was written, and $\psi$ falls from 1 at $w = 0$ toward 0.
+
+- **If the losses have slowed**, $\ell t / D < 1$, the fit solves $\psi(r t) = \ell t / D$ for $r$, and the draining share is what the current losses imply at that rate: $a = \ell / r$, and $s = x - a$.
+  The more the losses have slowed, the faster the draining share must be dying, and the less of the page it can be.
+- **If they have not**, $\ell t / D \geq 1$, nothing on the page is known to be static: $s = 0$, $a = x$, and $r = \ell / x$, the estimate for content that dies at one rate.
+
+$\psi$ has no closed-form inverse, but it is smooth and monotonic, so a small table or a few Newton steps invert it, once per loss.
+
+**Between losses, the split stays and the rate decays, which is what keeps the ranking cheap.**
 `Drain::lose` only needs to be called in epochs where the page loses a nonzero amount of bytes.
 Epochs that don't call `lose` are effectively treated as contributing zeros to the running discounted average, with the corresponding update of the running average performed lazily at the next call of `lose` and when the rate is inspected with `rate`.
+The draining share's rate is the average over the share, so it decays with the average, by $e^{-\beta}$ per epoch, on every page alike.
 
 ```rust
-/// Per page, beside kind, epoch and coverage: 8 bytes.
+/// Per page, beside kind, epoch and coverage: 12 bytes.
 struct Drain {
-    rho: f32,   // the rate estimate at epoch `at`: a fraction of live bytes per epoch
-    at:  u32,   // the epoch of the page's last natural loss, from the session's base
+    loss: f32,   // natural losses per epoch, in bytes, at epoch `at`: a discounted average
+    at:   u32,   // the epoch of the page's last natural loss, from the session's base
+    fast: u16,   // the live bytes of the draining share; the rest of the coverage is static
+    lost: u16,   // the bytes the page has lost naturally since it was written
 }
 
 impl Drain {
-    /// A flush's fold superseded `lost` of the page's `live` bytes.
-    fn lose(&mut self, lost: u32, live: u32, now: u32) {
-        self.rho = self.rho * (-BETA * (now - self.at) as f32).exp()
-                 + (1.0 - (-BETA).exp()) * lost as f32 / live as f32;
+    /// A flush's fold superseded `bytes` of the page's live bytes, `live` of which are left.
+    fn lose(&mut self, bytes: u32, live: u32, age: u32, now: u32) {
+        self.loss = self.loss * (-BETA * (now - self.at) as f32).exp()
+                  + (1.0 - (-BETA).exp()) * bytes as f32;
         self.at = now;
+        self.lost += bytes as u16;
+        // How far have the losses slowed, against their average since the page was written?
+        let slowed = self.loss * age as f32 / self.lost as f32;
+        self.fast = if slowed < 1.0 {
+            let rate = psi_inverse(slowed) / age as f32;
+            (self.loss / rate).min(live as f32) as u16
+        } else {
+            live as u16
+        };
     }
 
+    /// The draining share's rate, a fraction of it per epoch.
     fn rate(&self, now: u32) -> f32 {
-        (self.rho * (-BETA * (now - self.at) as f32).exp()).max(R_MIN)
+        self.loss * (-BETA * (now - self.at) as f32).exp() / self.fast as f32
     }
 }
 ```
 
-A page that loses a fraction $f$ of its live bytes every epoch settles at a `rate()` of $f$.
+A page whose losses hold steady keeps $\ell t / D$ near 1, and is estimated as one draining population, at the rate of its losses.
+A page with no draining share left, `fast == 0`, has no rate, and is ranked by the floor alone.
 
 **The average needs no bias correction, because it never starts from zero.**
 Adam divides its averages by $1 - e^{-\beta (t - t_0)}$ because they start at 0, which would bias them toward 0 until the observations had built up.
@@ -141,21 +209,38 @@ Below, $\hat r$ stands for a page's `rate()`, and $R_\text{min}$ for `R_MIN`.
 
 **Only natural losses count**: bytes that the application's writes, frees, and shrinks supersede, which reach a page through the fold.
 Bytes that consolidation moves out of a page say nothing about how fast the rest will die, so evacuation, the page rewrite, the rotating window, and [the cursor](#the-flushs-own-pages-take-survivors-from-the-previous-flush) leave the estimate alone.
+Where they move out part of a page, which share they came from is unknown, so they shrink `loss`, `fast`, and `lost` in proportion, which leaves the fit where it was.
 
-**The estimate follows a mixed page as its content changes.**
-A page holding a share $a$ of content that dies at $r_A$ and a share $b = 1 - a$ that dies at $r_B < r_A$ has fill $u(t) = a \, e^{-r_A t} + b \, e^{-r_B t}$.
-Its rate, $-u'/u$, starts at $a \, r_A + b \, r_B$ and falls to $r_B$ as the fast share dies, and the estimate does the same: high while the losses come, and decaying once they stop.
+**The fit follows a page whose content changes character, if with a lag.**
+Take a page that starts with a share of 0.3 dying at 0.5 per epoch, a share of 0.3 dying at 0.02, and a share of 0.4 that does not die at all, with $u_0 = 1$.
+After 50 epochs, the first share is gone and 0.11 of the second is left, so the page is truly a draining share of 0.11 at 0.02 over a static share of 0.4, with an index of 137.
+Given its loss rate exactly, the fit finds a draining share of 0.044 at 0.05 over a static share of 0.47, with an index of 173.
+The first share's losses still count in $D$, so the losses seem to have slowed more than the second share's have: the fit takes the rate for higher and the draining share for smaller than they are, and the page for somewhat riper.
+At $\kappa = 0.01$, both indexes lie above $1/\kappa = 100$, and the page is ripe either way.
 
-**The floor $R_\text{min}$ is the assumption that no content lasts forever**: without it, an estimate that had decayed to nothing would make a frozen page ripe at any fill up to the cap.
-With it, a frozen page is ripe up to the relative fill $x_\text{cold}$ for which $h(x_\text{cold}) = R_\text{min} / \kappa$ — at $R_\text{min} = 10^{-4}$ and $\kappa = 0.01$, that is 0.87.
+**The floor $R_\text{min}$ is the assumption that no content lasts forever: no page is riper than it would be if all of its live content drained at $R_\text{min}$.**
+Without it, a page whose draining share had died, or whose estimate had decayed to nothing, would be ripe at any fill below $u_0$.
+With it, the index of a page is
+
+$$
+I = \min\Bigl(\frac{h(z)}{\hat r}, \; \frac{h(x)}{R_\text{min}}\Bigr),
+$$
+
+and a frozen page is ripe up to the relative fill $x_\text{cold}$ for which $h(x_\text{cold}) = R_\text{min} / \kappa$ — at $R_\text{min} = 10^{-4}$ and $\kappa = 0.01$, that is 0.87.
+For a page without a static share, the minimum is a floor on the rate, $\max(\hat r, R_\text{min})$.
+For one with a static share, it is exact at both ends, and in between it takes the page for riper than a static share that drains at $R_\text{min}$ would make it, since that share's slow drain would add to what waiting saves.
 
 **A new page starts from what it holds.**
-Its `rho` is the byte-weighted mean of its content's rates: moved content at its source page's rate, and fresh content at a running estimate of what pages lose in the epoch after they are written.
+Fresh content joins its draining share, at a running estimate of what pages lose in the epoch after they are written.
+Moved content brings its source page's split: what was static there is static here, and the rest joins the draining share at the source's rate.
+`loss` starts as the sum, over the parts of the draining share, of each part's rate times its size, and the page keeps its starting split until its first loss.
 
 **Open restores each page's estimate from the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add), and seeds a page the state cannot vouch for from its fill and its age.**
-The seed assumes that the page has drained at one rate since it was written, from the fill its framing records, `content_size`, to its current coverage: $\texttt{rho} = \ln(\texttt{content\_size} / \mathrm{coverage}) / \mathrm{age}$, with `at` set to the current epoch.
+The seed assumes that the page has drained at one rate since it was written, from the fill its framing records, `content_size`, to its current coverage, at $\hat r = \ln(\texttt{content\_size} / \mathrm{coverage}) / \mathrm{age}$.
+So all of its content is draining, `fast` is the coverage, `loss` is $\hat r$ times it, `lost` is $\texttt{content\_size} - \mathrm{coverage}$, and `at` is the current epoch.
 The age counts from the epoch the session's first flush will have, so that no page is younger than one epoch.
-That averages over the page's whole life, so a page that drained early and then froze looks at first like one still draining slowly; a few multiples of $1/\beta$ epochs of the session's own observations correct it.
+The file records nothing that could reveal a static share, so the seed has none, and averages over the page's whole life: a page that drained early and then froze looks at first like one still draining slowly.
+The session's own observations correct it: the loss average decays, and the first losses refit the split.
 
 **The seed counts the bytes consolidation moved out as losses, which errs on the safe side.**
 The file records neither how a page lost its bytes nor when, so this cannot be avoided without the state.
@@ -165,8 +250,8 @@ Evacuation, the page rewrite, and the rotating window move whole pages, which ar
 
 ### Ranking pages by ripeness
 
-**Rank every page below $u_0$ by its ripeness index $I = h(x) / \hat r$, which is the $1/\kappa$ at which the page becomes ripe.**
-Because every estimate decays by the same factor $e^{-\beta}$ per epoch, every index grows by the same factor, so the order changes only when a page's own content does, and an ordered map keeps it.
+**Rank every page below $u_0$ by its ripeness index $I = \min\bigl(h(z)/\hat r, \, h(x)/R_\text{min}\bigr)$, which is the $1/\kappa$ at which the page becomes ripe.**
+Because every rate estimate decays by the same factor $e^{-\beta}$ per epoch while the splits stay put, every index below its floor grows by the same factor, so the order changes only when a page's own content does, and an ordered map keeps it.
 
 **Two ways would rank by a time-dependent score exactly, and the second is chosen.**
 The current design samples only because its bucket queues order pages by fill, and the age term changes every page's score every epoch.
@@ -175,11 +260,11 @@ The current design samples only because its bucket queues order pages by fill, a
   Maintaining the maximum of a changing set of lines is what a kinetic tournament does: $O(\log P)$ per change of a page's fill, plus a repair every time one page overtakes the one it was compared with.
   That second cost would be paid per epoch, whether or not any page changed.
 - A score whose dependence on time is common to all pages keeps its order until a page changes.
-  The ripeness index has that property as long as a page's estimate stays above the floor:
+  The ripeness index has that property as long as a page's index stays below its floor:
 
 $$
 \ln I(\texttt{now}) = K + \beta \cdot \texttt{now},
-\qquad \text{with} \quad K = \ln h(x) - \ln \texttt{rho} - \beta \cdot \texttt{at}
+\qquad \text{with} \quad K = \ln h(z) - \ln \frac{\texttt{loss}}{\texttt{fast}} - \beta \cdot \texttt{at}
 $$
 
 $K$ changes only when the page loses content, is written, or has content moved out of it, and then once per flush however many of its fragments changed.
@@ -196,10 +281,10 @@ struct Ripeness {
 impl Ripeness {
     /// The page with the highest index, if it is ripe at price `e^(−neg_ln_kappa)`.
     fn next_ripe(&mut self, now: u32, neg_ln_kappa: f32) -> Option<PageNumber> {
-        // A draining page whose estimate has reached the floor is overstated by its key,
+        // A draining page whose index has passed its floor is overstated by its key,
         // so it can surface here but never hide further down: it is settled lazily.
         while let Some(&(k, p)) = self.draining.last() {
-            if drain[p].rate(now) > R_MIN { break; }
+            if k + BETA * now <= key_settled(p) { break; }
             self.draining.remove(&(k, p));
             self.settled.insert((key_settled(p), p));
         }
@@ -217,13 +302,13 @@ This gives up the bucket queues' $O(1)$ for $O(\log P)$ per changed page and per
 Each page's entry in the page table would hold its position in its heap, 4 bytes, so that a changed key can be sifted up or down from where it is; every swap updates the two pages' positions, which is why a stock heap will not do.
 The trees need no position, but hold the key and page number again in every node.
 Both are $O(\log P)$ per changed key, and the heap is $O(1)$ for the maximum, which `next_ripe` reads on every call.
-If that ever shows in a profile, note that the current value of $\ln I$ lies in a window of bounded width — $u$ is at least one byte in a page, and $\hat r$ is at least $R_\text{min}$ and at most 1 — so a circular array of buckets over quantised keys, turned like a timer wheel as $\beta \cdot \texttt{now}$ advances, would do the same in $O(1)$.
+If that ever shows in a profile, note that the current value of $\ln I$ lies in a window of bounded width — $z$ and $x$ are at least one byte in a page, and a rate that matters is at least $R_\text{min}$ and at most the whole draining share per epoch — so a circular array of buckets over quantised keys, turned like a timer wheel as $\beta \cdot \texttt{now}$ advances, would do the same in $O(1)$.
 
 **Both page kinds are ranked alike.**
 A table page drains as the fold supersedes its statements, and a page of space and a page write cost the same whichever kind they are, so indexes compare across kinds and the budget loop takes the highest of either.
 
 **At open, the index resembles LFS's score for nearly full pages, and exceeds it by far for nearly empty ones.**
-Take a page written at $u_0$ and seeded with $\hat r = \ln(1/x) / \mathrm{age}$.
+Take a page written at $u_0$ and seeded with $\hat r = \ln(1/x) / \mathrm{age}$ and no static share, so that $z = x$.
 Its index is $I = h(x) \cdot \mathrm{age} / \ln(1/x)$, proportional to its age, as LFS's score $(1 - x) \cdot \mathrm{age} / (1 + x)$ is; the two differ in how the factor depends on the fill.
 
 - Nearly full, $x \to 1$: $h(x) \approx (1 - x)^2/2$ and $\ln(1/x) \approx 1 - x$, so $I \approx (1 - x) \cdot \mathrm{age} / 2$, which is LFS's score to first order.
@@ -260,7 +345,7 @@ A counterfactual defined by pairs — wait until two pages fit into one — woul
 **Once its fast share $a$ has died, a mixed page is just a page of fill $b$ whose content drains at $r_B$, so mixing is cheap when $b$ lies below that content's own threshold $u^*(r_B)$, and expensive when it lies above.**
 For the page of the mixture above:
 
-- **$b \leq u^*(r_B)$.** The page is ripe as soon as the estimate has seen its fast losses stop, a few multiples of $1/\beta$ epochs, during which it holds its garbage $a$.
+- **$b \leq u^*(r_B)$.** The page is ripe as soon as the fit has seen its losses slow, which takes the few multiples of $1/\beta$ epochs the loss average needs to fall, during which it holds its garbage $a$.
   Cleaning it then copies the slow share once more.
   When that share was moved in from a victim, whose own cleaning would have copied it anyway, mixing defers a copy rather than adding one, and frees the victim early.
   The smaller $b$, the shorter the wait, since $h(b)$ grows like $1/b$.
@@ -336,17 +421,18 @@ In [compaction mode](../impl/consolidation.md#compaction-mode), the tail page st
 - [The churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) would give way to ripeness, and $\lambda$ to $\kappa$; the controller would move $\kappa$ toward $\tau$, and the budget would remain a cap.
 - [A free sink changes the arithmetic](../impl/consolidation.md#victims-are-pulled-one-at-a-time) — "free filling takes any victim that fits" — would no longer hold: free filling would take small ripe victims and the cursor's survivors.
 - [Free filling's order](../impl/consolidation.md#packing-in-id-order-with-look-ahead) would shrink to those two sources, with the cursor page taking the place of the victim too big to take whole.
-- [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 8 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add) would carry it, with $\kappa$, from one session to the next.
+- [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 12 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add) would carry it, with $\kappa$, from one session to the next.
 - [The constants still to be chosen](../impl/consolidation.md#constants-still-to-be-chosen) would lose $\lambda$ and gain $\kappa$'s controller, $\beta$, $R_\text{min}$, and $W$.
 
 ## Ablation: without the logarithm
 
-**Dropping $-\ln(1/x)$ keeps the per-page threshold, and with it the cleaning of frozen pages, but cleans pages that drain slowly too early, and the extra writes grow the slower they drain.**
-The ablated rule is the myopic one: a page is ripe once $g(x) = (1 - x)/x \geq r/\kappa$, and its index is $g(x)/\hat r$.
+**Dropping $-\ln(1/x)$ would make the split unnecessary, and keep the per-page threshold and with it the cleaning of frozen pages; but it would clean pages that drain slowly too early, with extra writes that grow the slower they drain, and could not tell a page on a static share from one that drains slowly throughout.**
+The ablated rule is the myopic one: a page is ripe once $g(z) = (1 - z)/z \geq r/\kappa$, and its index is $g(z)/\hat r$.
 
-**Little would simplify.**
-The threshold would have a closed form, $x^* = 1/(1 + r/\kappa)$, where $h$ has to be inverted numerically; nothing needs that inverse, though, since the index uses $h$ itself.
-The index, $(1 - x)/(x \, \hat r)$, would be the page's garbage over its loss rate in bytes, so the estimate could track that rate without dividing by the live bytes.
+**The split would drop out, and with it the fit.**
+With $z = a/(1 - s)$ and $\hat r = \ell / a$, the index is $g(z)/\hat r = (1 - x)/\ell$: the page's garbage over its loss rate in bytes, whatever the split.
+So `Drain` would shrink back to the loss average and its epoch, 8 bytes, and neither $\psi$ nor the refit would be needed.
+The threshold would also have a closed form, $x^* = 1/(1 + r/\kappa)$, though nothing needs it.
 The keys would still be logarithms, and the ordered sets, the floor, and the controller would stay as they are.
 
 **It behaves as the full rule does in every limit but one.**
@@ -358,6 +444,11 @@ The keys would still be logarithms, and the ordered sets, the floor, and the con
 - **Content that dies fast**, $r/\kappa \gg 1$: both clean once the page is nearly empty, at 0.07 and 0.09 for $r/\kappa = 10$.
 - **Content that drains slowly**, $r/\kappa \ll 1$, is the exception: near $x = 1$, $h(x) \approx (1 - x)^2/2$ but $g(x) \approx 1 - x$, so the thresholds are about $1 - \sqrt{2 r/\kappa}$ and $1 - r/\kappa$, exactly 0.87 and 0.99 for $r/\kappa = 0.01$.
   The myopic rule ignores that a byte which dies now would otherwise have been copied again and again, so it copies such a page as soon as a percent of it is garbage.
+
+**It could not tell a page on a static share from one that drains slowly throughout.**
+Take two pages at $x = 0.8$ that lose the same bytes per epoch: one a draining share of 0.1 at rate $r$ over a static share of 0.7, the other all draining, at $r/8$.
+Their ablated indexes are equal, $2/r$.
+The full index ranks the first at $h(1/3)/r = 0.90/r$ and the second at $8 \, h(0.8)/r = 0.22/r$, four times lower: waiting pays on the second, whose survivors would go on dying, and hardly at all on the first, whose survivors would not.
 
 **Frozen pages are cleaned either way, since the floor makes every page's threshold its own.**
 With $R_\text{min}$ in place of $r$, the ablated rule makes a frozen page ripe below 0.99 rather than 0.87, at $R_\text{min}/\kappa = 0.01$.
@@ -385,6 +476,10 @@ Running the evaluation with $h$ replaced by $g$ would measure how much of a real
   [`last_written`](../impl/in-memory-state.md#3-the-allocation-map) could split a flush's chunks by whether their allocation was also written recently, at the price of key order; whether that pays is a question for measurement.
 - **Description defragmentation's rewrites** are cold by selection and today share pages with the flush's fresh content.
   Packing them with the survivors of ripe pages instead would keep them apart, at the price of a second page per flush that may close short.
-- **One rate per page** is crude for a page holding several shares.
-  Two rates, fast and slow, would see a frozen page sooner, for 8 bytes more per page.
+- **The fit's memory.**
+  $D$ and $t$ count from the page's write, so a share that died early keeps weighing on the fit, as in the example above, however long ago it died.
+  Discounting them as the loss average is discounted would forget it, but a discounted history can only measure rates below $\beta$, which the fast shares are not.
+- **A static share that turns out not to be.**
+  Losses on a page that had looked static make its current losses exceed their average, and the fit then treats the whole page as one share draining slowly, which is less ripe than before, until the loss average decays again.
+  Whether that delay costs anything on real workloads is a question for measurement.
 - **$\beta$** trades how soon a frozen page is recognised against noise: with a large $\beta$, a page that loses content in rare bursts looks frozen between them.
