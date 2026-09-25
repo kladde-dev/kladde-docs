@@ -157,7 +157,7 @@ Where it writes more, as under uniform overwrites at its default target, they ar
 
 ![Flush times, including the fsync, in the first version's run: each run's median, and its 99th percentile.](figures/ripeness/flush-latency.svg)
 
-**In memory, each page's estimate adds 12 bytes to the page table, and each ranked page takes an entry in one of two ordered sets and one in a map from page to entry.**
+**In memory, each page's estimate takes 16 bytes in the page table, and each ranked page takes an entry in one of two ordered sets and one in a map from page to entry.**
 The ranking takes `O(log P)` per page that changed and per victim, where main's bucket queues take `O(1)`; the flush times do not show it.
 
 ## What to change in the draft
