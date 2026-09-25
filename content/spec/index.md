@@ -100,4 +100,4 @@ The details are in [File format](file-format.md#versioning).
 
 The schema layer is the most settled: it is specified precisely enough to implement, and has a reference implementation.
 The page, durability, and address-table layers are settled in design and worked out in detail, but their byte-level field lists are not final.
-The journal's record set is settled; its framing is not.
+The journal is at the same stage, byte encoding and page layout included.

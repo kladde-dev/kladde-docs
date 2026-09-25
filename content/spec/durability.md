@@ -85,7 +85,7 @@ Flush `E` then proceeds:
 4. **Write further consolidation pages**, within whatever budget the implementation chooses.
 5. **Write address-table pages**: the statements describing everything touched in steps 3–4, plus any [tombstones](address-table.md#statement-types).
 6. **Choose a reusable start page for journal segment `E + 1`.**
-   That page needs no write: journal segment `E + 1`'s CRC chain is salted with epoch `E + 1`, so whatever stale bytes the page holds cannot validate as journal content.
+   That page needs no write, except in a session's first flush: journal segment `E + 1`'s CRC chain is salted with epoch `E + 1`, so stale bytes in the page cannot validate as journal content unless they belong to a segment whose header a crash lost, and only a session's first flush can re-issue that header's epoch ([details](journal.md#the-start-of-a-session)).
 7. **`fsync`**.
 8. **Write the header** into slot `E mod 2`: epoch `E`, the root address-table payload, journal segment `E + 1`'s start page, CRC.
 

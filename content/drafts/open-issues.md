@@ -11,16 +11,12 @@ The prototype in question is one that can **create a file, open it, check the sc
 
 Ordered most to least severe, where severity means *how likely this is to make someone write the wrong code*.
 
-### 1. The journal is two different things
+### 1. ~~The journal is two different things~~ — resolved
 
-[Transactions and batches](../impl/transactions-and-batches.md#flush-triggers) treats the journal as a **fixed-capacity allocation**: it can overflow, it must be "grown" by being freed and re-allocated at a larger size, and an elaborate five-rule trigger policy exists to guarantee that growth only ever happens while it is empty.
+*Was:* [Transactions and batches](../impl/transactions-and-batches.md#flush-triggers) treated the journal as a **fixed-capacity allocation**, grown by being freed and re-allocated while empty, while [Durability](../spec/durability.md#the-flush-protocol) and [File format](../spec/file-format.md#pages) described a **chain of journal pages** drawn from the reusable-page pool.
 
-[Durability](../spec/durability.md#the-flush-protocol) and [File format](../spec/file-format.md#pages) describe it as a **chain of `Journal` pages**, beginning at a page the header names, drawn from the same reusable-page pool as everything else.
-
-These cannot both be true, and under the page model the entire policy answers a question that does not arise: "growing the journal" is taking one more reusable page.
-The capacity question does not disappear — it becomes "how many pages may a journal segment consume before a flush is forced" — but it is a different and much simpler question, and the `committed`/`ready`/`transaction` cursor machinery is answering the old one.
-
-This is first because it is the part a prototype has to build first, and because a reader could reasonably implement either.
+**Resolved** in favour of the chain.
+[Journal](../spec/journal.md#pages) now specifies the page layout, and [Transactions and batches](../impl/transactions-and-batches.md#flush-triggers) treats the segment's page budget as a flush trigger rather than a capacity: a transaction is appended whole, taking as many pages as it needs, and the flush that follows folds it.
 
 ### 2. ~~Journal pages cannot satisfy the page framing~~ — resolved
 
@@ -29,7 +25,7 @@ This is first because it is the part a prototype has to build first, and because
 **Resolved** by scoping the framing to "every page except the pages that make up the current journal" and dropping `Journal` from the `kind` values.
 Journal pages now carry no framing at all, and their integrity rests solely on the chained, epoch-salted transaction CRCs — which is what [How much of the framing is load-bearing](../spec/file-format.md#how-much-of-the-framing-is-load-bearing) already implied and now says.
 
-Kept here, struck through, until the neighbouring items settle, because the shape of a journal page is still open under item 1 below.
+Kept here, struck through, for one more audit; the shape of a journal page is now [specified](../spec/journal.md#pages) as well.
 
 ### 3. The durability promise is stated unqualified where users read it
 
@@ -107,23 +103,17 @@ Difficulty here means *design work plus implementation risk*, not lines of code 
 
 Items marked **deferrable** are not blockers; they are listed so that the line between them and the blockers is explicit.
 
-### 1. The journal's on-file representation — unspecified
+### 1. ~~The journal's on-file representation~~ — resolved
 
-Nothing outside "there is a `Journal` page kind" and "the header names a journal segment's start page" exists.
-A prototype needs all of:
+*Was:* unspecified beyond "the header names a journal segment's start page".
 
-- how the pages of one journal segment are **chained** — a next-page pointer in each page, a contiguous run, or a list the header carries — and how recovery follows the chain without trusting anything unvalidated;
-- where a transaction's bytes sit within a page, and whether a transaction may **span** pages (it must, for a transaction larger than `MAX_PAGE_CONTENT`);
-- the **framing**: prefix width, checksum algorithm, and how the chained epoch-salted CRC is computed and verified;
-- the resolution of [contradiction 1](#1-the-journal-is-two-different-things), which sits squarely here.
-  [Contradiction 2](#2-journal-pages-cannot-satisfy-the-page-framing--resolved) is settled — journal pages carry no framing — which fixes the integrity story but not the layout.
+**Resolved** by [Journal](../spec/journal.md#encoding): a segment is a singly linked chain of pages, each reserving an 8-byte trailer for the next page's number and a checksum; transactions and records may span pages; and every checksum is a value of one CRC-32C chain salted with the segment's epoch.
 
-This is first because it is genuinely undesigned, and because every other part of the write path depends on its answer.
+### 2. ~~The byte encoding of journal records~~ — resolved
 
-### 2. The byte encoding of journal records
+*Was:* the record set had semantics but no bytes.
 
-[Record kinds](../spec/journal.md#record-kinds) gives the record set and their semantics, and nothing about their bytes: no tags, no field widths, no varint discipline.
-Both append and replay need it, and replay is what makes the whole design crash-safe, so this cannot be improvised and fixed later.
+**Resolved** by [Records](../spec/journal.md#records) and [Framing](../spec/journal.md#framing).
 
 ### 3. Bootstrapping — partly described
 
@@ -182,14 +172,13 @@ Each of these blocks the prototype only in the sense that a number must be typed
 
 - **page size** — take 4 KiB and defer the 16 KiB measurement;
 - **the `Inline` threshold** — the [documented starting policy](../impl/flush.md#the-inline-threshold) of ~64 bytes;
-- **how many pages a journal segment may consume** — whatever falls out of item 1;
+- **the journal segment's page budget and the batch size** — see [flush triggers](../impl/transactions-and-batches.md#flush-triggers);
 - **consolidation constants** — see below.
 
 ### Deferrable, and why
 
 - **Data-page consolidation.** The [reverse-index gap](../impl/consolidation.md#finding-the-referrers-of-a-data-page) is unresolved, but a prototype may consolidate address-table pages only, which are self-describing, or nothing at all. Garbage accumulates; nothing breaks.
-- **Checkpoint versus commit.** [Undecided](../spec/journal.md#checkpoint-versus-commit), and the prototype can keep the documented assumption that a fold is a commit, which is what gives atomicity for free.
 - **Schema evolution.** The prototype checks the schema, which means comparing the root fingerprint and failing closed. [Resolution](../spec/schema/evolution.md) is a separate and much larger feature.
-- **The `Move` operation.** [A sketch](move-op.md), and nothing in the prototype's scope needs it.
-- **Non-owning references**, the atomic-group escape hatch, application versioning, and concurrency. All marked TBD and none reachable from the prototype's feature list.
+- **A flush that re-points moved bytes.** The [`Move` record](../spec/journal.md#move) is specified, and a prototype can fold it like a `Copy` followed by zeroing the source range, giving up only the rewrite it would save; [re-pointing the bytes instead](move-op.md) can wait.
+- **Non-owning references**, application versioning, and concurrency. All marked TBD and none reachable from the prototype's feature list.
 - **Unwind behaviour.** [Poisoning on panic](../rust/transactions.md) is aspirational; the interim contract — reopen the file — is adequate for a prototype.

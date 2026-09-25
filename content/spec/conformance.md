@@ -32,9 +32,10 @@ Placement, compaction, and fold timing are all free, so two implementations will
 - **The reuse rule.** Write only to [reusable](durability.md#page-states) pages, or extend the file ([I2](durability.md#the-two-invariants)).
 - **One `fsync` before the header.** Issue a header only after an `fsync` that covered everything it references and the previous header ([I1](durability.md#the-two-invariants)); treat a failed `fsync` as fatal for the session.
 - **Page framing.** Write the `kind`, `content_size`, `epoch` and `crc` on every non-header page, and ignore any page whose CRC does not validate.
-- **Journal framing.** Frame every transaction with a length prefix and a chained, epoch-salted CRC, and recover a torn tail by truncating to the longest valid prefix — without skipping a hole.
+- **Journal encoding.** Encode records, transactions, and journal pages [as specified](journal.md#encoding), and recover a torn tail by keeping the longest valid prefix — without skipping a hole.
+- **The start of a session.** Fold a non-empty recovered journal before appending to it, and write the journal page that a session's first flush names ([the start of a session](journal.md#the-start-of-a-session)).
 - **Transaction atomicity.** Replay every transaction completely or not at all.
-- **Prefix validity.** Order the records of a single mutation so that any prefix replays to a valid state.
+- **Valid transaction boundaries.** Order records so that every transaction takes a valid state to a valid state ([ordering](journal.md#ordering)).
 - **Bounds.** Support the [stated bounds](address-table.md#bounds), and fail cleanly rather than wrap when an application exceeds them.
 - **Descriptor encoding.** Produce byte-identical output to the [canonical encoding](schema/canonical-encoding.md) for the same type graph.
 - **Fingerprints.** Produce bit-identical output to [the fingerprint computation](schema/fingerprints.md), including on recursive types.

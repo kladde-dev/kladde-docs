@@ -18,10 +18,10 @@ If both exist and no order relates them, then any operation that invalidates an 
 - **`alloc → write → free` cannot replay.**
   The allocate and free annihilate in the snapshot, so the id is never claimed, while the buffered write survives in the log and replays against an id that was never created.
 - **A write followed by a shrinking resize corrupts a neighbour**, if replay does not bounds-check: a write buffered while the allocation was large replays at an offset now outside it.
-- **And the case with no annihilation at all:** a value that allocates a child and writes the child's id into its own header emits a `Write` the log keeps and an `Alloc` the log does not.
+- **And the case with no annihilation at all:** a value that allocates a child and writes the child's id into its own header emits a `Write` the log keeps and, for the child, a `Resize` the log does not.
   Recovery replays the log, finds a live pointer in the parent, and that pointer names an allocation nothing ever created.
 
-The last one is the reason [the record set is closed under replayability](../spec/journal.md#record-kinds) rather than merely "closed under what changes state".
+The last one is the reason [the journal records existence and size](../spec/journal.md#record-kinds) as well as content, rather than leaving geometry to a snapshot beside it.
 
 ## Two derived structures
 
@@ -43,7 +43,7 @@ This is a precondition, not an optimization.
 The log and both derived structures are keyed by id, so if an id could be recycled mid-transaction then
 
 ```
-Alloc(id), Write(id, …), Free(id), Alloc(id), Write(id, …)
+Resize(id, 8), Write(id, …), Free(id), Resize(id, 16), Write(id, …)
 ```
 
 would place two allocation lifetimes under one key.
@@ -96,6 +96,6 @@ Query order is therefore **this map first, the committed state second**; never t
 
 ### Repopulation after a flush
 
-Because a flush can occur while a completed transaction is still buffered past the committed cursor, this map no longer describes the same point in the operation sequence as the flush does.
+Because an explicit flush can occur while a transaction is still open, with its operations buffered past the committed cursor, this map no longer describes the same point in the operation sequence as the flush does.
 It must be **repopulated** from the remaining operations after the flush rather than simply cleared.
 See [Transactions and batches](transactions-and-batches.md#consequence-for-write-phase-geometry) for exactly which transitions this affects and why the ordering is worth keeping explicit.

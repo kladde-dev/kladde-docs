@@ -27,7 +27,7 @@ A byte's origin is found by taking the greatest key `≤` the offset and advanci
 
 The distinction that drives everything:
 
-- **Fresh** ids — an `Alloc` appears in the journal — start `{0 → Zero}`.
+- **Fresh** ids — absent when the fold first meets them, or released by a `Free` earlier in the journal — start `{0 → Zero}` at size zero.
   Their content is *fully symbolic*; nothing about them ever needs to be read.
 - **Persistent** ids — live from an earlier flush — start `{0 → Storage(self, 0)}`.
 
@@ -37,13 +37,14 @@ Every table therefore begins with exactly **one** entry, which is what makes the
 
 | record | effect on the table |
 | --- | --- |
-| `Alloc(s)` | fresh table, `Zero` over `[0, s)` |
 | `Write(off, bytes)` | overwrite `[off, off+len)` with `Literal` |
 | `Resize(s′)` | clip to `s′`, or extend with `Zero` |
 | `Splice(off, old_len, new)` | overwrite, then **shift the suffix segments** |
 | `Copy(src, …)` | overwrite the destination range with pieces taken from *src's current table* |
-| `Free` | mark released |
+| `Move(src, …)` | as `Copy`, then overwrite what the destination left of the source range with `Zero` |
+| `Free` | mark released; the next record that brings the id back starts a fresh table |
 
+Every record but `Free` [first brings its id into existence](../spec/journal.md#every-record-but-free-brings-its-allocation-into-existence) and extends the table with `Zero` to the end of the range it writes, so a record on an absent id starts a fresh table.
 Overwrite is the only non-trivial primitive: split at both boundaries, drop the entries strictly inside, insert the new one.
 
 **Coalesce on insert.**
@@ -226,7 +227,7 @@ The journal records:
 ```
 1.  Copy(src = A1, src_off = 0, len = 64, dst = A2, dst_off = 32)
 2.  Free(A1)
-3.  Alloc(A3, 200)          // 200 ≤ 256, so it would fit in A1's space
+3.  Resize(A3, 200)         // A3 is new; 200 ≤ 256, so it would fit in A1's space
 4.  Write(A3, 0, [64 bytes])
 ```
 
@@ -256,7 +257,7 @@ The weakest point is that the hoist condition is conservative on *reshaped*: an 
 ### The content-blind fast path
 
 Set a flag when any record produces a piece `Storage(other_id, …)` with `other_id` not equal to the id itself.
-That is `Copy` and conversion-on-a-persistent-id, and nothing else — in particular **not** plain resize, and **not** splice, whose source and destination are the same id.
+That is `Copy`, `Move`, and conversion-on-a-persistent-id, and nothing else — in particular **not** plain resize, and **not** splice, whose source and destination are the same id.
 
 When the flag is clear at flush — the overwhelming majority of flushes — run *releases → first-fit-decreasing claims → reshapes → writes* with no graph, no hoisting, and no per-piece analysis.
 

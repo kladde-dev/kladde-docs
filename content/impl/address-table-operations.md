@@ -158,9 +158,10 @@ fn open(file) -> std::io::Result<State> {
     // 3. The eviction clock covers only what the header holds, and is rebuilt there.
     state.clock = EvictionClock::from(header.statements());
 
-    // 4. Replay the journal segment the header names, stopping at the
-    //    first transaction whose chained CRC fails.
-    for txn in file.journal(header.first_journal_page).valid_prefix() { replay(txn); }
+    // 4. Replay the journal segment the header names, stopping at the first
+    //    failing check. Its pages are live too, and a non-empty journal is
+    //    folded by a flush before anything is appended to it.
+    for txn in file.journal(header.journal_pointer).valid_prefix() { replay(txn); }
     Ok(state)
 }
 ```

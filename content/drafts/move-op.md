@@ -2,9 +2,9 @@
 title: The Move operation
 ---
 
-**Status: sketch, not specified.**
+**Status: the record is [specified](../spec/journal.md#move); how a flush states it is a sketch.**
 
-`Move(src_id, src_offset, len, dst_id, dst_offset)` relocates a range from one allocation to another, or within one, **without copying the bytes on disk**.
+`Move(src_id, src_offset, len, dst_id, dst_offset)` relocates a range from one allocation to another, or within one, **without copying the bytes on disk**, and leaves the vacated source range reading as zero.
 
 Recorded because it changes what the storage layer must support, and because it is the reason the address table can [decline copy-on-write clones](../spec/address-table.md#design-directions).
 
@@ -12,7 +12,7 @@ Recorded because it changes what the storage layer must support, and because it 
 
 The flush emits a `Ref(dst_id, dst_offset, len, address)` pointing at the bytes where they already lie, and denies the source's claim in the same epoch; the old `Ref(src_id, src_offset, len, address)` is shadowed by that denial, loses its fragments, and dies.
 
-So the on-disk format is untouched, and `Move` is a [journal record](../spec/journal.md#record-kinds) and an API operation rather than a format addition.
+So the address-table format is untouched, and `Move` is a [journal record](../spec/journal.md#record-kinds) and an API operation rather than an address-table addition.
 
 ## It keeps the byte-referenced-once invariant
 
@@ -30,22 +30,19 @@ With it, a split or merge that donates a suffix costs one `Ref` and one `Shrink`
 
 This is what lets the address table decline copy-on-write clones: cloning would then be needed only for genuine simultaneous sharing — snapshots and deduplication — and not for moving data between neighbours.
 
-## Open questions, none of them settled
+## Settled by the record's semantics
 
-- **Which moves to allow.**
-  A tail move is the cheap case, since a suffix donation leaves the source needing only a `Shrink(src_id, src_offset)` and shifts no offsets.
-  A head or interior move is where the cost sits, because closing the gap shifts every later offset in the source.
-  Restricting the record to head and tail moves may be worth it; it has not been decided.
-- **What becomes of the source range.** Three candidates, not interchangeable:
-  - `Zero(src_id, src_offset, len)` — one statement, no shifting, but the source keeps its size and carries a hole until defragmentation pays it down.
-  - `Shrink(src_id, src_offset)` — available for a tail move only, and then the cheapest of the three.
-  - a splice closing the gap — `O(fragments behind the splice point)` restated statements, which [the address table](../spec/address-table.md#design-directions) identifies as this design's weak spot.
+- **Which moves to allow: any.**
+  The record moves any range, and the cost difference between a tail move and a head or interior move is the caller's: closing the gap is a separate `Splice`, and it is that splice, not the move, that shifts every later offset in the source.
+- **What becomes of the source range: it reads as zero, and the source keeps its size.**
+  So the flush states it as `Zero(src_id, src_offset, len)`, or, when a `Resize` shrinking the source to `src_offset` follows, the two fold into one `Shrink(src_id, src_offset)` — the cheapest case, and the one a suffix donation produces.
+- **Overlapping self-moves zero only `source \ destination`.**
+  That is also what the address table needs: the new `Ref` and the denial cannot both name the overlap in one epoch, per [no conflicts within each epoch](../spec/address-table.md#no-conflicts-within-each-epoch).
 
-  Allowing all three and letting the caller's shape pick is the likely answer, but the choice interacts with the previous question and has not been worked through.
-- **Overlapping self-moves.**
-  With `src_id == dst_id` and overlapping ranges, the new `Ref` and the denial cannot both name the overlap in one epoch, per [no conflicts within each epoch](../spec/address-table.md#no-conflicts-within-each-epoch), so the denial must cover `source \ destination` only.
+## Open questions
+
 - **Folding.**
-  A move is a content operation with a geometry side effect on *two* ids, so it touches two ids' state at once.
+  A move changes content in *two* ids at once, and may grow the destination.
   The rules for annihilating a move against a later free, resize, or overwrite of either id are not written.
 - **Cleaner heuristics.**
   [Consolidation](../impl/consolidation.md#victim-selection-for-data-pages)'s cost-benefit victim selection assumes a data page's residents are the content that one flush wrote together.

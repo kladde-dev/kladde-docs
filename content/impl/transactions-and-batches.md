@@ -25,7 +25,7 @@ The same happens in application code, where a transition between two valid state
 **Batches are an optimization, and a necessary one.**
 Kladde's promise to persist every mutation immediately carries a small unavoidable per-transaction overhead.
 That is usually worth it, but it adds up when an action triggers a large or unbounded burst — and for such bursts, per-operation durability buys little anyway.
-It is tempting to wrap the burst in a transaction instead, but **very large transactions perform poorly**, because the journal, and therefore the file, must temporarily grow in proportion to the number and size of the operations.
+It is tempting to wrap the burst in a transaction instead, but **very large transactions perform poorly**, because the whole transaction is held in memory until it ends, and the journal, and therefore the file, must then temporarily grow in proportion to the number and size of the operations.
 A batch is the middle ground: the backend decides how to divide the sequence, respecting any explicit transaction inside it.
 
 ### Recommendations
@@ -112,78 +112,43 @@ An implementation should make that unrepresentable at the API level rather than 
 
 ## Flush triggers
 
-Upward state transitions and the recording of bare operations can trigger a flush.
-All the rules follow one policy:
+> **Append whole transactions, and flush once the journal segment has outgrown its page budget.**
 
-> **Never grow the journal allocation while it is non-empty.**
-> If what is at hand does not fit alongside what the journal already holds, first write out whatever *does* fit, then flush — which empties the journal — and only then deal with the remainder.
+The budget is a trigger, not a capacity.
+The journal is a [chain of pages](../spec/journal.md#pages), so a transaction larger than what is left of the budget — or larger than the whole budget — needs no special case: it is appended whole, spanning as many pages as it needs, and the flush that follows folds it.
 
-The rules:
+The rules, all applied at operation boundaries:
 
-- **`InTransaction` → `Immediate`:** if `committed` is nonempty and `committed ++ transaction` would overflow the journal, flush.
-  Then, regardless, append `transaction` to the on-disk journal as a single transaction.
-  - **Analogously, recording an operation in `Immediate`:** if `committed` is nonempty and `committed ++ op` would overflow, flush.
-    Then append `op` to both the on-disk journal and the in-memory buffer.
-- **`InTransactionInBatch` → `InBatch`:** if `committed ++ ready` is nonempty and `committed ++ ready ++ transaction` would overflow: append `ready` alone to the journal as a single transaction if nonempty, advance `committed_cursor`, and flush *before* the transition — which then consumes `transaction` into `ready`.
-  - **Analogously, recording an operation in `InBatch`:** same check; append `ready` without the operation, advance the cursor, flush.
-    Then append the operation to the in-memory buffer only.
-- **`InBatch` → `Immediate`:** append `ready` to the journal as a single transaction. Don't flush.
+- **Recording an operation in `Immediate`**, and **`InTransaction` → `Immediate`:** append the operation, or `transaction`, to the journal as one transaction; then flush if the segment is over budget.
+- **Recording an operation in `InBatch`:** add it to `ready`; if `ready` has reached the batch size, append `ready` as one transaction, then flush if the segment is over budget.
+- **`InTransactionInBatch` → `InBatch`:** `transaction` joins `ready`, and the same check follows as when recording an operation in `InBatch` — which is why a batch is never cut inside a transaction.
+- **`InBatch` → `Immediate`:** append `ready` as one transaction, then flush if the segment is over budget.
+- **An explicit `flush()`:** append `ready`, which lies outside any open transaction, then flush.
+- **Opening a file whose recovered journal is non-empty:** flush before the first append, as [the journal requires](../spec/journal.md#the-start-of-a-session).
 
-**Why `ready` alone always fits.**
-`ready` only ever grows while `committed ++ ready ++ next` still fits, because the moment one more operation would overflow, `ready` is drained into `committed` and the journal is flushed.
-So `committed ++ ready` never exceeds capacity, and appending `ready` to a journal already holding `committed` never overflows.
+The batch size decides how much a batch may hold back from the journal, trading the per-transaction overhead against what an application crash can lose; it is independent of the segment budget.
 
-**Oversized transactions.**
-The one case the rules cannot absorb is a single transaction, or bare operation, larger than the journal's whole capacity: flushing empties the journal but the subsequent append still does not fit.
-The resolution is to **grow the journal allocation**, and the policy guarantees this happens only while the journal is **empty** — so there are no contents to relocate, and the allocation can simply be freed and re-allocated larger.
-It shrinks back at the next flush.
-
-### Why the "only grow an empty journal" policy is worth keeping
-
-Traced against all five trigger rules, the invariant holds: `committed ++ ready` never exceeds capacity, so every "append `ready`" is safe, and the only append that can overflow is the one immediately after a flush — at which point `committed` is empty by construction.
-The `InTransactionInBatch` case is the subtle one and it also works: an oversized `transaction` is folded into `ready` and sits in memory, so it does not force growth until the *next* operation triggers a drain, and `committed` is still empty then.
-
-It is a real simplification rather than just a smaller window.
-Growing an empty allocation does not merely avoid copying journal contents — it means the journal can be freed and re-allocated rather than resized in place, so it can move anywhere with space rather than needing room to grow where it sits.
-That is a much weaker demand on placement, and it is the strongest argument for the policy.
-
-Three things it does **not** solve, none fatal:
-
-1. **Crash safety of the growth itself.** Freeing and re-allocating the journal is a mutation that cannot be journalled, there being no journal at that moment by construction. It still depends on the surrounding persistence being crash-safe — the "empty" property makes the operation *simple*, not *free*.
-2. **Memory is not bounded by journal capacity.** The in-memory buffer holds the whole transaction regardless of what the file does, so an oversized transaction is still an unbounded in-memory buffer. Worth saying in the recommendations, since the prose above implies the cost of a huge transaction is file size.
-3. **The capacity number is undefined.** Is it fixed, does it scale with file size, and does the shrink-back target the original value or a high-water mark? The last matters: shrinking to the original on every flush will thrash if an application does oversized transactions regularly.
+**The budget bounds the file, not memory.**
+An open transaction is held in memory in full, whatever the budget, because nothing can [fold an unfinished transaction](../spec/journal.md#checkpoint-versus-commit); a huge transaction costs memory in proportion to its size, and journal pages in proportion too once it is appended.
 
 ### Consequence for write-phase geometry
 
-Because a flush can occur while a completed `transaction` or bare operation is still sitting in the buffer past `committed_cursor`, the write-phase geometry no longer describes the same point in the sequence as the flush does.
-It must therefore be **repopulated** from those remaining operations after the flush, rather than simply cleared.
+Every automatic flush runs right after an append, with `ready` and `transaction` empty, so it folds exactly the operations the write-phase geometry has seen, and the geometry can simply be cleared.
 
-Under the rules exactly as written this affects the two `InTransaction → …` transitions and nothing else, since those are the only ones where a completed `transaction` is already buffered when the flush runs.
-In the two operation-recording rules the operation is appended *after* the flush, so nothing outlives it.
-This is sensitive to implementation order — appending a bare operation to the buffer *before* the overflow check would make that case need repopulation too — so the ordering is worth keeping explicit in the code rather than relying on it implicitly.
+An explicit `flush()` inside a transaction is the exception.
+The open transaction's operations stay buffered past `committed_cursor`, so the geometry no longer describes the same point in the sequence as the fold, and it must be **repopulated** from those operations after the flush rather than cleared.
 
 ## Checkpoint versus commit
 
-**Undecided, and consequential.**
+**Decided: a checkpoint never splits a commit** — see [the journal](../spec/journal.md#checkpoint-versus-commit).
 
-The confusion this resolves is that the journal does **two jobs** which are currently fused:
+A *checkpoint* is a flush triggered by resource pressure, and a *commit* is a transaction boundary the recovered state may snap to.
+The open question was whether a checkpoint could fold part of an unfinished transaction, to bound the memory the transaction holds.
+It cannot: the header it committed would describe a state inside the transaction, and undoing that part on recovery would need a mechanism the format does not have.
+So every flush folds complete transactions only, and the memory an open transaction holds is bounded only by [keeping transactions short](#recommendations).
 
-- **Durability** — make a mutation survive a crash.
-  Requires that records reach stable storage before the call returns, and that a torn tail is detectable.
-- **Deferral** — avoid touching the file's compact form on every mutation.
-  Requires only that the journal be replayable later; nothing about it needs to be durable for this purpose.
-
-Today both are served by the same structure at the same moment, which is why the question below is open at all.
-Separating them is what would let an implementation bound its memory inside a long transaction.
-
-- A **checkpoint** applies buffered work so the in-memory journal can be released. Triggered by resource pressure; lands wherever that pressure falls.
-- A **commit** is a boundary the recovered state may snap to. Triggered by the application's notion of a completed change.
-
-Today they are the same event, which gives atomicity for free.
-The intended model separates them: application authors never call flush, and when the journal grows too long the guard method that would overflow it checkpoints automatically.
-A flush triggered by buffer size cannot also be a durability boundary, or durability would be set by how much memory the journal happens to use.
-
-Three consequences follow immediately:
+What remains is that application authors need never call `flush()`: the operation that pushes the journal over its budget flushes automatically.
+Two consequences follow:
 
 **Flush needs only shared access to the backend.**
 The auto-checkpoint fires from inside a mutating call, which holds no exclusive reference to the whole structure.
@@ -194,12 +159,6 @@ Note that it is a *reentrant* call, so no write path may hold an interior borrow
 A check on append can fire between two records of one logical mutation.
 An operation is the natural atomic unit, being the smallest thing an application author perceives as one change.
 
-**Flush splits into two knobs**: fold-and-apply, which bounds memory, and truncate-the-journal, which is only safe up to the last commit.
-
-What is *not* decided is how uncommitted data is kept out of the recovered state — write-ahead logging with undo, or checkpointing only committed prefixes.
-The first bounds memory inside long transactions and needs undo; the second is far simpler and does not.
-
 ## Open questions
 
-- The journal's capacity, as above.
-- Whether the interaction between on-file state changes and the journal, and whether an *actively used* journal allocation ever needs to grow for hoisting, make the simpler "grow on demand" policy available — in which case much of the trigger machinery can go.
+- The segment's page budget and the batch size: whether each is fixed or scales with the file, and whether either should adapt to an application whose transactions routinely exceed it.
