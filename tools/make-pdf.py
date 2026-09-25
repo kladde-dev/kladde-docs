@@ -191,19 +191,48 @@ def expand_wikilinks(rel, body, pages, problems, standalone=False):
     return WIKILINK.sub(replace, body)
 
 
-def rewrite_links(rel, body, pages, problems, standalone=False):
+def render_figure(path, figdir):
+    """A PDF of the SVG at `path`, rendered here rather than by pandoc.
+
+    Named by the file's content, so that an unchanged figure lands on the same
+    path in both versions of a diff.
+    """
+    if not _shutil.which("rsvg-convert"):
+        sys.exit("rsvg-convert not found (install librsvg2-bin)")
+    figdir.mkdir(parents=True, exist_ok=True)
+    pdf = figdir / f"figure-{hashlib.sha256(path.read_bytes()).hexdigest()[:12]}.pdf"
+    if not pdf.exists():
+        conv = subprocess.run(["rsvg-convert", "-f", "pdf", "-o", str(pdf), str(path)],
+                              capture_output=True, text=True)
+        if conv.returncode != 0:
+            sys.exit(f"rsvg-convert failed on {path}:\n{conv.stderr}")
+    return pdf
+
+
+def rewrite_links(rel, body, pages, problems, standalone=False, figdir=None):
     """Point every relative link at the merged document's own ids.
 
     `standalone` is single-page mode: there is no merged document, so a link
     into another page has nothing to point at.  Those are left exactly as
     written rather than reported -- they are correct on the website, and a
     single-page PDF is a view of that page, not a claim about the whole set.
+
+    A link to a file that is not a page -- a figure, `![...](figures/x.svg)`
+    -- becomes an absolute path, since pandoc resolves paths against its own
+    working directory rather than the page's.  An SVG is rendered to PDF in
+    `figdir` first, named by its content; without a `figdir`, nothing is
+    rendered, and the link keeps the file.
     """
     here = Path(rel).parent
 
     def replace(m):
         target = m.group(1)
         path, _, frag = target.partition("#")
+        asset = CONTENT / here / path
+        if path and not path.endswith((".md", "/")) and asset.is_file():
+            if asset.suffix == ".svg" and figdir is not None:
+                return f"]({render_figure(asset, figdir)})"
+            return f"]({asset.resolve()})"
         if path and standalone:
             return m.group(0)
         if not path:                                    # same-page anchor
@@ -996,7 +1025,7 @@ def build_markdown(pages, problems, figdir=None, warnings=None,
     bodies = {}
     for rel, page in pages.items():
         body = expand_wikilinks(rel, page["body"], pages, problems)
-        body = rewrite_links(rel, body, pages, problems)
+        body = rewrite_links(rel, body, pages, problems, figdir=figdir)
         bodies[rel] = stamp_headings(body, page["prefix"])
     sources = [s for body in bodies.values() for s in collect_mermaid(body)]
     figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [],
@@ -1017,7 +1046,7 @@ def build_standalone(text, rel, problems, figdir=None, warnings=None,
     """One page as its own document."""
     page = read_page(text, rel, fallback_title=fallback_title or Path(rel).stem)
     body = expand_wikilinks(rel, page["body"], {rel: page}, problems, standalone=True)
-    body = rewrite_links(rel, body, {rel: page}, problems, standalone=True)
+    body = rewrite_links(rel, body, {rel: page}, problems, standalone=True, figdir=figdir)
     body = stamp_headings(body, page["prefix"])
     sources = collect_mermaid(body)
     figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [],
