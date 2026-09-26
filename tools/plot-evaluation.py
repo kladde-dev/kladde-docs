@@ -174,14 +174,16 @@ def space_amplification(runs, out):
 
 def mixed(runs, out):
     """The `mixed` workload, where hot, cool, and cold allocations share pages
-    at random: file size over live size, the share of the live data on pages
-    that hold more than one class, and the share of the cold data on such
-    pages, as the writes accumulate. The 1 MiB files are left out, and a run
-    without consolidation is drawn once, since policies do not change it."""
+    at random, as the writes accumulate: file size over live size, the live
+    fraction of the data pages, the share of the live data on pages that hold
+    more than one class, and the share of the cold data on such pages. The
+    1 MiB files are left out, and a run without consolidation is drawn once,
+    since policies do not change it."""
     series = [(label, run["mixed"]) for label, run in runs.items() if "mixed" in run]
     if not series:
         return
-    fig, axes = plt.subplots(1, 3, figsize=(7.5, 3.0))
+    fig, grid = plt.subplots(2, 2, figsize=(7.5, 5.4), sharex=True)
+    axes = grid.flatten()
     for n, (style, (label, table)) in enumerate(zip(RUN_STYLES, series)):
         for (variant, size), rows in sorted(table.items(), key=lambda kv: (kv[0][0] != "on", kv[0][1])):
             if size < 8 * MIB or (variant == "off" and n > 0):
@@ -193,15 +195,17 @@ def mixed(runs, out):
             ls, color = (style, SIZE_COLORS.get(size)) if variant == "on" else (":", "#8c8c8c")
             live = [max(r["alloc_bytes"], 1) for r in rows]
             axes[0].plot(x, [r["file_pages"] * PAGE / l for r, l in zip(rows, live)], ls, color=color, label=name, lw=1.2)
-            axes[1].plot(x, [r["mixed_bytes"] / l for r, l in zip(rows, live)], ls, color=color, lw=1.2)
-            axes[2].plot(x, [r["cold_mixed_bytes"] / max(r["cold_bytes"], 1) for r in rows], ls, color=color, lw=1.2)
+            axes[1].plot(x, [r["live_data"] / max(r["data_pages"] * CONTENT, 1) for r in rows], ls, color=color, lw=1.2)
+            axes[2].plot(x, [r["mixed_bytes"] / l for r, l in zip(rows, live)], ls, color=color, lw=1.2)
+            axes[3].plot(x, [r["cold_mixed_bytes"] / max(r["cold_bytes"], 1) for r in rows], ls, color=color, lw=1.2)
     axes[0].set_ylabel("file size / live size")
     axes[0].set_ylim(1, None)
-    axes[1].set_ylabel("share of the live data\non pages that mix classes")
-    axes[2].set_ylabel("share of the cold data\non pages that mix classes")
+    axes[1].set_ylabel("live fraction of data pages")
+    axes[2].set_ylabel("share of the live data\non pages that mix classes")
+    axes[3].set_ylabel("share of the cold data\non pages that mix classes")
     for ax in axes[1:]:
         ax.set_ylim(0, 1)
-    for ax in axes:
+    for ax in axes[2:]:
         ax.set_xlabel("bytes written / live size")
     legend(axes[0])
     save(fig, out, "mixed")
