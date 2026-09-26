@@ -15,14 +15,18 @@ The drafts cope with that by devices of their own, a forgetting rate, a weight f
 - **Evidence is counted in bytes, and weighed in loss events.**
   A page loses the bytes that writes supersede, on a data page often part of a `Ref`'s payload at a time; divided by the dispersion of the events' sizes, $\mathbb{E}[s^2]/\mathbb{E}[s]$, bytes lost and bytes exposed count as the independent observations they are.
 - **With one rate per page, the posterior is a Gamma distribution, exact even for a rate that drifts, and its mean is exactly the single-rate draft's estimate.**
-  What it adds is how certain the estimate is, and an explicit weight for the start.
+  What it adds is how certain the estimate is, and a start learned from the file.
 - **With a static share, the posterior is a mixture over how many of the page's untouched chunks drain.**
   A chunk that has lost bytes is known to drain, and a prior on the draining fraction takes the place of the static-share draft's test.
+- **A page's start is learned from the file, not tuned.**
+  Fresh content starts from the file's empirical prior, the mean and spread of the rates at which fresh pages have drained, which comes out weak and beats every fixed start in simulation.
+  Starting moved content from its sources' posteriors, matched in their moments, does not pay until they are corrected for moved content being colder than its source, so moved content starts from the empirical prior too.
 - **How the decision reads the posterior matters little.**
-  Deciding by the expected gain (a) or by the probability of a gain (b) differs from the posterior mean by about a point in simulation, except that (b) costs a few points more on pages of a few large chunks; (c), which guards against every loss a page could still suffer, is too cautious.
-- **In simulation, the cure model's posterior costs half of what the static-share draft's fit does where chunks lose their bytes in parts, 11.8 % more than cleaning at the true index against 24.3 %, and 3 to 30 % less where they die whole.**
+  Deciding by the expected gain (a) or by the probability of a gain (b) differs from the posterior mean by about a point in simulation, except that (b) costs a few points more on pages of a few large chunks.
+  Rule (c), which guards against every loss a page could still suffer, is too cautious; (c′), which weighs each by its predictive probability, is the posterior mean in effect, since the predictive trusts the very posterior whose dips make cleaning early.
+- **In simulation, the cure model's posterior, started from the empirical prior and decided by (a), costs 10.9 % more than cleaning at the true index where the static-share draft's fit costs 24.3 %, with chunks losing their bytes in parts; with chunks dying whole, 37.9 % against 45.0 %.**
   It sees a static share almost exactly once chunks lose their bytes in parts, since a chunk's first loss shows that it drains.
-  The single-rate posterior costs a point or two less than its draft.
+  The single-rate posterior costs a point or three less than its draft.
 
 These are simulations, costed by the drafts' own model; nothing has run on kladde-bench.
 
@@ -53,8 +57,9 @@ $\varphi$ rises from 0, like $\sqrt{2y}$ for small $y$ and like $y + \ln(1 + y)$
 - **(c) Ripe whatever it loses next**: clean once the page would be ripe by the posterior mean, or by (a), even after any number of further losses.
   [Waiting teaches](#waiting-teaches-and-the-drafts-rule-does-not-see-it) derives it: the other two clean at the first epoch the posterior calls a page ripe, which is early, because a page's next loss can make it unripe again.
   [In simulation](#checking-in-simulation), it is too cautious to pay.
+  Its refinement **(c′)** weighs each further loss by its predictive probability, and cleans once cleaning now gains at least what the option to wait is worth.
 
-**All three keep the drafts' ranking by an index, since each is monotone in $\kappa$.**
+**All of them keep the drafts' ranking by an index, since each is monotone in $\kappa$.**
 For every $\theta$, $\gamma/\kappa$ rises with $\kappa$, since $\varphi$ rises with $r/\kappa$; so $\mathbb{E}[\gamma]/\kappa$ and $P(\gamma \geq 0)$ rise with $\kappa$ too, and each criterion holds for every $\kappa$ above one price $\kappa^*$.
 A page's index is $I = 1/\kappa^*$, the $1/\kappa$ at which it becomes ripe, as in the drafts, so the budget loop, the controller, and the floor stay as they are: a page is ripe once $I \geq 1/\kappa$, and the loop takes the highest index first.
 
@@ -99,7 +104,7 @@ r \mid \text{losses} \sim \mathrm{Gamma}\bigl(A_0 + L/\sigma, \; B_0 + E/\sigma\
 $$
 
 with mean $A/B$ and a relative spread of $1/\sqrt{A}$, where $A$ and $B$ are the posterior's two parameters.
-$A$ is the number of loss events the estimate rests on, the prior's included: the prior acts as $A_0$ events over an exposure of $B_0$, and a starting estimate $r_0$ worth $\nu$ epochs of the page's $x_0$ is $B_0 = \nu \, x_0/\sigma$ and $A_0 = r_0 \, B_0$.
+$A$ is the number of loss events the estimate rests on, the prior's included: the prior acts as $A_0$ events over an exposure of $B_0$, so a starting estimate $r_0$ worth $\nu$ epochs of the page's $x_0$ would be $B_0 = \nu \, x_0/\sigma$ and $A_0 = r_0 \, B_0$, though [below](#where-a-pages-prior-comes-from) the weight is learned rather than set.
 
 ### A rate that drifts keeps the posterior exact
 
@@ -117,7 +122,7 @@ With $x$ live, $B$ settles at $x/\bigl(\sigma (1 - \delta)\bigr)$, and then $(\d
 The posterior adds two things.
 
 - **Its mean is right while the exposure is still growing.**
-  Until then, the mean is the ratio of the discounted losses to the discounted exposure, as Adam's bias correction would make it, but with the prior's weight, $\nu$ epochs, as an explicit parameter; the draft's start weighs about $1/\beta$ epochs, fixed.
+  Until then, the mean is the ratio of the discounted losses to the discounted exposure, as Adam's bias correction would make it, but with the prior's weight, $A_0$ events, [learned from evidence](#where-a-pages-prior-comes-from); the draft's start weighs about $1/\beta$ epochs, fixed.
 - **Its shape counts the loss events the estimate rests on.**
   At the settled exposure, $A \approx r \, x / (\sigma \beta)$.
   A page at fill 0.5 draining at 0.01 per epoch, with $\beta = 0.1$, rests on 3.2 events if it loses 64 bytes at a time, and its rate is uncertain by 56 %; if it loses whole statements of 250 bytes, it rests on 0.8 of one.
@@ -155,9 +160,49 @@ impl Drain {
 
 The dispersion drifts as the application's writes change, and a page's sums mix the values it had when they were added, which matters little since it moves slowly.
 
-**A page starts from what it holds, as a prior; a page the consolidator state cannot vouch for starts from the seed, as a past it was watched through.**
-A new page's prior has the drafts' starting rate $r_0$, the byte-weighted mean of its content's rates, and a weight of $\nu$ epochs: $B_0 = \nu \, x_0/\sigma$, $A_0 = r_0 \, B_0$.
+### Where a page's prior comes from
+
+**A page's prior is learned rather than tuned: fresh content starts from the file's empirical prior, and moved content could start from its sources' posteriors, matched in their first two moments, though in simulation the empirical prior serves it better.**
+The drafts start a page at a rate with a fixed weight; here the weight, too, comes from evidence: how alike the file's fresh pages have turned out, and how much its sources knew.
+Either way, the prior is a Gamma distribution, which is fixed by its mean $\mu$ and variance $v$: $A_0 = \mu^2/v$ and $B_0 = \mu/v$.
+
+**Fresh content starts from the file's empirical prior: the mean and the spread of the rates at which fresh pages have drained in their first epochs.**
+The drafts start fresh content at "a running estimate of what pages lose in the epoch after they are written"; this estimates the spread as well.
+Over the pages the file has written, let page $i$ lose $k_i$ events over an exposure of $E_i$ in its first $H$ epochs, with $H$ the posterior's memory, $1/(1 - \delta)$.
+Were all of them to drain at one rate, $k_i$ would scatter about $\mu E_i$ as Poisson counts do; the scatter beyond that is the spread of their rates, and the method of moments for a Gamma mixture of Poisson rates gives
+
+$$
+\mu = \frac{\sum_i k_i}{\sum_i E_i},
+\qquad
+v = \frac{Q - (n - 1) \, \mu}{\sum_i E_i - \sum_i E_i^2 \big/ \sum_i E_i},
+\qquad
+Q = \sum_i \frac{(k_i - \mu E_i)^2}{E_i},
+$$
+
+over the last $n$ such pages, floored at a small fraction of $\mu^2$.
+The prior's weight, $A_0 = \mu^2/v$ events, is then how alike the file's fresh pages are: a file whose fresh pages all drain alike starts each one sure of its rate, and one whose fresh pages differ starts each one unsure, so that its own losses soon decide.
+The fold keeps the five sums $\sum k_i$, $\sum E_i$, $\sum E_i^2$, $\sum k_i^2/E_i$, and $n$ over the file, discounted like the rest, and adds a page to them once it is $H$ epochs old.
+
+**Moved content starts from its sources' posteriors: the Gamma distribution with the mean and variance of the mixture they make.**
+A page whose content comes from sources with byte shares $w_i$ and posteriors of mean $m_i = A_i/B_i$ and variance $v_i = A_i/B_i^2$ starts with
+
+$$
+\mu = \sum_i w_i \, m_i,
+\qquad
+v = \sum_i w_i \, \bigl(v_i + m_i^2\bigr) - \mu^2,
+$$
+
+the moments of the rate of a byte drawn from the mix, and fresh content in the mix counts as one more source, with the empirical prior.
+The variance includes the spread between the sources as well as each one's own: a page mixed from sources that drain alike starts as sure as they were, and one mixed from sources that drain differently starts unsure, as it should, since the single rate it will be estimated to drain at is not yet known.
+With a static share, the rate's prior comes from the draining content of the sources alone, and the draining fraction's prior from their draining shares, as before.
+
+**But a source sure of the wrong rate hands its certainty on, and moved content's source usually is: the survivors of a cleaned page drain slower than the page did.**
+[In simulation](#where-a-pages-prior-comes-from-in-simulation), matching the sources' posteriors costs more than starting from the empirical prior, which gains even on pages whose start is right; so until the sources' rates are corrected for what their content's survival says about it, moved content, too, starts from the empirical prior.
+
+**A page the consolidator state cannot vouch for starts from the seed, as a past it was watched through.**
 The seed at open has the drafts' rate, and weighs what the page's past would have, had the page been watched through it losing bytes at that rate: $B$ is the discounted exposure of the bytes it would have held, over $\sigma$, and $A = \hat r \, B$.
+
+### The floor
 
 **The floor becomes a rate that no content falls below.**
 Adding $R_\text{min}$ times each epoch's exposure to its loss events asserts a background rate $R_\text{min}$ for all content, and keeps the posterior mean at or above it; it changes every draining page's rate by $R_\text{min}$, which is negligible, and it caps a frozen page's index as the drafts' floor does.
@@ -215,6 +260,31 @@ So once a page's (c) index has reached $1/\kappa$, no observation it could still
 The minimum lies a few losses out: for a page at fill 0.5 that loses a thirtieth of a page at a time, with a posterior resting on $A = 2$, it lies at $j = 3$, 24 % below the page's present index by the posterior mean.
 Rule (c) needs no parameter of its own, and costs a handful of evaluations of the underlying index per loss.
 But it guards against losses that a page is unlikely to suffer as firmly as against likely ones, and [in simulation](#checking-in-simulation) that makes it wait too long on every page but those that drain slowly as one share.
+
+**(c′) Clean a page once cleaning now gains at least what the option to wait is worth.**
+This weighs each further loss by its probability, which (c) did not.
+Over the posterior's memory, $H = 1/(1 - \delta)$ epochs, a page's loss events have a negative-binomial predictive distribution, the Poisson count averaged over the Gamma posterior:
+
+$$
+J \sim \mathrm{NegBin}\Bigl(A, \; \frac{B}{B + a H/\sigma}\Bigr),
+$$
+
+with $a = x$ for one rate per page.
+After $J$ events, the posterior is discounted by $\delta^H$, with the events and the $H$ epochs' exposure added, and the page has lost $J \sigma$.
+If that leaves it unripe, cleaning now forgoes the gain $-\gamma_J$ per epoch that waiting would have kept, so the option to wait is worth $\mathbb{E}_J\bigl[\max(0, -\gamma_J)\bigr]$ per epoch, and (c′) cleans once
+
+$$
+\gamma \geq \mathbb{E}_J\bigl[\max(0, -\gamma_J)\bigr],
+$$
+
+both at the posterior mean.
+Both sides are monotone in $\kappa$, so the index is again the $1/\kappa$ at which they are equal, found by bisection over a sum of some tens of terms.
+This is the *knowledge gradient*, the one-step look-ahead of Bayesian optimal learning, with a step as long as the posterior's memory.
+
+**(c′) is the posterior mean in all but name: the option to wait is worth anything only where the posterior rests on less than one loss event.**
+At fills of 0.3 to 0.8, with loss events of 180 bytes, its index equals the posterior mean's for a posterior resting on 2 events or more, with a horizon of 1, 3, or $H$ epochs alike, and falls 4 to 10 % below it for one resting on half an event.
+The predictive comes from the same posterior whose dip makes the drafts' rule clean early, so it expects no more losses than that posterior does, and over any horizon, the losses it does expect ripen the page further, by draining it, while the estimate relaxes.
+What (c) guarded against, the dip itself, is not in the predictive at all: it shows that the drift the prior assumes is faster than a page's rate really changes, and the remedy for that lies in the prior's drift, not in the decision rule.
 
 ## A draining share over a static one
 
@@ -300,6 +370,7 @@ With $a_j = x_t + j \, \bar c$ and $z_j = a_j/(1 - x + a_j)$:
 - **(a)** $\mathbb{E}[\gamma]/\kappa = (1 - x) - \sum_j w_j \, a_j \, \Phi_A(B_j \kappa)$.
   All components share the shape $A$, so one table of $\Phi_A$ serves every $j$.
 - **(b)** $P(\gamma \geq 0) = \sum_j w_j \, P\bigl(A, \, B_j \kappa \, h(z_j)\bigr)$, where a term with nothing draining, $a_j = 0$, counts as ripe at any price.
+- **(c′)** as with one rate, at the posterior means of the draining share $a$ and its rate, with the predictive of the losses that $a$ will suffer.
 
 The index is the $1/\kappa$ at which the criterion holds with equality, found by bisection, each step $O(n)$.
 Aging the rate's scale between losses multiplies every $B_j$ by the same factor, which leaves the weights $w_j$ as they are and scales the index, so the ranking ages uniformly here too.
@@ -313,27 +384,28 @@ So a page whose losses keep coming from a few chunks has evidence of a static sh
 
 ## Checking in simulation
 
-**In simulation, the cure model's posterior costs half of what the static-share draft's fit does where chunks lose their bytes in parts, as a data page's `Ref`s do, and 3 to 30 % less where they die whole; the single-rate posterior costs about what its draft does; and how (a) and (b) read a posterior matters less than the posterior itself.**
+**In simulation, the cure model's posterior costs half of what the static-share draft's fit does where chunks lose their bytes in parts, as a data page's `Ref`s do, and 3 to 30 % less where they die whole; the single-rate posterior costs a little less than its draft; the file's empirical prior beats every fixed start; and how (a), (b), and (c′) read a posterior matters less than the posterior itself.**
 `tools/simulate-ripeness.py compare --set bayes` runs the eight scenarios of [the static-share draft's simulation](ripeness.md#checking-the-fit-in-simulation), with its measure: the excess cost of cleaning each page by an estimate, over cleaning it once its true index reaches $1/\kappa$.
 Its pages hold chunks, which either die whole, as statements on a leaf do, or lose their bytes in pieces, each piece dying at its chunk's rate, as a `Ref`'s payload loses the parts that writes supersede; the dispersion $\sigma$ is that of the pieces, as the fold would measure it, and the tested fit counts its test in loss events too.
-It runs 400 pages a scenario rather than 800, since the mixture is slower, with $\beta = 0.1$, a prior weight of $\nu = 3$ epochs on the starting rate and $\nu_\pi = 10$ chunks on the draining fraction, (c) for one rate per page only, over the posterior mean, and the drafts' floor as a cap on the index rather than as a background rate.
+It runs 400 pages a scenario rather than 800, since the mixture is slower, with $\beta = 0.1$, $\nu_\pi = 10$ chunks on the draining fraction, (c) for one rate per page only, over the posterior mean, and the drafts' floor as a cap on the index rather than as a background rate.
+The first two tables start each page as the drafts do, from its scenario's rate, at a weight of $\nu = 3$ epochs; [the third](#where-a-pages-prior-comes-from-in-simulation) compares that with the learned priors.
 The summed excess cost of the eight scenarios:
 
-| chunks of | losses | the single-rate draft | posterior mean | (a) | (b) | (c) |
-| --- | --- | --- | --- | --- | --- | --- |
-| 16 to 64 bytes | whole | 27.4 % | 27.0 % | 26.3 % | 26.0 % | 46.8 % |
-| 32 to 256 bytes | whole | 46.3 % | 44.3 % | 44.1 % | 44.8 % | 44.6 % |
-| 32 to 256 bytes | pieces of 32 bytes | 27.2 % | 26.7 % | 26.0 % | 25.3 % | 58.1 % |
-| 256 to 1024 bytes | whole | 112.8 % | 111.8 % | 113.7 % | 117.3 % | 111.6 % |
-| 256 to 1024 bytes | pieces of 64 bytes | 30.6 % | 29.8 % | 29.3 % | 29.2 % | 40.4 % |
+| chunks of | losses | the single-rate draft | posterior mean | (a) | (b) | (c) | (c′) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 16 to 64 bytes | whole | 27.4 % | 27.0 % | 26.3 % | 26.0 % | 46.8 % | 27.5 % |
+| 32 to 256 bytes | whole | 46.3 % | 44.3 % | 44.1 % | 44.8 % | 44.6 % | 44.3 % |
+| 32 to 256 bytes | pieces of 32 bytes | 27.2 % | 26.7 % | 26.0 % | 25.3 % | 58.1 % | 27.3 % |
+| 256 to 1024 bytes | whole | 112.8 % | 111.8 % | 113.7 % | 117.3 % | 111.6 % | not run |
+| 256 to 1024 bytes | pieces of 64 bytes | 30.6 % | 29.8 % | 29.3 % | 29.2 % | 40.4 % | 29.9 % |
 
-| chunks of | losses | the static-share draft's tested fit | cure model, posterior means | (a) | (b) |
-| --- | --- | --- | --- | --- | --- |
-| 16 to 64 bytes | whole | 27.4 % | 21.5 % | 19.6 % | 19.3 % |
-| 32 to 256 bytes | whole | 45.0 % | 40.4 % | 40.1 % | 40.0 % |
-| 32 to 256 bytes | pieces of 32 bytes | 24.3 % | 12.7 % | 11.8 % | 11.5 % |
-| 256 to 1024 bytes | whole | 109.3 % | 106.0 % | 106.2 % | 109.6 % |
-| 256 to 1024 bytes | pieces of 64 bytes | 30.3 % | 15.7 % | 14.5 % | 15.1 % |
+| chunks of | losses | the static-share draft's tested fit | cure model, posterior means | (a) | (b) | (c′) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 16 to 64 bytes | whole | 27.4 % | 21.5 % | 19.6 % | 19.3 % | 21.6 % |
+| 32 to 256 bytes | whole | 45.0 % | 40.4 % | 40.1 % | 40.0 % | 40.3 % |
+| 32 to 256 bytes | pieces of 32 bytes | 24.3 % | 12.7 % | 11.8 % | 11.5 % | 12.8 % |
+| 256 to 1024 bytes | whole | 109.3 % | 106.0 % | 106.2 % | 109.6 % | not run |
+| 256 to 1024 bytes | pieces of 64 bytes | 30.3 % | 15.7 % | 14.5 % | 15.1 % | 15.6 % |
 
 The pages are the same for every estimator, but a difference of a point or so in a sum is within what a different draw of pages moves.
 
@@ -347,9 +419,31 @@ The pages are the same for every estimator, but a difference of a point or so in
   They make uncertain pages riper, as [derived above](#deciding-on-one-rate), which gains a little on pages with a static share and loses a little on pages that drain slowly as one share.
 - **(c) is too cautious wherever losses come in many small events**: with chunks losing 32 bytes at a time, it costs 58 % against the posterior mean's 27 %, since it guards against as many further losses as the page has pieces.
   It gains only on pages that drain slowly as one share, 0.7 % against 1.1 % on the page draining at 0.01.
-  The argument behind it stands, since a loss can make a ripe page unripe, but the remedy has to weigh each further loss by its predictive probability, as a Bayes-optimal rule would, which is the [open question](#open-questions) this leaves.
+- **(c′) costs what the posterior mean does**, up to half a point more, as [derived above](#waiting-teaches-and-the-drafts-rule-does-not-see-it): the predictive it weighs further losses by comes from the posterior it would have to distrust.
 - **A lighter prior pays**: with $\nu = 10$, as heavy as the single-rate draft's start, the single-rate posterior costs 30.5 % against 26.7 % with chunks losing 32 bytes at a time, most of it on the page whose start is wrong, where a heavy prior holds on to the wrong rate while the page shrinks; the cure model costs 14.3 to 15.4 % against 11.5 to 12.7 %.
 - **Discounting the class count pays**: kept whole, it costs the cure model 14.1 to 17.3 % against 11.5 to 12.7 %, with chunks losing 32 bytes at a time.
+
+### Where a page's prior comes from, in simulation
+
+**The file's empirical prior beats every fixed start, and matching the sources' posteriors does not, since a source that is sure of the wrong rate hands its certainty on.**
+The empirical prior is learned, as [derived above](#where-a-pages-prior-comes-from), from 400 fresh pages of each scenario but the seeded one, drawn apart from the pages it then starts, over their first 10 epochs; every page but the seeded ones starts from it, whatever its scenario's rate.
+The moment-matched prior takes each scenario's rates as its sources', each source a page at fill 0.5 whose posterior has settled, and so rests on as many events as such a page would have.
+With chunks of 32 to 256 bytes:
+
+| the rate's prior | losses | posterior mean | (a) | (c′) | cure model, posterior means | (a) | (c′) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| the scenario's rate, $\nu = 3$ | whole | 44.3 % | 44.1 % | 44.3 % | 40.4 % | 40.1 % | 40.3 % |
+| moment-matched to the sources | whole | 46.4 % | 46.3 % | 46.4 % | 42.2 % | 41.6 % | 42.1 % |
+| the file's empirical prior | whole | 43.3 % | 43.1 % | 43.3 % | 39.1 % | 37.9 % | 39.0 % |
+| the scenario's rate, $\nu = 3$ | pieces of 32 bytes | 26.7 % | 26.0 % | 27.3 % | 12.7 % | 11.8 % | 12.8 % |
+| moment-matched to the sources | pieces of 32 bytes | 26.4 % | 25.6 % | 27.0 % | 12.8 % | 12.0 % | 12.9 % |
+| the file's empirical prior | pieces of 32 bytes | 25.2 % | 24.5 % | 25.8 % | 11.6 % | 10.9 % | 11.8 % |
+
+- **The empirical prior is weak, and that is why it wins.**
+  It comes out at a mean rate of 0.045 per epoch, resting on 0.8 of an event, since the scenarios' fresh pages drain at rates from 0.002 to 0.5: each page's own losses soon decide.
+  It gains most on the page whose start is wrong, 0.5 % against 1.2 % with whole chunks, and costs nothing on the pages whose start is right, although it ignores that start.
+- **The moment-matched prior gains a little on pages mixed from sources that drain differently**, a few tenths of a point on the two mixed pages, since it starts them unsure, but loses on the page whose source is sure of the wrong rate, 3.8 % against 1.2 % with whole chunks.
+  Moved content, being colder than its source, is that case more often than not, as the [open questions](#open-questions) note, so this draft starts moved content from the empirical prior too, until the sources' rates are corrected for what their content's survival says.
 
 ## What would change
 
@@ -357,7 +451,8 @@ The pages are the same for every estimator, but a difference of a point or so in
 
 - **"Estimating how fast a page still drains"** would keep a posterior: with one rate per page, the Gamma posterior's two parameters in place of `rho`; with a static share, the discounted loss events and exposure, the touched and untouched chunks' counts, and the class counts in place of the fit's sums, and the mixture in place of the fit and its test.
 - **The page table** would keep a `Drain` of 12 bytes with one rate per page, against the single-rate draft's 8, or 22 with a static share, against the static-share draft's 18; with a static share, each statement's record would also give a bit to mark its first loss.
-- **The fold** would keep two running averages per page kind, of the sizes of the ranges it supersedes and of their squares, for the dispersion $\sigma$.
+- **The fold** would keep two running averages per page kind, of the sizes of the ranges it supersedes and of their squares, for the dispersion $\sigma$, and five running sums over the pages it has watched through their first epochs, for the empirical prior.
+- **A new page** would start from the file's empirical prior, where the drafts start it from a byte-weighted mean rate with a fixed weight; its moved content would start from its sources' posteriors, moment-matched, only once those are corrected for moved content being colder than its source.
 - **Ranking** would compute a page's index by (a) at each of its losses, from a table of $\Phi$ computed once, and age it between losses as the drafts do; (b) needs no table, and cost a few points more in simulation only on pages of a few large chunks that die whole.
 - **Bytes that consolidation moves out of a page** would lower its live bytes without counting as losses; the posterior's evidence on the rate stays, and with a static share, a chunk moved out leaves the page's touched or untouched counts, whichever held it.
 - **The constants** would all become the prior's:
@@ -365,26 +460,28 @@ The pages are the same for every estimator, but a difference of a point or so in
 | the drafts' constant | becomes |
 | --- | --- |
 | the forgetting rate $\beta$ | the drift of the prior over the rate's path, $\delta = e^{-\beta}$ |
-| the starting estimate's weight, $1/\beta$ epochs or $n_0$ | the prior's weight $\nu$, in epochs of the page's bytes |
+| the starting estimate, and its weight of $1/\beta$ epochs or $n_0$ | learned: for fresh content, the file's empirical prior; for moved content, its sources' posteriors |
 | the static-share test's $c$ | the weight $\nu_\pi$ of the prior on the draining fraction, in chunks |
 | the floor $R_\text{min}$ | a background rate that the model asserts for all content |
 
 ## Open questions
 
-- **How much a starting estimate should weigh, and in what unit.**
-  The prior's weight is exposure, fixed in byte-epochs, so on a page that drains fast, and shrinks, a wrong start outweighs the page's own losses for longer than the drafts' averages of fractions let it.
-  Scaling the prior's exposure with the page's live bytes would behave like the drafts, but is no longer a prior.
+- **Moved content is colder than its source.**
+  The survivors of a cleaned page outlived what died around them, so they drain slower than the page they came from, whose posterior they bring; the moment-matched prior overstates their rate, if by less as the source's own evidence is weaker.
+  Discounting a source's rate by what its survival says about it would correct that.
+- **A starting prior's weight is exposure, fixed in byte-epochs.**
+  On a page that drains fast, and shrinks, a strong start outweighs the page's own losses for longer than the drafts' averages of fractions let it; a learned prior is strong only where the file's pages, or a page's sources, agree.
 - **Chunks of unequal size.**
   The mixture takes the untouched chunks at their mean size; the exact posterior weighs each subset of them by its own sizes, which a page of a few large chunks and many small ones would notice.
 - **What a loss event is.**
   The dispersion treats every superseded range as one event, but one write that supersedes ranges on several pages, or several ranges of one page, is arguably one event; which grouping calibrates the posterior best is a question for measurement.
-- **Pooling evidence across pages.**
-  A single page has little evidence, but the pages one flush wrote hold content the application wrote together; a hierarchical prior, with the rates of one flush's pages drawn around a rate shared by them, would lend each page the others' losses.
-- **A rule that values learning at its worth.**
-  A page's next loss can make a ripe page unripe, so cleaning at the first ripe epoch cleans early, but (c), which guards against every loss the page could still suffer, likely or not, waits too long.
-  With one rate per page, the Bayes-optimal rule, which weighs each loss by its predictive probability, depends only on the posterior's shape, the fill, and the size of a loss event relative to it, and could be tabulated offline.
-  A one-step approximation of it, the knowledge gradient, was too slow to simulate in full and no better on the one scenario it finished.
-- **Moved content's evidence.**
-  A page mixed from others starts from the byte-weighted mean of their rates with a fixed weight; carrying each source's posterior over, in proportion to the bytes moved, would give the start the weight its evidence has, and chunks moved from a source where they were touched could arrive known to drain.
+- **Pooling evidence across pages, beyond the start.**
+  The empirical prior pools the file's pages once, at a page's start; the pages one flush wrote hold content the application wrote together, and a hierarchical prior, with the rates of one flush's pages drawn around a rate shared by them, would go on lending each page the others' losses.
+- **A drift that fits the file.**
+  A page's next loss can make a ripe page unripe, so cleaning at the first ripe epoch cleans early; (c), which guards against every loss the page could still suffer, waits too long, and (c′), which weighs each by its predictive probability, does nothing, since the predictive trusts the posterior's dip.
+  The dip comes from the prior's drift, which forgets a page's losses at $\beta$ whether its rate changes or not.
+  The drift could be learned from the file as the prior's other parameters are, for instance by how well each page's posterior predicts its next losses, and a slower drift for pages whose losses stay steady would dip less.
+- **Moved content's classes.**
+  Chunks moved from a source where they had been touched could arrive known to drain, and the draining fraction's prior could come from the sources' mixtures as the rate's does, rather than from their shares with a fixed weight.
 - **Epochs, not time.**
   The model counts rates per epoch, as the drafts do, and so shares their open question about the clock.
