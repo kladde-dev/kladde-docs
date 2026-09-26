@@ -12,7 +12,7 @@ This update's runs shared their host with other work, so the flush times on this
 **Cleaning by ripeness, as [the draft](../drafts/ripeness.md) proposes, keeps a file under skewed overwrites 10 to 12 % smaller than the current design for the same writes, or writes 4 to 20 % less for the same file size; under uniform overwrites the two are level, as the draft predicts.**
 At the default settings of each, the 8 and 64 MiB skewed files come out 5 to 6 % smaller for 10 to 11 % fewer writes.
 It gains where the draft says it should: under skew, [the current design](consolidation.md)'s data pages lose fill for most of a run as pages freeze above the churn floor, and ripeness's hold at 0.76.
-Where hot, cool, and never-changing cold allocations [share pages at random](#hot-cool-and-cold-allocations-on-shared-pages), it keeps the file as it does under skewed overwrites, but never separates the cold content from the rest.
+Where hot, cool, and never-changing cold allocations [share pages at random](#hot-cool-and-cold-allocations-on-shared-pages), it gains about as much, a file 4 to 5 % smaller for 9 % fewer writes, since main's data pages freeze there too; neither policy separates the cold content from the rest.
 
 It took one change to the draft to work: the controller that sets the price of space must measure the fill of the data pages and leaves, not of the whole file, or the price swings over decades.
 Three costs remain.
@@ -27,7 +27,7 @@ Main is at commit `cb34576`, as on [the consolidation page](consolidation.md).
 Its tables here are from a run made back to back with the first version of the branch, so that their times compare; a run of main for this update reproduced every number in them but the times, as the benchmark is deterministic but for its times.
 The branch is at `362210a`, which follows the draft as of kladde-docs `b33a836`; the first version, at `f7d4eab`, ranked pages by their absolute fill.
 Two more runs of the branch, at the same commit, measure what the consolidator state costs, by leaving it out, and what the logarithm contributes, by ranking pages without it, as the draft's ablation does.
-The `mixed` workload ran later, at `799c661`, which adds it to kladde-bench and changes nothing else; main did not run it.
+The `mixed` workload ran later, on the branch at `799c661`, and on main from the branch `main-mixed` at `7646408`; both commits add it to kladde-bench and change nothing else.
 The experiments this page cites besides, on the controller and on churn, ran on the first version, changed for the purpose, and are not part of the committed code.
 
 The branch fills in what the draft leaves open with a forgetting rate `β = 0.1` per flush, a floor `R_MIN = 10⁻⁴` and a starting price `κ = 0.01` (the draft's own examples), a cursor that gives up pages older than `W = 8` flushes, and a budget of 256 pages per flush, which is now a fixed cap.
@@ -117,27 +117,31 @@ Both stop once holes fall below a quarter of the file; ripeness's run crossed th
 
 ## Hot, cool, and cold allocations on shared pages
 
-**When hot, cool, and cold allocations share pages at random, ripeness keeps the file as it does under skewed overwrites, and never separates the cold content from the rest: nine tenths of the cold data share a page with content that still changes, at the end of a run as at its start.**
+**When hot, cool, and cold allocations share pages at random, ripeness gains over main about as much as under skewed overwrites, a file 4 to 5 % smaller for 9 % fewer writes, but neither policy separates the cold content from the rest.**
 kladde-bench's `mixed` workload is `skewed` with each allocation's class drawn at random.
 A tenth of the allocations are hot and take nine tenths of the writes; the other writes go to any allocation alike, as under skewed overwrites, except that the 45 % of allocations that are cold never change, so writes drawn for them are not made.
 The allocations are 1 KiB, four to a page, so that the pages written at the start mix classes, 91 % of the live data at 8 MiB.
 Skewed overwrites mix far less: their allocations of 16 KiB fill pages of their own, and their hot allocations hold the lowest ids, so a flush, which packs in key order, writes them apart from the rest.
 Each row of the workload's table records how much of the live data, and how much of the cold data, lies on pages that mix classes.
 
-| steady state | file size / live size | bytes written per byte | data pages' fill |
+| steady state, file size / live size and bytes written per byte | main | ripeness | change |
 | --- | --- | --- | --- |
-| mixed, 8 MiB | 1.56 | 2.47 | 0.77 |
-| mixed, 64 MiB | 1.44 | 2.85 | 0.77 |
-| skewed, 8 MiB | 1.56 | 2.44 | 0.76 |
-| skewed, 64 MiB | 1.43 | 2.84 | 0.76 |
+| mixed, 8 MiB | 1.64, 2.70 | 1.56, 2.47 | −5 %, −9 % |
+| mixed, 64 MiB | 1.51, 3.15 | 1.44, 2.85 | −4 %, −9 % |
 
-The file's size moves in steps, when freed pages come to lie at its end, where truncation returns them; its live pages hold 1.39 times the live size throughout.
+Under skewed overwrites, ripeness gains 5 to 6 % in file size and 10 to 11 % in writes.
+At 1 MiB, where the quarantine dominates, ripeness's mixed file is 17 % larger, as its skewed one is 11 % larger.
 
-![The mixed workload: file size over live size, the share of the live data on pages that mix classes, and the share of the cold data on such pages.](figures/ripeness/mixed.svg)
+**Main's data pages freeze here as they do under skewed overwrites.**
+Main's data pages lose fill for the whole run, from about 0.85 early on to 0.71 at its end, since a page whose hot content has died keeps its cool and cold content above the churn floor; ripeness holds its data pages at 0.77.
+The file's size moves in steps, when freed pages come to lie at its end, where truncation returns them, so the space its live pages take shows the difference better: 1.39 times the live size under ripeness, against 1.47 to 1.48 under main.
 
-**Cleaning packs a mixed page's survivors together again, cool and cold alike.**
-Once a page's hot content has died, what survives on it is cool content, which still dies, next to cold content, which never will, and nothing tells the two apart.
-The pages opened for survivors mix them again, so 90 % of the cold data stays on pages that mix classes at 8 MiB, and 88 % at 64 MiB, as 89 % does without any cleaning.
+![The mixed workload under main and ripeness: file size over live size, the live fraction of the data pages, the share of the live data on pages that mix classes, and the share of the cold data on such pages.](figures/ripeness/mixed.svg)
+
+**Neither policy separates the cold content from the rest.**
+At the start, 91 % of the cold data shares a page with content that still changes.
+Under ripeness, 90 % still does at the end of the 8 MiB run and 88 % at the end of the 64 MiB one, as 89 % does without any cleaning; under main, the share falls slowly, to 85 and 84 %, most likely as the cool content of frozen pages dies away and leaves some of them holding cold content alone.
+Ripeness cleans the mixed pages that main leaves frozen, but packs their survivors together again: once a page's hot content has died, what survives on it is cool content, which still dies, next to cold content, which never will, and nothing tells the two apart.
 The draft's "cold with cold" assumes that what survives has stopped dying; here it may only be slow.
 
 ## Without the logarithm
@@ -218,13 +222,16 @@ KLADDE_BENCH_NO_STATE=1 ./target/release/kladde-bench /tmp/bench-ripeness-no-sta
 KLADDE_BENCH_MYOPIC=1 ./target/release/kladde-bench /tmp/bench-ripeness-myopic uniform skewed append churn shrink tuning
 ```
 
-The mixed workload ran from the branch at `799c661`, with and without the consolidator state:
+The mixed workload ran from the branch at `799c661`, with and without the consolidator state, and on main from the branch `main-mixed` at `7646408`, which is main with the workload added:
 
 ```sh
 git checkout 799c661
 cargo build --release -p kladde-bench
 ./target/release/kladde-bench /tmp/bench-ripeness mixed
 KLADDE_BENCH_NO_STATE=1 ./target/release/kladde-bench /tmp/bench-ripeness-no-state mixed
+git checkout main-mixed
+cargo build --release -p kladde-bench
+./target/release/kladde-bench /tmp/bench-main mixed
 ```
 
 In kladde-docs, keep the tables gzipped under `content/evaluation/data/ripeness/`, in `main/`, `ripeness/`, `ripeness-no-state/`, and `ripeness-myopic/`, and draw the figures from them, all but the flush times, which come from the tables of commit `08febdf`:
@@ -236,5 +243,5 @@ tools/plot-evaluation.py --summary --out content/evaluation/figures/ripeness \
     main=$D/main ripeness=$D/ripeness
 tools/plot-evaluation.py --only tradeoff --out content/evaluation/figures/ripeness \
     main=$D/main ripeness=$D/ripeness myopic=$D/ripeness-myopic
-tools/plot-evaluation.py --only mixed --out content/evaluation/figures/ripeness ripeness=$D/ripeness
+tools/plot-evaluation.py --only mixed --out content/evaluation/figures/ripeness main=$D/main ripeness=$D/ripeness
 ```
