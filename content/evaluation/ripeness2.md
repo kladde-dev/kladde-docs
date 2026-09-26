@@ -74,7 +74,7 @@ And skewed overwrites seldom put hot and cold content on one page: their hot all
 The mixed 8 MiB files differ in size only because their free pages reached the file's end, where truncation returns them, at different times; in every run here, the live pages take the same space on both branches to within 0.2 %, 1.38 times the live size in the mixed ones.
 The 1 MiB files, dominated by the quarantine and too short for the controller to settle, differ by up to 2 %.
 
-![The mixed workload on both branches: file size over live size, the share of the live data on pages that mix classes, and the share of the cold data on such pages.](figures/ripeness2/mixed.svg)
+![The mixed workload on both branches: file size over live size, the live fraction of the data pages, the share of the live data on pages that mix classes, and the share of the cold data on such pages.](figures/ripeness2/mixed.svg)
 
 **With the state, the static-share branch writes 2 to 7 % more, and its trade-off curve lies 3 to 7 % to the right of the single-rate branch's.**
 
@@ -90,6 +90,7 @@ The 1 MiB files, dominated by the quarantine and too short for the controller to
 | churn, 16 MiB | 1.68, 2.12 | 1.67, 2.15 | −1 %, +2 % |
 | typed, 16 MiB | 1.46, 3.81 | 1.47, 4.02 | +1 %, +6 % |
 
+On the mixed workload, against main, which [Cleaning by ripeness](ripeness.md#hot-cool-and-cold-allocations-on-shared-pages) compares there, the static-share branch keeps less of the single-rate branch's gain in writes, 6 % fewer at 8 MiB and 3 % at 64 MiB, against 9 % at both; its live pages take 5 to 6 % less space than main's, as the single-rate branch's do.
 At the targets from 0.65 to 0.85, the 8 MiB files write 3 to 6 % more under skewed overwrites and 5 to 7 % more under uniform ones for the same file size.
 Main's curve stays where [Cleaning by ripeness](ripeness.md#the-trade-off) puts it: under skew, both ripeness branches lie below it.
 
