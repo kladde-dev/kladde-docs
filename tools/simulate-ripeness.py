@@ -24,22 +24,27 @@ rate decaying by e^-beta per epoch):
             of the fraction of live bytes lost per epoch.
 
 With `--set bayes`, the estimators of drafts/bayesian-ripeness.md instead,
-which count losses in statements and keep a posterior per page:
+which keep a posterior per page, from the bytes lost and exposed, counted in
+loss events: divided by the dispersion E[s^2]/E[s] of the events' sizes.
 
   posterior the single-rate Gamma posterior, discounted, ranked by its mean.
   gain      the same posterior, ranked by (a), the expected gain.
   median    the same posterior, ranked by (b), the probability of a gain.
   robust    the same posterior, ranked by (c): the least index the page would
-            have after any number of further losses, by its mean.
-  cure      the static-share (cure-model) posterior, ranked by (a).
+            have after any number of further loss events, by its mean.
+  cure-mean the static-share posterior, per chunk (a cure model), ranked by
+            its means of the draining share and the rate.
+  cure      the same, ranked by (a).
   cure-prob the same, ranked by (b).
-  cure-rob  the same, ranked by (c): the least index the page would have
-            after any of 0, 1, 2, 3, 5, 8, 13, or 21 further losses, by its
-            posterior means of the draining share and the rate.
+
+There, `tested` counts its test in loss events too.  A statement's payload,
+a chunk, dies whole by default; with `--pieces w`, it loses its bytes in
+pieces of w bytes, each dying at the chunk's rate, as a data page's `Ref`
+loses the parts of its payload that writes supersede.
 
 Usage:
     tools/simulate-ripeness.py compare [--items 32-256] [--beta 0.1] ...
-    tools/simulate-ripeness.py compare --set bayes --pages 400 [--nu 3] ...
+    tools/simulate-ripeness.py compare --set bayes --pages 400 [--pieces 32] ...
     tools/simulate-ripeness.py sweep --beta 0.05,0.1,0.2 --c 1,2,3
     tools/simulate-ripeness.py example
 
@@ -77,7 +82,7 @@ SCENARIOS = {
 SETS = {
     "drafts": ("previous", "fit", "tested", "single"),
     "bayes": ("single", "posterior", "gain", "median", "robust",
-              "tested", "cure", "cure-prob", "cure-rob"),
+              "tested", "cure-mean", "cure", "cure-prob"),
 }
 ESTIMATORS = SETS["drafts"]
 
@@ -317,23 +322,24 @@ def bisect(F, P, lo, hi, iters=40):
 
 class Posterior:
     """One rate per page: a Gamma posterior over it, discounted by e^-beta
-    per epoch, from losses and exposure counted in statements."""
+    per epoch, from the bytes lost and the live bytes exposed, both counted in
+    loss events: divided by the dispersion of the events' sizes, E[s^2]/E[s]."""
 
-    def __init__(self, prior, x, seed_age, o, rule, n):
+    def __init__(self, prior, x, seed_age, o, rule, chunks):
         r0, a0, s0 = prior
         self.o, self.rule = o, rule
-        delta = math.exp(-o.beta)
+        delta, sd = math.exp(-o.beta), o.dispersion
         rate = r0 * a0 / np.maximum(a0 + s0, 1e-12)
         if seed_age:
-            # The seed's past, watched: n e^(r k) statements live k epochs ago.
+            # The seed's past, watched: x e^(r k) of a page live k epochs ago.
             k = np.arange(seed_age)[None, :]
-            self.B = (delta ** k * n[:, None] * np.exp(rate[:, None] * k)).sum(1)
+            self.B = (delta ** k * x[:, None] * np.exp(rate[:, None] * k)).sum(1) / sd
         else:
-            self.B = o.nu * n.astype(float)
+            self.B = o.nu * x / sd
         self.A = rate * self.B
-        self.I, self.at = self.index(x, n, self.A), np.zeros(len(x))
+        self.I, self.at = self.index(x, self.A), np.zeros(len(x))
 
-    def index(self, x, n, A):
+    def index(self, x, A):
         from scipy.special import gammaincinv
         A, B = np.maximum(A, 1e-6), self.B
         if self.rule == "mean":
@@ -346,77 +352,77 @@ class Posterior:
             log_m = bisect(lambda lm: g - phi_at(tables, lm[:, None])[:, 0], len(x),
                            _LOG_M[0], _LOG_M[-1])
             return B / np.exp(log_m)
-        # robust: the least index by the mean after j more losses, at once
-        j = np.arange(max(int(n.max()), 1))[None, :]
-        xj = np.maximum(x[:, None] * (1 - j / np.maximum(n[:, None], 1)), 1e-9)
-        ij = np.where(j < n[:, None], h(xj) * B[:, None] / (A[:, None] + j), np.inf)
+        # robust: the least index by the mean after j more loss events, at once
+        sd = self.o.dispersion
+        j = np.arange(max(int((x / sd).max()), 1))[None, :]
+        xj = x[:, None] - j * sd
+        ij = np.where(xj > 0, h(np.maximum(xj, 1e-9)) * B[:, None] / (A[:, None] + j), np.inf)
         return ij.min(1)
 
-    def step(self, t, L, x, x_before, k, n, n_before):
-        delta = math.exp(-self.o.beta)
-        self.A = delta * self.A + k
-        self.B = delta * self.B + n_before - k / 2
-        hit = k > 0
+    def step(self, t, L, x, x_before, chunks):
+        delta, sd = math.exp(-self.o.beta), self.o.dispersion
+        self.A = delta * self.A + L / sd
+        self.B = delta * self.B + (x_before - L / 2) / sd
+        hit = L > 0
         if hit.any():
-            self.I = np.where(hit, self.index(x, n, self.A), self.I)
+            self.I = np.where(hit, self.index(x, self.A), self.I)
             self.at = np.where(hit, t, self.at)
         return np.minimum(self.I * np.exp(self.o.beta * (t - self.at)), h(x) / R_MIN)
 
 
 class Cure:
-    """A draining share over a static one: each statement drains with
-    probability pi, else never dies.  The posterior is a mixture over j, the
-    number of live statements that still drain; the rate's evidence is
-    discounted, and so, with `--class-counts discounted`, the class counts."""
+    """A draining share over a static one, per chunk: each chunk drains with
+    probability pi, and a draining chunk loses its bytes at the rate r, in
+    loss events; a static chunk never loses a byte.  A chunk that has lost
+    bytes is known to drain, and the posterior is a mixture over j, how many
+    of the untouched chunks drain too.  The evidence is discounted, and so,
+    with `--class-counts discounted`, the count of chunks known to drain."""
 
-    def __init__(self, prior, x, seed_age, o, rule, n):
+    def __init__(self, prior, x, seed_age, o, rule, chunks):
         r0, a0, s0 = prior
         self.o, self.rule = o, rule
-        delta = math.exp(-o.beta)
+        delta, sd = math.exp(-o.beta), o.dispersion
         P = len(x)
         pi0 = np.clip(a0 / np.maximum(a0 + s0, 1e-12), 0, 1)
         self.p0, self.q0 = o.nu_pi * pi0 + 0.5, o.nu_pi * (1 - pi0) + 0.5
-        self.dead, self.dead_d, self.exposed = np.zeros(P), np.zeros(P), np.zeros(P)
+        self.events = np.zeros(P)  # bytes lost, discounted, over the dispersion
         if seed_age:
             k = np.arange(seed_age)
             self.age = np.full(P, (delta ** k).sum())
-            self.B0 = (delta ** k[None, :] * n[:, None] * np.exp(r0[:, None] * k[None, :])).sum(1)
+            self.B0 = (delta ** k[None, :] * x[:, None] * np.exp(r0[:, None] * k[None, :])).sum(1) / sd
+            # Chunks touched before open are known to drain, since their write.
+            self.drained = chunks["touched"].astype(float)
+            self.known = chunks["touched_bytes0"] * self.age
         else:
             self.age = np.zeros(P)
-            self.B0 = o.nu * np.maximum(pi0 * n, 1.0)
+            self.B0 = o.nu * np.maximum(pi0 * x, sd) / sd
+            self.drained, self.known = np.zeros(P), np.zeros(P)
+        self.drained_whole = self.drained.copy()
         self.A0 = r0 * self.B0
-        self.I, self.at = self.index(x, n), np.zeros(P)
+        self.I, self.at = self.index(x, chunks), np.zeros(P)
 
-    def posterior(self, n):
+    def posterior(self, chunks):
         from scipy.special import betaln, gammaln
+        n = chunks["untouched"]
         j = np.arange(int(n.max()) + 1)[None, :]
         m = n[:, None]
-        A = np.maximum(self.A0 + self.dead_d, 1e-6)
-        B = (self.B0 + self.exposed)[:, None] + j * self.age[:, None]
-        drained = self.dead_d if self.o.class_counts == "discounted" else self.dead
+        mean_chunk = chunks["untouched_bytes"] / np.maximum(n, 1)
+        A = np.maximum(self.A0 + self.events, 1e-6)
+        B = (self.B0 + self.known / self.o.dispersion)[:, None] \
+            + j * (mean_chunk * self.age / self.o.dispersion)[:, None]
+        drained = self.drained if self.o.class_counts == "discounted" else self.drained_whole
         lw = (gammaln(m + 1) - gammaln(j + 1) - gammaln(np.maximum(m - j, 0) + 1)
               - A[:, None] * np.log(np.maximum(B, 1e-300))
               + betaln((self.p0 + drained)[:, None] + j, self.q0[:, None] + np.maximum(m - j, 0)))
         lw = np.where(j <= m, lw, -np.inf)
         w = np.exp(lw - lw.max(1, keepdims=True))
-        return A, B, w / w.sum(1, keepdims=True), j
+        a = chunks["touched_live"][:, None] + j * mean_chunk[:, None]
+        return A, B, w / w.sum(1, keepdims=True), j, a
 
-    def index(self, x, n):
+    def index(self, x, chunks):
         from scipy.special import gammainc
-        if self.rule == "rob":
-            saved = (self.dead, self.dead_d, self.exposed)
-            self.rule, best = "mean", np.full(len(x), np.inf)
-            for jj in (0, 1, 2, 3, 5, 8, 13, 21):
-                ok = jj < n
-                if ok.any():
-                    self.dead, self.dead_d = saved[0] + jj, saved[1] + jj
-                    self.exposed = saved[2] + jj * np.maximum(self.age - 0.5, 0)
-                    xj = np.maximum(x * (1 - jj / np.maximum(n, 1)), 1e-9)
-                    best = np.where(ok, np.minimum(best, self.index(xj, np.maximum(n - jj, 0))), best)
-            self.rule, (self.dead, self.dead_d, self.exposed) = "rob", saved
-            return best
-        A, B, w, j = self.posterior(n)
-        a = x[:, None] * j / np.maximum(n[:, None], 1)
+        A, B, w, j, a = self.posterior(chunks)
+        a = np.minimum(a, x[:, None])
         if self.rule == "mean":
             a_mean = (w * a).sum(1)
             return index(a_mean, x - a_mean, (w * A[:, None] / B).sum(1), x)
@@ -428,39 +434,44 @@ class Cure:
                 return (1 - x) - (w * a * phi_at(tables, log_m)).sum(1)
         else:
             z = a / np.maximum(1 - x[:, None] + a, 1e-12)
-            hz = np.where(j > 0, h(np.maximum(z, 1e-12)), np.inf)
+            hz = np.where(a > 0, h(np.maximum(z, 1e-12)), np.inf)
 
             def F(lk):
                 arg = np.minimum(B * np.exp(lk)[:, None] * hz, 1e300)
                 return (w * gammainc(A[:, None], arg)).sum(1) - 0.5
         return np.exp(-bisect(F, len(x), -20.0, 12.0))
 
-    def step(self, t, L, x, x_before, k, n, n_before):
-        delta = math.exp(-self.o.beta)
+    def step(self, t, L, x, x_before, chunks):
+        delta, sd = math.exp(-self.o.beta), self.o.dispersion
         self.A0, self.B0 = delta * self.A0, delta * self.B0
-        self.exposed = delta * self.exposed + k * (delta * self.age + 0.5)
+        # The exposure of bytes known to drain: those of chunks touched before
+        # this epoch, all of this one; those of chunks it touches, since their
+        # write; less half of what the epoch lost, all of it from such chunks.
+        self.known = (delta * self.known + chunks["touched_live_before"]
+                      + chunks["new_bytes0"] * (delta * self.age + 1) - L / 2)
         self.age = delta * self.age + 1
-        self.dead_d = delta * self.dead_d + k
-        self.dead = self.dead + k
-        hit = k > 0
+        self.events = delta * self.events + L / sd
+        self.drained = delta * self.drained + chunks["new"]
+        self.drained_whole = self.drained_whole + chunks["new"]
+        hit = L > 0
         if hit.any():
-            self.I = np.where(hit, self.index(x, n), self.I)
+            self.I = np.where(hit, self.index(x, chunks), self.I)
             self.at = np.where(hit, t, self.at)
         return np.minimum(self.I * np.exp(self.o.beta * (t - self.at)), h(x) / R_MIN)
 
 
-def make(name, prior, x, seed_age, o, n):
+def make(name, prior, x, seed_age, o, chunks):
     return {"previous": lambda: Previous(prior, x, seed_age, o),
             "fit": lambda: Fit(prior, x, seed_age, o, tested=False),
             "tested": lambda: Fit(prior, x, seed_age, o, tested=True),
             "single": lambda: Single(prior, x, seed_age, o),
-            "posterior": lambda: Posterior(prior, x, seed_age, o, "mean", n),
-            "gain": lambda: Posterior(prior, x, seed_age, o, "gain", n),
-            "median": lambda: Posterior(prior, x, seed_age, o, "median", n),
-            "robust": lambda: Posterior(prior, x, seed_age, o, "robust", n),
-            "cure": lambda: Cure(prior, x, seed_age, o, "gain", n),
-            "cure-prob": lambda: Cure(prior, x, seed_age, o, "prob", n),
-            "cure-rob": lambda: Cure(prior, x, seed_age, o, "rob", n)}[name]()
+            "posterior": lambda: Posterior(prior, x, seed_age, o, "mean", chunks),
+            "gain": lambda: Posterior(prior, x, seed_age, o, "gain", chunks),
+            "median": lambda: Posterior(prior, x, seed_age, o, "median", chunks),
+            "robust": lambda: Posterior(prior, x, seed_age, o, "robust", chunks),
+            "cure-mean": lambda: Cure(prior, x, seed_age, o, "mean", chunks),
+            "cure": lambda: Cure(prior, x, seed_age, o, "gain", chunks),
+            "cure-prob": lambda: Cure(prior, x, seed_age, o, "prob", chunks)}[name]()
 
 
 # -------------------------------------------------------------- simulation
@@ -474,7 +485,9 @@ def run(key, o, seed=1):
     P, T, kappa = o.pages, o.epochs, o.kappa
     lo, hi = o.items
 
-    # Each page: statements of lo..hi bytes, filling each share's quota.
+    # Each page: statements of lo..hi bytes, filling each share's quota.  A
+    # statement's payload, a chunk, loses its bytes in pieces of `o.pieces`
+    # bytes, each dying at the chunk's rate, or whole if `o.pieces` is 0.
     rows = []
     for _ in range(P):
         row = []
@@ -485,14 +498,32 @@ def run(key, o, seed=1):
                 row.append((size, i))
                 quota -= size
         rows.append(row)
-    n = max(len(r) for r in rows)
+    pieces = []
+    for row in rows:
+        split = []
+        for c, (sz, i) in enumerate(row):
+            w = o.pieces or sz
+            split += [(w, i, c)] * int(sz // w) + ([(sz % w, i, c)] if sz % w else [])
+        pieces.append(split)
+    n = max(len(r) for r in pieces)
+    n_chunks = max(len(r) for r in rows)
     size = np.zeros((P, n))
     share = np.full((P, n), -1)
-    for p, row in enumerate(rows):
-        for j, (sz, i) in enumerate(row):
-            size[p, j], share[p, j] = sz, i
+    chunk = np.zeros((P, n), int)
+    for p, row in enumerate(pieces):
+        for j, (sz, i, c) in enumerate(row):
+            size[p, j], share[p, j], chunk[p, j] = sz, i, c
     alive = size > 0
     death = 1 - np.exp(-rates[np.maximum(share, 0)])
+    flat = (np.arange(P)[:, None] * n_chunks + chunk).ravel()
+
+    def per_chunk(v):
+        return np.bincount(flat, weights=v.ravel(), minlength=P * n_chunks).reshape(P, n_chunks)
+
+    size0 = per_chunk(size) / PAGE
+    exists = size0 > 0
+    # The events' dispersion, E[s^2]/E[s], which the fold would measure.
+    o.dispersion = (size ** 2).sum() / size.sum() / PAGE
 
     def held():
         return np.stack([(size * alive * (share == i)).sum(1) for i in range(len(shares))], 1) / PAGE
@@ -500,9 +531,21 @@ def run(key, o, seed=1):
     seed_age = sc.get("seed_age", 0)
     for _ in range(seed_age):
         alive &= ~(rng.random(size.shape) < death)
+    touched = exists & (per_chunk(size * ~alive) > 0)
     b = held()
     x = b.sum(1)
-    o.statement = (lo + hi) / 2 / PAGE
+    o.statement = o.dispersion if o.set == "bayes" else (lo + hi) / 2 / PAGE
+
+    def chunk_state(live, touched):
+        untouched = exists & ~touched
+        return {"untouched": untouched.sum(1),
+                "untouched_bytes": (size0 * untouched).sum(1),
+                "touched_live": (live * touched).sum(1)}
+
+    live = per_chunk(size * alive) / PAGE
+    chunks = chunk_state(live, touched)
+    chunks.update(touched=(touched & (live > 0)).sum(1),
+                  touched_bytes0=(size0 * touched * (live > 0)).sum(1))
 
     if seed_age:
         prior = (np.log(1 / x) / seed_age, x.copy(), np.zeros(P))
@@ -510,8 +553,7 @@ def run(key, o, seed=1):
         p = sc.get("prior") or (mix_loss if o.mix == "loss" else mix_draft)(sc["parts"])
         prior = tuple(np.full(P, v) for v in p)
     names = SETS[o.set]
-    n_live = alive.sum(1)
-    est = {k: make(k, prior, x, seed_age, o, n_live) for k in names}
+    est = {k: make(k, prior, x, seed_age, o, chunks) for k in names}
 
     future = np.array([future_cost(r, kappa) for r in rates])
     held_space = np.zeros(P)
@@ -519,16 +561,20 @@ def run(key, o, seed=1):
     ripe = {k: np.full(P, -1) for k in ("true", *names)}
     for t in range(1, T + 1):
         held_space += kappa * (1 - x)
-        x_before, n_before = x, n_live
+        x_before, live_before, touched_before = x, live, touched
         dies = alive & (share >= 0) & (rng.random(size.shape) < death)
         L = (size * dies).sum(1) / PAGE
         alive &= ~dies
         b = held()
         x = b.sum(1)
-        n_live = alive.sum(1)
         costs.append(held_space + x + b @ future)
-        indexes = {k: e.step(t, L, x, x_before, k=dies.sum(1), n=n_live, n_before=n_before)
-                   for k, e in est.items()}
+        live = per_chunk(size * alive) / PAGE
+        new = exists & ~touched_before & (per_chunk(size * dies) > 0)
+        touched = touched_before | new
+        chunks = chunk_state(live, touched)
+        chunks.update(new=new.sum(1), new_bytes0=(size0 * new).sum(1),
+                      touched_live_before=(live_before * touched_before).sum(1))
+        indexes = {k: e.step(t, L, x, x_before, chunks=chunks) for k, e in est.items()}
         indexes["true"] = true_index(b, rates, x)
         for k, i in indexes.items():
             ripe[k][(ripe[k] < 0) & (i >= 1 / kappa)] = t
@@ -544,7 +590,9 @@ def compare(o):
     names = SETS[o.set]
     print(f"excess cost over cleaning at the true index; beta={o.beta}, n0={o.n0}, c={o.c}, "
           f"nu={o.nu}, nu_pi={o.nu_pi}, {o.class_counts} class counts, "
-          f"statements of {o.items[0]}-{o.items[1]} bytes, the {o.mix} mix, {o.pages} pages")
+          f"statements of {o.items[0]}-{o.items[1]} bytes, "
+          f"{f'losing pieces of {o.pieces} bytes' if o.pieces else 'dying whole'}, "
+          f"the {o.mix} mix, {o.pages} pages")
     print(f"{'':52s}" + "".join(f"{k:>10s}" for k in names))
     total = dict.fromkeys(names, 0.0)
     for key, (name, _) in SCENARIOS.items():
@@ -607,10 +655,12 @@ def main():
     ap.add_argument("--epochs", type=int, default=120)
     ap.add_argument("--kappa", type=float, default=0.01)
     ap.add_argument("--set", choices=tuple(SETS), default="drafts")
+    ap.add_argument("--pieces", type=int, default=0,
+                    help="bytes a chunk loses at a time; 0 for whole chunks")
     ap.add_argument("--nu", type=float, default=3.0,
-                    help="the prior's weight on the starting rate, in epochs of the page's statements")
+                    help="the prior's weight on the starting rate, in epochs of the page's bytes")
     ap.add_argument("--nu-pi", type=float, default=10.0,
-                    help="the prior's weight on the draining fraction, in statements")
+                    help="the prior's weight on the draining fraction, in chunks")
     ap.add_argument("--class-counts", choices=("discounted", "whole"), default="discounted")
     o = ap.parse_args()
     o.items = tuple(int(v) for v in o.items.split("-"))

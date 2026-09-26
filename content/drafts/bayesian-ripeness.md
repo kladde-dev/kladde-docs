@@ -20,6 +20,35 @@ Here each becomes a parameter of one prior, and the uncertainty they cope with b
   The single-rate posterior costs 44 % against its draft's 46 %, once its starting estimate weighs 3 epochs rather than the draft's 10.
   Rules (a) and (b) differ little from the posterior mean, and (c) costs more than any.
 
+## Summary
+
+The simulation shows the static-share model paying off once it's Bayesian, and the uncertainty-aware decision rules mattering little.
+
+**The posteriors**
+- **Single rate:** there is an exact posterior, a Gamma distribution. It stays exact when the rate drifts over time (the Smith–Miller gamma–beta model), and the drafts' forgetting rate β becomes that drift. Once a page has been watched a while, the posterior mean is exactly the single-rate draft's estimate. The posterior adds a count of how many statements' worth of evidence the estimate rests on, and makes the starting estimate's weight an explicit prior parameter, which answers your earlier question about it.
+- **Static share:** the exact posterior is a finite mixture, one component for each possible number of live statements that still drain. This is the "mixture cure model" from survival analysis. A prior on the draining fraction replaces the draft's static-share test. It also reads the page's surviving statements, not just its losses, so it can see static content that the draft's fit missed on kladde-bench.
+- **The drift in the static-share model** has no exact update, so there I discount all the evidence as an approximation.
+
+**The decision rules**
+- **Gain:** the gain of cleaning now rather than one epoch later is κ[(1 − x) − a·φ(r/κ)], where φ solves φ − ln(1+φ) = r/κ. That is the drafts' rule stated as a gain.
+- **(a) and (b):** (a) cleans when the expected gain is positive, (b) when a gain is more likely than not. For one rate, (b) is just the draft's index at the posterior's median rate. Both make uncertain pages riper than the posterior mean does.
+- **(c), my addition:** under an estimated rate, a page's next loss can make a ripe page unripe again (at the drafts' constants, for any fill above 1/11). So cleaning at the first ripe epoch is early. Rule (c) cleans only once no further loss could unripen the page.
+
+**Simulation** (excess cost over cleaning at the true ripeness, eight scenarios summed, 32–256-byte statements)
+
+| model | draft | Bayesian | with (b) | with (c) |
+| --- | --- | --- | --- | --- |
+| single rate | 46 % | 44 % (posterior mean) | 44 % | 45 % |
+| static share | 46 % (tested fit) | — | 38 % | 38 % |
+
+- **Static share:** the Bayesian model is best on every statement size. With many small statements it reaches 18.5 % against 27 %, and it helps most on pages that really hold static content.
+- **Single rate:** the gain comes almost entirely from a lighter starting-estimate weight (ν = 3 epochs rather than the draft's ~10). At ν = 10 the Bayesian version is worse than the draft.
+- **Rules:** (a) and (b) end up within about a point of the posterior mean. The draft recommends (b), because it's cheaper to compute.
+- **Rule (c) doesn't work:** it guards against unlikely losses as firmly as likely ones, and with many small statements it costs 47 % against 27 %. The draft says so, and lists a rule that weighs each loss by its probability as an open question.
+- **Abandoned attempt:** I tried a cheaper learning-aware rule (the "knowledge gradient"). It was too slow to finish and no better on the one scenario it completed, so it's only mentioned.
+
+These are simulations only, costed with the drafts' own model; nothing ran on kladde-bench.
+
 ## The decision under a posterior
 
 ### The gain of cleaning now
