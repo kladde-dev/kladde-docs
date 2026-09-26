@@ -32,19 +32,28 @@ loss events: divided by the dispersion E[s^2]/E[s] of the events' sizes.
   median    the same posterior, ranked by (b), the probability of a gain.
   robust    the same posterior, ranked by (c): the least index the page would
             have after any number of further loss events, by its mean.
+  option    the same posterior, ranked by (c'): cleaning once it gains, per
+            epoch, what the option to wait is worth under the predictive of
+            the losses within the posterior's memory, by its mean.
   cure-mean the static-share posterior, per chunk (a cure model), ranked by
             its means of the draining share and the rate.
   cure      the same, ranked by (a).
   cure-prob the same, ranked by (b).
+  cure-opt  the same, ranked by (c'), by its means.
 
 There, `tested` counts its test in loss events too.  A statement's payload,
 a chunk, dies whole by default; with `--pieces w`, it loses its bytes in
 pieces of w bytes, each dying at the chunk's rate, as a data page's `Ref`
-loses the parts of its payload that writes supersede.
+loses the parts of its payload that writes supersede.  The Bayesian
+estimators start from the scenario's rate at a weight of `--nu` epochs, or
+with `--prior matched`, from the moments of its sources' posteriors, or with
+`--prior empirical`, from the file's empirical prior, learned from other
+pages' first epochs.  `--names` runs a subset of the estimators.
 
 Usage:
     tools/simulate-ripeness.py compare [--items 32-256] [--beta 0.1] ...
     tools/simulate-ripeness.py compare --set bayes --pages 400 [--pieces 32] ...
+    tools/simulate-ripeness.py compare --set bayes --prior empirical --names posterior,cure ...
     tools/simulate-ripeness.py sweep --beta 0.05,0.1,0.2 --c 1,2,3
     tools/simulate-ripeness.py example
 
@@ -59,6 +68,7 @@ import numpy as np
 
 PAGE = 4096
 R_MIN = 1e-4
+SOURCE_FILL = 0.5  # the fill of a source page whose posterior moved content brings
 
 # The scenarios: each page starts full (u0 = 1), with shares (size, rate); a
 # rate of 0 is static.  `prior` is the page's starting estimate (r, a, s);
@@ -81,8 +91,8 @@ SCENARIOS = {
 }
 SETS = {
     "drafts": ("previous", "fit", "tested", "single"),
-    "bayes": ("single", "posterior", "gain", "median", "robust",
-              "tested", "cure-mean", "cure", "cure-prob"),
+    "bayes": ("single", "posterior", "gain", "median", "robust", "option",
+              "tested", "cure-mean", "cure", "cure-prob", "cure-opt"),
 }
 ESTIMATORS = SETS["drafts"]
 
@@ -310,6 +320,49 @@ def phi_at(tables, log_m):
     return tables[rows, i] * (1 - f) + tables[rows, i + 1] * f
 
 
+def memory(o):
+    """The epochs a discounted posterior remembers: 1 / (1 - e^-beta)."""
+    return 1 / -math.expm1(-o.beta)
+
+
+def predictive(A, B, exposure, j):
+    """The negative-binomial predictive of j loss events over `exposure`
+    (in events) under a Gamma(A, B) posterior on the rate, per page."""
+    from scipy.special import gammaln
+    A, j = np.maximum(A, 1e-6)[:, None], np.asarray(j, float)
+    p = np.minimum(B / (B + exposure), 1 - 1e-16)[:, None]  # no exposure: no events
+    return np.exp(gammaln(A + j) - gammaln(A) - gammaln(j + 1) + A * np.log(p) + j * np.log1p(-p))
+
+
+def option_index(A, B, a, x, o):
+    """(c'): the 1/kappa at which cleaning now gains, per epoch, at least what
+    the option to wait is worth: the expected gain the page would forgo, by
+    the posterior mean, if the losses of the posterior's memory, drawn from
+    the predictive, left it unripe.  The draining share `a` drains at the
+    rate A/B; after H epochs and J loss events, the posterior is discounted
+    by delta^H, with the J events and H epochs' exposure added."""
+    sd, H = o.dispersion, memory(o)
+    delta = math.exp(-o.beta)
+    decay = delta ** H
+    kept = (1 - decay) / (H * (1 - delta))  # an event's mean discount over H
+    J = np.arange(max(int((a / sd).max()), 0) + 1)[None, :]
+    aJ = a[:, None] - J * sd
+    weights = predictive(A, B, a / sd * H, J) * (aJ >= 0)
+    weights /= np.maximum(weights.sum(1, keepdims=True), 1e-300)
+    AJ = decay * A[:, None] + J * kept
+    BJ = decay * B[:, None] + (a[:, None] - J * sd / 2) * H * kept / sd
+    rate, rateJ = A / B, AJ / np.maximum(BJ, 1e-300)
+    aJ, xJ = np.maximum(aJ, 0), x[:, None] - (a[:, None] - np.maximum(aJ, 0))
+
+    def F(lk):
+        kappa = np.exp(lk)
+        now = (1 - x) - a * phi(rate / kappa)
+        later = (1 - xJ) - aJ * phi(rateJ / kappa[:, None])
+        return now - (weights * np.maximum(0, -later)).sum(1)
+
+    return np.minimum(np.exp(-bisect(F, len(x), -20.0, 12.0)), h(x) / R_MIN)
+
+
 def bisect(F, P, lo, hi, iters=40):
     """The root of F, increasing in its argument, per page."""
     lo, hi = np.full(P, lo), np.full(P, hi)
@@ -334,9 +387,12 @@ class Posterior:
             # The seed's past, watched: x e^(r k) of a page live k epochs ago.
             k = np.arange(seed_age)[None, :]
             self.B = (delta ** k * x[:, None] * np.exp(rate[:, None] * k)).sum(1) / sd
+            self.A = rate * self.B
+        elif o.start is not None:
+            self.A, self.B = (v.copy() for v in o.start["single"])
         else:
             self.B = o.nu * x / sd
-        self.A = rate * self.B
+            self.A = rate * self.B
         self.I, self.at = self.index(x, self.A), np.zeros(len(x))
 
     def index(self, x, A):
@@ -352,12 +408,16 @@ class Posterior:
             log_m = bisect(lambda lm: g - phi_at(tables, lm[:, None])[:, 0], len(x),
                            _LOG_M[0], _LOG_M[-1])
             return B / np.exp(log_m)
-        # robust: the least index by the mean after j more loss events, at once
+        # robust: the index by the mean after j more loss events, at once:
+        # the least of them, or their median under the predictive of the
+        # losses within the posterior's memory.
         sd = self.o.dispersion
         j = np.arange(max(int((x / sd).max()), 1))[None, :]
         xj = x[:, None] - j * sd
         ij = np.where(xj > 0, h(np.maximum(xj, 1e-9)) * B[:, None] / (A[:, None] + j), np.inf)
-        return ij.min(1)
+        if self.rule == "robust":
+            return ij.min(1)
+        return option_index(A, B, x, x, self.o)
 
     def step(self, t, L, x, x_before, chunks):
         delta, sd = math.exp(-self.o.beta), self.o.dispersion
@@ -399,6 +459,8 @@ class Cure:
             self.drained, self.known = np.zeros(P), np.zeros(P)
         self.drained_whole = self.drained.copy()
         self.A0 = r0 * self.B0
+        if not seed_age and o.start is not None:
+            self.A0, self.B0 = (v.copy() for v in o.start["cure"])
         self.I, self.at = self.index(x, chunks), np.zeros(P)
 
     def posterior(self, chunks):
@@ -423,9 +485,12 @@ class Cure:
         from scipy.special import gammainc
         A, B, w, j, a = self.posterior(chunks)
         a = np.minimum(a, x[:, None])
-        if self.rule == "mean":
+        if self.rule in ("mean", "option"):
             a_mean = (w * a).sum(1)
-            return index(a_mean, x - a_mean, (w * A[:, None] / B).sum(1), x)
+            rate = (w * A[:, None] / B).sum(1)
+            if self.rule == "mean":
+                return index(a_mean, x - a_mean, rate, x)
+            return option_index(A, A / np.maximum(rate, 1e-300), a_mean, x, self.o)
         if self.rule == "gain":
             tables = phi_tables(A)
 
@@ -469,12 +534,58 @@ def make(name, prior, x, seed_age, o, chunks):
             "gain": lambda: Posterior(prior, x, seed_age, o, "gain", chunks),
             "median": lambda: Posterior(prior, x, seed_age, o, "median", chunks),
             "robust": lambda: Posterior(prior, x, seed_age, o, "robust", chunks),
+            "option": lambda: Posterior(prior, x, seed_age, o, "option", chunks),
             "cure-mean": lambda: Cure(prior, x, seed_age, o, "mean", chunks),
+            "cure-opt": lambda: Cure(prior, x, seed_age, o, "option", chunks),
             "cure": lambda: Cure(prior, x, seed_age, o, "gain", chunks),
             "cure-prob": lambda: Cure(prior, x, seed_age, o, "prob", chunks)}[name]()
 
 
 # -------------------------------------------------------------- simulation
+
+def starting_priors(sc, P, o):
+    """The Bayesian estimators' starting Gamma priors on the rate, per page:
+    `matched` to the moments of the sources' posteriors, each a source page
+    at SOURCE_FILL whose posterior has settled, or the file's `empirical` one."""
+    if o.prior == "empirical":
+        start = tuple(np.full(P, v) for v in o.empirical)
+        return {"single": start, "cure": start}
+    parts = sc.get("parts") or [(sc["prior"][1], sc["prior"][0], sc["prior"][2])]
+    delta = math.exp(-o.beta)
+
+    def matched(components):  # (bytes, rate) of each source
+        w = np.array([c[0] for c in components], float)
+        m = np.maximum([c[1] for c in components], R_MIN)
+        w /= w.sum()
+        var = m * o.dispersion * (1 - delta) / SOURCE_FILL  # m^2 / (the source's events)
+        mean = (w * m).sum()
+        spread = (w * (var + m ** 2)).sum() - mean ** 2
+        return np.full(P, mean ** 2 / spread), np.full(P, mean / spread)
+
+    draining = [(a, r) for a, r, s in parts if a > 0]
+    single = matched(draining + [(s, 0.0) for a, r, s in parts if s > 0])
+    return {"single": single, "cure": matched(draining) if draining else single}
+
+
+def empirical_prior(o, epochs=10, seed=2):
+    """The file's empirical-Bayes prior on a fresh page's rate: the method of
+    moments over the first epochs' losses of pages of every scenario but the
+    seeded one, drawn afresh; the rates' spread is what is left of the pages'
+    spread once the Poisson noise of their losses is taken out."""
+    o.warmup, events, exposure = epochs, [], []
+    for key, (_, sc) in SCENARIOS.items():
+        if not sc.get("seed_age"):
+            k, e = run(key, o, seed)
+            events.append(k)
+            exposure.append(e)
+    o.warmup = 0
+    k, e = np.concatenate(events), np.concatenate(exposure)
+    mean = k.sum() / e.sum()
+    q = ((k - mean * e) ** 2 / e).sum()
+    spread = (q - (len(k) - 1) * mean) / (e.sum() - (e ** 2).sum() / e.sum())
+    spread = max(spread, mean ** 2 / 1000)
+    return mean ** 2 / spread, mean / spread
+
 
 def run(key, o, seed=1):
     """Excess cost of each estimator over the benchmark, for one scenario."""
@@ -552,7 +663,24 @@ def run(key, o, seed=1):
     else:
         p = sc.get("prior") or (mix_loss if o.mix == "loss" else mix_draft)(sc["parts"])
         prior = tuple(np.full(P, v) for v in p)
-    names = SETS[o.set]
+    o.start = (starting_priors(sc, P, o)
+               if o.prior != "given" and not seed_age and not o.warmup else None)
+
+    if o.warmup:
+        # A fresh page's early losses and exposure, in events, for the file's
+        # empirical prior.
+        events, exposure = np.zeros(P), np.zeros(P)
+        for _ in range(o.warmup):
+            x_before = x
+            dies = alive & (share >= 0) & (rng.random(size.shape) < death)
+            L = (size * dies).sum(1) / PAGE
+            alive &= ~dies
+            x = held().sum(1)
+            events += L / o.dispersion
+            exposure += (x_before - L / 2) / o.dispersion
+        return events, exposure
+
+    names = o.names or SETS[o.set]
     est = {k: make(k, prior, x, seed_age, o, chunks) for k in names}
 
     future = np.array([future_cost(r, kappa) for r in rates])
@@ -587,9 +715,13 @@ def run(key, o, seed=1):
 
 
 def compare(o):
-    names = SETS[o.set]
+    names = o.names or SETS[o.set]
+    if o.prior == "empirical":
+        o.empirical = empirical_prior(o)
+        print(f"the file's empirical prior on a fresh page's rate: Gamma({o.empirical[0]:.3g}, "
+              f"{o.empirical[1]:.3g}), mean {o.empirical[0] / o.empirical[1]:.3g}")
     print(f"excess cost over cleaning at the true index; beta={o.beta}, n0={o.n0}, c={o.c}, "
-          f"nu={o.nu}, nu_pi={o.nu_pi}, {o.class_counts} class counts, "
+          f"nu={o.nu}, nu_pi={o.nu_pi}, the {o.prior} prior, {o.class_counts} class counts, "
           f"statements of {o.items[0]}-{o.items[1]} bytes, "
           f"{f'losing pieces of {o.pieces} bytes' if o.pieces else 'dying whole'}, "
           f"the {o.mix} mix, {o.pages} pages")
@@ -662,7 +794,13 @@ def main():
     ap.add_argument("--nu-pi", type=float, default=10.0,
                     help="the prior's weight on the draining fraction, in chunks")
     ap.add_argument("--class-counts", choices=("discounted", "whole"), default="discounted")
+    ap.add_argument("--prior", choices=("given", "matched", "empirical"), default="given",
+                    help="the Bayesian estimators' start: the scenario's rate at weight nu, "
+                         "moment-matched to its sources' posteriors, or the file's empirical prior")
+    ap.add_argument("--names", default="", help="estimators to run, in place of the set's")
     o = ap.parse_args()
+    o.names = tuple(n for n in o.names.split(",") if n)
+    o.start, o.warmup = None, 0
     o.items = tuple(int(v) for v in o.items.split("-"))
     betas = [float(v) for v in o.beta.split(",")]
     cs = [float(v) for v in o.c.split(",")]
