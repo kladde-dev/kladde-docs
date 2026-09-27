@@ -8,10 +8,10 @@ Without the consolidator state, its live pages take the same space as the single
 It writes as much, to within 0.6 %, under uniform overwrites, on the mixed workload, and under churn, but 0.5 to 1.1 % more under skewed overwrites and 4 to 5 % more under appends.
 Rules (a) and (c′) write within 0.7 % of each other without the state, and within 1.2 % with it: (c′) is (a) in effect, as the draft's simulation found.
 The consolidator state costs 2.5 to 12.6 % of the bytes written, nearly the static-share branch's 2.7 to 13.8 %, against the single-rate branch's 1.4 to 7.4 %.
-And ranking, a mixture over up to some 300 chunks per page, first made flushes take 2.3 to 9.5 times as long as the single-rate branch's; with the index found by regula falsi on logarithms, they take 1.3 to 2.5 times as long, and two thirds to 1.4 times as long as the static-share branch's, in runs of 8 MiB or more.
+And ranking, a mixture over up to some 300 chunks per page, first took three quarters of the flushes' instructions, which came to four times the single-rate branch's; with the index found by regula falsi on logarithms, ranking takes a third of them, and the flushes 1.6 times the single-rate branch's instructions and half the static-share branch's, as callgrind counts them on the uniform workload at 1 MiB.
 
 **The posterior finds static content where the static-share fit found little, and cleaning cannot use it.**
-On the mixed workload, where 45 % of the live data never changes, it expects 6 % of the live bytes to be static, against the fit's 2 % at most; yet nine tenths of the cold data share a page with data that changes, on every branch alike, since what a cleaned page's survivors are packed beside does not depend on which page was cleaned.
+On the mixed workload, where 45 % of the live data never changes, it expects 6 % of the live bytes to be static, against the fit's 2 % at most; yet nine tenths of the cold data share a page with data that changes, on every branch alike, as they did when the file was filled: cleaning moves all of a page's survivors, cold and cool alike, onto pages of their own with other pages' survivors, so which pages it cleans does not separate them.
 Where the content it calls static only lives long, logs until they rotate or cold data that still dies slowly, it cleans earlier and moves 5 to 18 % more bytes, which make up most of its extra writes.
 
 **The file's empirical prior is sure of what it has not seen.**
@@ -33,10 +33,9 @@ The empirical prior learns from what the pages a flush writes lose in their firs
 The file's size also counts free pages that have not reached its end, where truncation returns them; the live pages, data pages and leaves, are what cleaning decides.
 Both are averaged over the second half of each run, and writes are the bytes written during that half per byte the application wrote, as on the other pages.
 
-**Times compare only within one set of runs.**
-The four configurations ran side by side on a host of eight cores, so their times do not compare with the other pages'.
-To compare flush times, the single-rate branch at `799c661`, the static-share branch at `a856b06`, the posterior at `9f99a1f`, and the posterior with faster ranking at `08b575d` ran side by side, with the consolidator state, on the uniform, skewed, append, and churn workloads.
-They started together, and the faster ones finished first, so the slower ones ran their last parts on a less loaded host, which if anything flatters them.
+**This page compares no times.**
+The runs' host was on battery power, so their times say nothing about the branches.
+Where the page speaks of what ranking costs, it counts instructions with callgrind, on the one run small enough for it: kladde-bench's `quick uniform`, the uniform workload at 1 MiB, run by the single-rate branch at `799c661`, the static-share branch at `a856b06`, the posterior at `9f99a1f`, and the posterior with faster ranking at `08b575d`.
 
 ## Cleaning
 
@@ -106,7 +105,10 @@ The posterior expects 6 % of the live bytes to be static, where 45 % are.
 A chunk counts as static for outliving what drains around it, and two things weaken that evidence here.
 The pages written in the fill phase start sure that they drain at the floor rate, [as below](#the-empirical-prior), and at that rate an untouched chunk's survival says nothing about its class.
 And a page's hot content dies within a few flushes; once its losses stop, their weight fades at `β` per flush, and the class prior, which starts fresh content at all draining with the weight of ten chunks, takes over again.
-Whatever it finds, 88 to 90 % of the cold data share a page with data that still changes, on all three branches, with and without the state: cleaning moves a ripe page's survivors into the room of the pages the flush writes anyway, beside fresh content, and which page is ripe does not change that.
+Whatever it finds, 88 to 90 % of the cold data share a page with data that still changes, on all three branches, with and without the state, much as 91 % did when the file was filled: a cold allocation's three neighbours are all cold with a chance of only $0.45^3$.
+Cleaning does not change that, since it moves all of a ripe page's survivors, and once a page's hot allocation has died, its survivors are its cold and its cool allocations alike.
+In the second half of the runs without the state, the survivors went almost all to pages opened for them alone, whose capacity they fill to within 1 %, with the survivors of other pages; the 2.5 to 9.3 % of the victims that rode in the room of pages the flush wrote anyway were small ones.
+Separating the cold data from the cool would take moving survivors by class, a chunk at a time rather than a page at a time.
 
 ![The mixed workload on the three branches, the posterior under both rules, with the state: file size over live size, the live fraction of the data pages, the share of the live data on pages that mix classes, and the share of the cold data on such pages.](figures/bayesian-ripeness/mixed.svg)
 
@@ -150,27 +152,21 @@ Each cell gives the bytes written per byte the application wrote over the whole 
 
 ![Where the bytes written to the file went, per byte the application wrote, over each whole run, on the static-share branch and the posterior under rule (a). "Other" is mostly the consolidator state.](figures/bayesian-ripeness/write-breakdown.svg)
 
-**Ranking a mixture takes time, and as the draft describes it, most of a flush's.**
+**Ranking a mixture takes work, and as the draft describes it, most of a flush's.**
 A page's index is the root of a sum over the mixture's components, one for each number of its untouched chunks that may drain: some 20 on a data page, and on a leaf, whose chunks are its statements, up to some 300, of which some 250 carry weight.
-The first version of the branch found the root by bisection, 32 steps, each looking every component up in the table of `Φ` with two logarithms, and computed the weights with six `ln Γ` each; run under callgrind on the uniform workload at 1 MiB, ranking took three quarters of the flushes' instructions, the table's one-off construction aside, and in the side-by-side runs its flushes took 2.3 to 9.5 times as long as the single-rate branch's, and 1.1 to 3.8 times as long as the static-share branch's.
-At `08b575d`, regula falsi on the logarithms of what waiting saves and what cleaning gains finds the root in about 10 evaluations, a shape's row of the table is found once per page, and the weights follow from one another by recurrence; ranking then takes a third of the flushes' instructions, and the indices agree with bisection's to within $10^{-8}$.
-The runs at `08b575d` clean as those at `9f99a1f` do: identically, but for 0.08 % more writes under uniform overwrites at 64 MiB.
-The table itself takes about 0.3 s to build, once per process, at the first ranking.
+The first version of the branch found the root by bisection, 32 steps, each looking every component up in the table of `Φ` with two logarithms, and computed the weights with six `ln Γ` each.
+At `08b575d`, regula falsi on the logarithms of what waiting saves and what cleaning gains finds the root in about 10 evaluations, a shape's row of the table is found once per page, and the weights follow from one another by recurrence; the indices agree with bisection's to within $10^{-8}$.
+Rerun with the state and rule (a) on the uniform, skewed, append, and churn workloads, `08b575d` cleans as `9f99a1f` does: identically, but for 0.08 % more writes under uniform overwrites at 64 MiB.
 
-Each cell gives the median flush time of a side-by-side run, in milliseconds; the faster ranking shortens the posterior's flushes 1.5 to 4.2 times in runs of 8 MiB or more.
+Each cell gives the instructions that callgrind counted in the flushes of the uniform workload at 1 MiB, in billions, and the share of them that ranking took, the table's construction aside, which takes 3.6 billion more, once per process, at the first ranking.
 
-| median flush, ms | single rate | static share | posterior, first | posterior, faster ranking |
+| flushes, uniform, 1 MiB | single rate | static share | posterior, first | posterior, faster ranking |
 | --- | --- | --- | --- | --- |
-| uniform, 1 MiB | 23 | 41 | 90 | 32 |
-| uniform, 8 MiB | 47 | 119 | 446 | 107 |
-| uniform, 64 MiB | 77 | 165 | 608 | 194 |
-| skewed, 1 MiB | 11 | 17 | 12 | 13 |
-| skewed, 8 MiB | 21 | 43 | 49 | 32 |
-| skewed, 64 MiB | 34 | 89 | 127 | 59 |
-| append, 16 MiB | 14 | 13 | 34 | 19 |
-| churn, 16 MiB | 21 | 29 | 49 | 27 |
+| instructions, billions | 2.16 | 6.46 | 8.55 | 3.37 |
+| ranking's share | | | 74 % | 33 % |
 
-![How long a flush takes in the side-by-side runs: each run's median as a bar, and its 99th percentile as a tick.](figures/bayesian-ripeness/flush-latency.svg)
+The first version's flushes took four times the single-rate branch's instructions, and 1.3 times the static-share branch's, whose fit, two bisections of 50 steps for every page that loses content, takes 60 % of its run; with the faster ranking, the posterior's flushes take 1.6 times the single-rate branch's instructions and half the static-share branch's.
+At 1 MiB, the file has few leaves, the pages whose rankings cost the most, so the posterior's share of the work is likely larger in larger files.
 
 **In memory, a page's estimate takes 36 bytes, against the static-share branch's 24, and each statement 5 more.**
 The estimate holds the posterior's three sums, its class prior, and the draining share the ranking last found as `f32`s, and its epoch; the page table adds the count and bytes of its untouched chunks.
@@ -179,25 +175,25 @@ Each statement's slab record adds the size its statement states and whether it h
 ## What to change in the draft
 
 - **Keep one rate per page for cleaning.**
-  On kladde-bench's workloads, the cure model cleans no better than the single-rate draft, writes more where content lives long, and costs nearly twice the single-rate draft's state and, with the faster ranking, 1.3 to 2.5 times its flush time.
+  On kladde-bench's workloads, the cure model cleans no better than the single-rate draft, writes more where content lives long, and costs nearly twice the single-rate draft's state and, with the faster ranking, 1.6 times its flushes' instructions in the one run measured.
   This page does not test the single-rate posterior, the draft's Gamma posterior without the static share, which would keep the single-rate draft's entry and cost a ranking of one component per page.
 - **Weigh the empirical prior by the losses it has seen.**
   The floor on the spread, a thousandth of the mean squared, lets the prior claim 1000 loss events when it has seen none, as at the end of a file's fill phase, and those pages then look static for some hundred flushes; a prior of `A₀` events should rest on at least that many, `A₀ ≤ Σ kᵢ`, or on a fixed weak prior until the file's fresh pages have lost that much.
 - **Watch pages for longer than their first flushes, or expect the prior to miss lifetimes.**
   Logs rotated every few hundred flushes lose nothing in a page's first ten; the prior then says nothing about how long content lives, only that it has not died yet.
-- **Expect nothing from finding static content until survivors are placed by class.**
-  Cleaning packs a ripe page's survivors beside the flush's fresh content, so no estimate of which content is static changes that nine tenths of the cold data share pages with data that changes.
+- **Expect nothing from finding static content until survivors are moved by class.**
+  Cleaning moves all of a page's survivors together, cold and cool alike, so no estimate of which pages are ripe changes that nine tenths of the cold data share pages with data that changes.
+  The cure model knows of each chunk whether it has lost bytes, and could send a cleaned page's untouched chunks to other pages than its touched ones.
 - **Say what finding the index costs, and how to find it.**
-  The draft counts `O(n)` work per loss for the weights, but ranking costs the weights plus a root-finding over them, some 250 components on a leaf; with bisection, flushes took up to 9.5 times as long as the single-rate draft's, and regula falsi on logarithms, which the index's slope makes nearly linear, shortens them 1.5 to 4.2 times.
+  The draft counts `O(n)` work per loss for the weights, but ranking costs the weights plus a root-finding over them, some 250 components on a leaf; with bisection, ranking took three quarters of the flushes' instructions, and regula falsi on logarithms, which the index's slope makes nearly linear, cuts ranking's instructions more than fivefold.
 - **Keep leaves out of the cure model.**
   A leaf's statements die whole, where the draft's simulation found the cure model gaining least over the static-share fit, and a leaf holds a few hundred of them, which the mixture pays for on every ranking.
 
 ## Reproducing
 
-The runs of this page ran from kladde-rust's branch `bayesian-ripeness` at `9f99a1f`, and the side-by-side runs also at `08b575d`, `799c661` on `ripeness`, and `a856b06` on `ripeness2`:
+The runs of this page ran from kladde-rust's branch `bayesian-ripeness` at `9f99a1f`:
 
 ```sh
-git checkout bayesian-ripeness
 git checkout 9f99a1f
 cargo build --release -p kladde-bench
 ./target/release/kladde-bench /tmp/bench-gain
@@ -206,8 +202,16 @@ KLADDE_BENCH_NO_STATE=1 ./target/release/kladde-bench /tmp/bench-gain-no-state u
 KLADDE_BENCH_OPTION=1 KLADDE_BENCH_NO_STATE=1 ./target/release/kladde-bench /tmp/bench-option-no-state uniform skewed mixed append churn
 ```
 
-For the side-by-side runs, build `kladde-bench` at each of the four commits and run each with `uniform skewed append churn` at the same time.
-In kladde-docs, keep the tables gzipped under `content/evaluation/data/bayesian-ripeness/`, in `gain/`, `gain-no-state/`, `option/`, `option-no-state/`, and `timing/`, and draw the figures with those of the other ripeness pages:
+The rerun at `08b575d` ran `./target/release/kladde-bench /tmp/bench-08b575d uniform skewed append churn`.
+The instruction counts come from the same build at `08b575d`, at `799c661` on `ripeness`, at `a856b06` on `ripeness2`, and at `9f99a1f`, each run under callgrind, whose file descriptor check needs a finite limit:
+
+```sh
+ulimit -n 4096
+valgrind --tool=callgrind --callgrind-out-file=cg.out ./target/release/kladde-bench /tmp/bench-cg quick uniform
+callgrind_annotate --inclusive=yes cg.out | grep -E 'Inner>::flush_now|refresh_ranking|PhiTable>>::initialize'
+```
+
+In kladde-docs, keep the tables gzipped under `content/evaluation/data/bayesian-ripeness/`, in `gain/`, `gain-no-state/`, `option/`, `option-no-state/`, and `gain-08b575d/`, and draw the figures with those of the other ripeness pages:
 
 ```sh
 D=content/evaluation/data
@@ -217,9 +221,6 @@ tools/plot-evaluation.py --only tradeoff,mixed --out $O "single rate=$D/ripeness
     "posterior (c′)=$D/bayesian-ripeness/option"
 tools/plot-evaluation.py --only write-breakdown --out $O "static=$D/ripeness2/ripeness2" \
     "posterior=$D/bayesian-ripeness/gain"
-tools/plot-evaluation.py --only flush-latency --out $O "single rate=$D/bayesian-ripeness/timing/single" \
-    "static share=$D/bayesian-ripeness/timing/static" "posterior, first=$D/bayesian-ripeness/timing/bayes-9f99a1f" \
-    "posterior, faster=$D/bayesian-ripeness/timing/bayes-08b575d"
 ```
 
 The empirical priors quoted above come from a replay of the workloads that asks the store for them with `Store::describe_priors`, which is not part of the benchmark.
