@@ -31,6 +31,11 @@ jobs:
             texlive-fonts-recommended lmodern fonts-texgyre fonts-texgyre-math \
             fonts-dejavu-core fontconfig librsvg2-bin texlive-plain-generic
       - uses: actions/checkout@v4
+      # The checkout belongs to the runner's user, not the container's root,
+      # so git refuses the repository to any later step -- make-pdf.py asks it
+      # which commit to name on the title page.
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@v4
         with:
           node-version: 22

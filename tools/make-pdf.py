@@ -968,7 +968,13 @@ def source_version():
     def git(*args):
         proc = subprocess.run(["git", "-C", str(ROOT), *args],
                               capture_output=True, text=True)
-        return proc.stdout.strip() if proc.returncode == 0 else None
+        if proc.returncode != 0:
+            # Said out loud, since the only other symptom is a line missing
+            # from the title page.
+            print(f"no commit on the title page: git {args[0]} failed: "
+                  f"{proc.stderr.strip()}", file=sys.stderr)
+            return None
+        return proc.stdout.strip()
 
     sha = git("rev-parse", "HEAD")
     if sha is None:
