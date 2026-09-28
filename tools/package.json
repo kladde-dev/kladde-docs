@@ -1,0 +1,12 @@
+{
+  "name": "kladde-docs-tools",
+  "description": "The mermaid renderer tools/make-pdf.py uses; the website builds with site/build.sh instead",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node ./patch-mermaid-layout.mjs"
+  },
+  "dependencies": {
+    "beautiful-mermaid": "1.1.3"
+  }
+}

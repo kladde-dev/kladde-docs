@@ -1,0 +1,9 @@
+# For tools/plot-evaluation.py and tools/simulate-ripeness.py:
+#
+#     python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
+#
+# Pinned, because a figure is byte for byte the same only under the matplotlib
+# that drew it.
+matplotlib==3.11.2
+numpy==2.4.6
+scipy==1.17.1

@@ -1,0 +1,94 @@
+name: Site and PDF
+
+# Builds both on every push and pull request, and keeps them as artifacts of
+# the run.  On main, also publishes them to https://kladde-dev.github.io/ --
+# see "Deployment" in README.md for the deploy key this needs.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  pdf:
+    runs-on: ubuntu-latest
+    # The dev container's toolchain, which is Debian 12's: its pandoc and
+    # TeX Live are the versions tools/make-pdf.py is written against.
+    container: debian:bookworm-slim
+    steps:
+      - name: Install pandoc, TeX Live, and fonts
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git python3 pandoc texlive-xetex \
+            texlive-fonts-recommended lmodern fonts-texgyre fonts-texgyre-math \
+            fonts-dejavu-core fontconfig librsvg2-bin
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the mermaid renderer
+        run: npm ci --prefix tools --no-audit --no-fund
+      - name: Build the PDF
+        run: python3 tools/make-pdf.py -o kladde.pdf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdf
+          path: kladde.pdf
+          if-no-files-found: error
+
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the pages' dates come from git
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the site
+        run: site/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: public
+          if-no-files-found: error
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [pdf, site]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: public
+      - uses: actions/download-artifact@v4
+        with:
+          name: pdf
+          path: public
+      - uses: actions/checkout@v4
+        with:
+          path: source
+          sparse-checkout: site/QUARTZ-LICENSE.txt
+          sparse-checkout-cone-mode: false
+      - name: Add Quartz's license, whose scripts the site bundles
+        run: cp source/site/QUARTZ-LICENSE.txt public/
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          deploy_key: ${{ secrets.PAGES_DEPLOY_KEY }}
+          external_repository: kladde-dev/kladde-dev.github.io
+          publish_branch: gh-pages
+          publish_dir: public
+          force_orphan: true
+          full_commit_message: Deploy kladde-docs ${{ github.sha }}

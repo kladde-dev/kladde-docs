@@ -1,23 +1,29 @@
 # kladde docs
 
-Specifications and design documentation for [kladde-rust](https://github.com/robamler/kladde-rust), published as a browsable site with [Quartz](https://quartz.jzhao.xyz/).
+The specification, reference algorithms, and design documentation of **kladde**: durable data structures that you mutate in memory, and it's on disk.
+Kladde is a cross-language file format with implementations, the first of which is [kladde-rs](https://github.com/kladde-dev/kladde-rs).
+
+Read it at **<https://kladde-dev.github.io/>**, or as [one PDF](https://kladde-dev.github.io/kladde.pdf).
 
 ## Editing
 
-Write and edit markdown in [`content/`](content/). Open that folder directly as an Obsidian vault — `[[wikilinks]]`, backlinks, and the folder tree all carry through to the published site. `.obsidian/` is already excluded from the build (see `ignorePatterns` in `quartz.config.yaml`).
+Write and edit markdown in [`content/`](content/).
+Open that folder directly as an Obsidian vault — `[[wikilinks]]`, backlinks, and the folder tree all carry through to the published site.
+`.obsidian/` is already excluded from the build (see `ignorePatterns` in [`site/quartz.config.yaml`](site/quartz.config.yaml)).
 
 ## Local preview
 
 ```sh
-npm install
-npx quartz build --serve
+site/build.sh --serve
 ```
 
-Serves the site at `http://localhost:8080` and rebuilds on save.
+Serves the site at `http://localhost:8080` and rebuilds on save; without `--serve`, it builds into `public/`.
+It needs Node.js 22 and git, and the first run fetches and installs [Quartz](https://quartz.jzhao.xyz/) into `site/.quartz/` (see [Updating Quartz](#updating-quartz)).
 
 ## Tooling
 
-Two scripts in [`tools/`](tools/), sharing the page list in [`tools/pages.py`](tools/pages.py).
+Scripts in [`tools/`](tools/).
+The first two share the page list in [`tools/pages.py`](tools/pages.py); the other two draw the figures and check the drafts of [Evaluation](content/evaluation/), and need the Python packages in [`tools/requirements.txt`](tools/requirements.txt).
 
 ### The PDF
 
@@ -28,7 +34,8 @@ tools/make-pdf.py --self-test      # the diagram layout passes
 ```
 
 Concatenates every page in reading order and hands it to pandoc, rendering the mermaid diagrams to figures on the way.
-See the module docstring for what it needs installed.
+The mermaid renderer is an npm package: run `npm ci` in `tools/` once.
+See the module docstring for everything else it needs installed.
 
 Given one or more `.md` files it renders each on its own instead, writing `<basename>.pdf` to the working directory:
 
@@ -77,7 +84,7 @@ tools/check-examples.py -v         # with rustc's own diagnostics
 tools/make-pdf.py --check-examples # both, in one go
 ```
 
-Needs a cargo toolchain and a checkout of the Rust workspace next door (`--workspace`, default `../kladde-rust`), so it is opt-in rather than part of every build.
+Needs a cargo toolchain and a checkout of [kladde-rs](https://github.com/kladde-dev/kladde-rs) next door (`--workspace`, default `../kladde-rs`), so it is opt-in rather than part of every build.
 
 A Rust code block is compiled only if an HTML comment right above it says so:
 
@@ -103,19 +110,38 @@ Unmarked blocks are ignored, which is the right answer for the design documents:
 
 Generated crates and their shared target directory live in `.examples/` (gitignored), rewritten only where the content changed, so a re-run costs about a second.
 
+### The figures and the ripeness simulation
+
+[`tools/plot-evaluation.py`](tools/plot-evaluation.py) draws the figures of [Evaluation](content/evaluation/) from the benchmark tables kept next to them, and [`tools/simulate-ripeness.py`](tools/simulate-ripeness.py) checks the estimators of the ripeness drafts.
+Each evaluation page lists the commands that reproduce its figures.
+The figures are SVG, byte for byte the same whenever the data and matplotlib's version are, which is why [`tools/requirements.txt`](tools/requirements.txt) pins it.
+
 ## Deployment
 
-Pushing to `main` builds the site and deploys it to GitHub Pages via [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). Pull requests are validated (type-check, format-check, build) by [`.github/workflows/check.yml`](.github/workflows/check.yml).
+[`.github/workflows/site.yml`](.github/workflows/site.yml) builds the site and the PDF on every push and pull request, and keeps both as artifacts of the run.
+On `main`, it also publishes them to <https://kladde-dev.github.io/>, by pushing to the `gh-pages` branch of [kladde-dev/kladde-dev.github.io](https://github.com/kladde-dev/kladde-dev.github.io): only a repository of that name can serve the organization's root URL.
 
-One-time repo setup on GitHub: **Settings → Pages → Source → GitHub Actions**.
+The push needs a deploy key, set up once:
 
-## Updating Quartz itself
+1. `ssh-keygen -t ed25519 -N "" -C "kladde-docs deploy" -f pages-deploy-key`
+2. In kladde-dev/kladde-dev.github.io, under **Settings → Deploy keys**, add `pages-deploy-key.pub` with write access.
+3. In kladde-dev/kladde-docs, under **Settings → Secrets and variables → Actions**, add the content of `pages-deploy-key` as the repository secret `PAGES_DEPLOY_KEY`.
+   Then delete both files.
+4. After the first deployment has created the branch, set **Settings → Pages → Source** of kladde-dev/kladde-dev.github.io to *Deploy from a branch*, `gh-pages`, `/ (root)`.
 
-This repo vendors the Quartz site generator directly (in `quartz/`, alongside the root config files) as a plain snapshot — there's no shared git history with the [upstream Quartz repo](https://github.com/jackyzha0/quartz), so updates are manual rather than `git merge`:
+## Updating Quartz
 
-```sh
-git clone --branch v5 https://github.com/jackyzha0/quartz.git /tmp/quartz-upstream
-diff -rq /tmp/quartz-upstream/quartz quartz          # see what changed in the engine
-```
+Quartz is not vendored.
+[`site/build.sh`](site/build.sh) fetches it at the commit it names in `QUARTZ_COMMIT`, and copies the two files that customize it over its own: [`site/quartz.config.yaml`](site/quartz.config.yaml) and [`site/custom.scss`](site/custom.scss).
+To update, change `QUARTZ_COMMIT` to a newer commit of the [upstream repository](https://github.com/jackyzha0/quartz), build, and compare the result; if upstream has changed its default configuration, `quartz.config.default.yaml` there shows how.
 
-Review the diff, copy over what you want (the `quartz/` directory and, if needed, root files like `quartz.config.default.yaml`, `tsconfig.json`, `package.json` dependencies), then re-apply the local customizations described in this README (title, `analytics: null`, `.prettierignore`, removed upstream project files) if they got overwritten. Re-run `npm install` and `npx quartz build` afterwards to confirm nothing broke.
+## License
+
+Everything in this repository — text, figures, data, and code — is available under your choice of [CC BY 4.0](LICENSE-CC-BY-4.0), [MIT](LICENSE-MIT), [Apache 2.0](LICENSE-APACHE), or the [Boost Software License 1.0](LICENSE-BOOST) (SPDX: `CC-BY-4.0 OR MIT OR Apache-2.0 OR BSL-1.0`).
+Take whichever suits your use: CC BY 4.0 to reuse text or a figure in a paper or talk, or one of the software licenses to copy code, or spec text into your own code's comments.
+
+**Patent pledge.** I, Robert Bamler, will not assert any patent I own or control against any implementation of the kladde specification.
+
+Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in this repository shall be licensed as above, without any additional terms or conditions.
+
+[`site/QUARTZ-LICENSE.txt`](site/QUARTZ-LICENSE.txt) is the MIT license of [Quartz](https://github.com/jackyzha0/quartz), which the files in `site/` customize.

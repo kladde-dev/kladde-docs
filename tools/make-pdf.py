@@ -25,7 +25,7 @@ Usage:  tools/make-pdf.py [-o kladde.pdf] [--keep-markdown] [--check-examples]
 
 Needs: pandoc, texlive-xetex, lmodern, fonts-texgyre, fonts-texgyre-math,
        fonts-dejavu, librsvg2-bin (pandoc shells out to rsvg-convert to turn
-       the generated SVGs into PDF), and `npm install` for the mermaid
+       the generated SVGs into PDF), and `npm ci` in tools/ for the mermaid
        renderer in tools/render-mermaid.mjs.  --diff additionally needs
        latexdiff and texlive-plain-generic (for ulem.sty).
 """

@@ -19,14 +19,14 @@
 // to dispatch straight into an internal worker whose `saveDispatch` is an own
 // property, so there is no runtime hook to wrap from tools/render-mermaid.mjs.
 //
-// Run by `npm install` via the `postinstall` script. Idempotent, and loud if
-// the anchor ever moves -- an upgrade that silently skipped this would bring
-// the bad layout back with no other symptom.
+// Run by `npm ci` or `npm install` in tools/, via the `postinstall` script.
+// Idempotent, and loud if the anchor ever moves -- an upgrade that silently
+// skipped this would bring the bad layout back with no other symptom.
 
 import { readFileSync, writeFileSync } from "node:fs";
 
 const DIST = new URL(
-  "../node_modules/beautiful-mermaid/dist/index.js",
+  "./node_modules/beautiful-mermaid/dist/index.js",
   import.meta.url,
 );
 const ANCHOR = '"elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES"';
