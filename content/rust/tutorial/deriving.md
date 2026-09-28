@@ -7,11 +7,12 @@ title: Deriving your own types
 ## What to import
 
 Two crates: `kladde` for the machinery, `kladde-types` for the containers.
+Neither is on crates.io yet, so depend on the repository:
 
 ```toml
 [dependencies]
-kladde = "0.1"
-kladde-types = "0.1"
+kladde = { git = "https://github.com/kladde-dev/kladde-rs" }
+kladde-types = { git = "https://github.com/kladde-dev/kladde-rs" }
 ```
 
 You do **not** need `kladde-derive` or `kladde-persist`.
@@ -68,12 +69,36 @@ contact.starred_mut().set(true)?;
 contact.phones_mut().push(number)?;
 ```
 
+It also generates a `ContactParts` struct, and a `parts()` method on the guard that returns the guards of all fields at once, for when you need more than one at a time.
+A tuple struct's accessors are named by position — `field_0_mut()`, `field_1_mut()` — and its `parts()` returns a tuple struct.
+
 **A struct owns no allocation of its own.**
 Its fields are laid out consecutively in whatever allocation contains it, so its inline size is just the sum of its fields' inline sizes, and each field's offset is the sum of the earlier ones'.
 Those offsets are compile-time constants, which is why field access costs nothing at runtime.
 
 That includes primitive fields.
 `bool`, `i32`, `char` and friends all implement `Persistable`, specifically so the macro can treat every field uniformly rather than special-casing leaves.
+So do tuples of up to twelve `Persistable` types, laid out like a tuple struct.
+
+## Newtypes
+
+A single-field struct marked `#[kladde(transparent)]` is persisted exactly as its field — the same bytes and the same [fingerprint](../../spec/schema/fingerprints.md) — so wrapping a field in a newtype changes nothing in the file:
+
+<!-- kladde-example: name=newtype file=src/lib.rs deps=kladde
+before:
+  use kladde::{Kladde, Persistable};
+-->
+```rust
+#[derive(Persistable)]
+#[kladde(transparent)]
+struct Meters(u32);
+
+fn walk(distance: &mut Kladde<Meters>) -> kladde::Result<()> {
+    distance.guard().get_mut().set(42)
+}
+```
+
+Its guard's `get_mut()` returns the field's guard.
 
 ## Enums
 
@@ -89,6 +114,23 @@ guard.set(PhoneNumber::Mobile(PersistableString::from("555-0100")))?;
 
 It stores the new value, then frees whatever the old one owned.
 Mutating a field *within* the current variant in place, and matching directly on a generated guard, are both intended and not yet built.
+
+**The discriminant is Rust's own**, a 4-byte value on file: the one you write (`Mobile = 1`), or else one more than the previous variant's, counting from 0.
+Explicit values on variants with fields need a `#[repr]`, as Rust requires:
+
+<!-- kladde-example: name=pinned-discriminants file=src/lib.rs deps=kladde,kladde-types
+before:
+  use kladde::Persistable;
+  use kladde_types::PersistableString;
+-->
+```rust
+#[derive(Persistable)]
+#[repr(u32)]
+enum PhoneNumber {
+    Mobile(PersistableString) = 1,
+    Landline(PersistableString) = 2,
+}
+```
 
 ## Generics
 
@@ -133,8 +175,9 @@ Two things you should know before you ship a file format built on a derived type
 Reordering fields in the source changes every subsequent field's offset, and therefore changes the type's [fingerprint](../../spec/schema/fingerprints.md), and `Kladde::open` refuses a file whose fingerprint differs from your type's.
 Once [evolution](../../spec/schema/evolution.md) lands, reordering will be non-breaking, because fields are identified by name.
 
-**Variant order is not layout.**
-Enum variants are canonicalized by discriminant value, so reordering them in the source — without changing their discriminants — changes nothing.
+**Variant order is layout only through implicit discriminants.**
+A variant without an explicit discriminant takes the next number, so inserting or reordering variants renumbers the ones after them, and changes the fingerprint.
+With [explicit discriminants](#enums), reordering changes nothing, since enum variants are canonicalized by discriminant value.
 
 **Renaming a type is free.**
 A struct's or enum's own name is not fingerprinted.

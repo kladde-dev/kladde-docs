@@ -35,16 +35,19 @@ after:
 let mut guard = journal.guard();
 let mut v = guard.entries_mut();
 v.push(PersistableString::from("a"))?;
-v.push(PersistableString::from("b"))?;
+v.insert(0, PersistableString::from("b"))?;
+v.get_mut(1).unwrap().push_str("c")?;  // the guard of one element
 let first = v.remove(0)?;   // yours now, allocations and all
 v.push(first)?;             // so it moves without copying its bytes
 v.delete(0)?;               // removes and frees
 ```
 
+Reading needs no guard: `PersistableVec<T>` dereferences to `[T]`, so `len`, indexing and `iter` work on the in-memory elements.
+
 **Layout.** A pointer inline, plus a separate allocation holding a dense array of fixed-size element slots — the same shape as `Vec<T>`'s in memory.
 The length is that allocation's size divided by the element size, so it is never stored separately.
 
-**Cost.** A push is one write, a pop one resize, and a removal from the middle one splice, which shifts the tail exactly as `Vec` does.
+**Cost.** A push grows the allocation and writes the new slot, a pop shrinks it, and an insertion or removal in the middle is one splice, which shifts the tail exactly as `Vec` does.
 
 **Removal.** `remove` and `pop` hand the element back with everything it owns, so you can store it elsewhere; `delete` and `clear` free it.
 An element you take out and then drop leaks its allocations in the file, the way a value passed to `std::mem::forget` leaks its memory.
@@ -86,7 +89,7 @@ before:
 ```rust
 #[derive(Persistable)]
 struct Journal {
-    owner: String,  // the trait bound `String: Persistable<_>` is not satisfied
+    owner: String,  // the trait bound `String: Persistable` is not satisfied
 }
 ```
 
@@ -115,8 +118,14 @@ after:
 -->
 ```rust
 let mut contacts = guard.contacts_mut();
+let ada = PersistableString::from("ada");
 contacts.insert(PersistableString::from("ada"), contact)?;
+contacts.get_mut(&ada).unwrap().email_mut().set("ada@example.com")?;
+contacts.delete(&ada)?;     // removes and frees; `remove` hands the value back
 ```
+
+Reading — `get`, `contains_key`, `iter`, `len` — needs no guard.
+Inserting under a key that is already present overwrites its value in place and returns the old one, as `HashMap::insert` does.
 
 **Layout.** An array of fixed-size slots, each a one-byte liveness tag followed by a `(K, V)` pair.
 The on-disk form does *not* support key lookup at all — that is what the in-memory map is for — so it needs no hashing structure on disk.
@@ -161,7 +170,8 @@ It is gated behind `kladde-types`' `serde` feature — the only thing in the wor
 
 A **rope**, for large text with efficient middle-insertion, is designed but not built.
 
-There is no backed `Option`, `Box`, or tuple as such — a derived enum covers `Option`'s role, and a derived struct covers a tuple's.
+Tuples of up to twelve components are persistable, laid out like a tuple struct, and their guard's `parts()` hands out a guard per component.
+There is no backed `Option` or `Box` as such — a derived enum covers `Option`'s role.
 
 ## Choosing
 
@@ -170,6 +180,7 @@ There is no backed `Option`, `Box`, or tuple as such — a derived enum covers `
 | a sequence | `PersistableVec<T>` |
 | text | `PersistableString` |
 | a lookup table | `PersistableHashMap<K, V>` |
+| a few values that belong together | a tuple, or a derived struct |
 | your own struct or enum | [`#[derive(Persistable)]`](deriving.md) |
 | a foreign type you cannot change | `PersistableBlob<T>`, reluctantly |
 | a foreign type whose layout you know | [a hand-written impl](custom-persistable.md) |

@@ -56,7 +56,62 @@ The journal already did that.
 A failed `fsync` means the operating system may have dropped writes it had already accepted, so kladde **poisons** the `Kladde`: every later call returns `Error::Poisoned`.
 Drop it and open the file again; it then holds every mutation that returned `Ok`.
 
+## Transactions
+
+Every mutation is atomic on its own.
+When several belong together — money leaving one account must arrive in another — make them one transaction, and a crash keeps all of them or none:
+
+<!-- kladde-example: name=accounts file=src/main.rs mode=run deps=kladde -->
+```rust
+use kladde::{Kladde, Persistable};
+
+#[derive(Persistable)]
+struct Accounts {
+    checking: i64,
+    savings: i64,
+}
+
+fn main() -> kladde::Result<()> {
+    let mut accounts = Kladde::new(Accounts { checking: 100, savings: 0 });
+
+    let mut tx = accounts.transaction();
+    let mut guard = tx.guard();
+    let AccountsParts { mut checking, mut savings } = guard.parts();
+    checking.set(70)?;
+    savings.set(30)?;
+    tx.commit()?;
+
+    assert_eq!(accounts.get().savings, 30);
+    Ok(())
+}
+```
+
+Each mutation still changes the in-memory value when it is made, and `commit` appends them to the journal together.
+Dropping a transaction commits it too, unless a panic is unwinding: then its mutations are discarded, since they may be half a change, and the `Kladde` is poisoned, since the in-memory value already holds them.
+There is no way to cancel a transaction, for the same reason.
+[Transactions](../transactions.md) has the details.
+
 ## Long runs of mutations
 
 A single transaction is held in memory until it ends, because the fold only ever folds complete transactions.
-So keep transactions short, and use a [batch](../transactions.md) for a long run of mutations that are each valid on their own: a batch groups them into reasonably sized transactions, and the automatic flush can then fold between them.
+So keep transactions short, and use a batch for a long run of mutations that are each valid on their own:
+
+<!-- kladde-example: name=batch file=src/lib.rs deps=kladde,kladde-types
+before:
+  use kladde::Kladde;
+  use kladde_types::PersistableVec;
+  fn import(log: &mut Kladde<PersistableVec<u64>>) -> kladde::Result<()> {
+after:
+  Ok(())
+  }
+-->
+```rust
+let mut batch = log.batch();
+for reading in 0..100_000 {
+    batch.guard().push(reading)?;
+}
+batch.end()?;
+```
+
+A batch appends its mutations to the journal in a few large pieces rather than one by one, which saves writes, and the automatic flush can fold between the pieces.
+It is not a transaction: a crash can keep some pieces and lose the later ones, though never part of a mutation, nor of a transaction opened inside the batch with `batch.transaction()`.

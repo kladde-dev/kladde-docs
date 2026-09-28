@@ -64,7 +64,7 @@ One crate. `kladde` re-exports everything a hand-written impl names, so you neve
 
 ```toml
 [dependencies]
-kladde = "0.1"
+kladde = { git = "https://github.com/kladde-dev/kladde-rs" }
 ```
 
 If you are writing a *library* on top of `kladde-persist` and have no reason to pull the facade in, depend on `kladde-persist` directly and point the macro at it instead — see [the derive macro's path resolution](../derive-macro.md#path-resolution).
@@ -186,7 +186,8 @@ The pattern:
 
 - in `store`, allocate if `None` — `backend.alloc(size)` — and write the content;
 - write the pointer itself *last*, since it is what makes the content reachable;
-- in `free`, free what the content owns, then the allocation itself.
+- in `free`, free what the content owns, then the allocation itself;
+- for a whole-value `set` on its guard, call `kladde::replace`, which stores the new value and then frees the old one, in one transaction.
 
 That ordering is not stylistic.
 It is the [ordering discipline](../../spec/journal.md#ordering): a crash between the content write and the pointer write must leave a valid, if stale, state, and publishing the pointer first would leave it pointing at content that was never written.

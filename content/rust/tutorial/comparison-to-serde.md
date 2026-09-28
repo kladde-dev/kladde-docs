@@ -33,7 +33,7 @@ A kladde file is a heap with an embedded schema.
 Another kladde implementation can read it; nothing else can.
 
 **Type coverage.**
-Serde works on essentially any Rust type, including `String`, `Vec<T>`, `HashMap`, tuples, and third-party types with derives.
+Serde works on essentially any Rust type, including `String`, `Vec<T>`, `HashMap`, and third-party types with derives.
 Kladde needs its own container types.
 
 **Maturity.**

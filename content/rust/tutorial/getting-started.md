@@ -23,6 +23,7 @@ A *Kladde* is a merchant's rough day-book — transactions scribbled down in ord
 after:
   mod chaining;
   mod nesting;
+  mod parts;
 -->
 ```rust
 use kladde::{Kladde, Persistable};
@@ -124,6 +125,26 @@ after:
 -->
 ```rust
 journal.guard().owner_mut().set("grace")?;
+```
+
+Each `_mut()` borrows the guard it is called on, so a guard hands out one field's guard at a time.
+To mutate several fields together, `parts()` hands out a guard for every field at once, in a struct named after yours:
+
+<!-- kladde-example: name=journal file=src/parts.rs
+before:
+  use crate::{Journal, JournalParts};
+  use kladde::Kladde;
+  use kladde_types::PersistableString;
+  fn parts(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
+after:
+  Ok(())
+  }
+-->
+```rust
+let mut guard = journal.guard();
+let JournalParts { mut owner, mut entries } = guard.parts();
+owner.set("grace")?;
+entries.push(PersistableString::from("handed over"))?;
 ```
 
 Hold a guard only as long as you need it.
