@@ -3,7 +3,7 @@ title: kladde
 ---
 
 **Durable data structures: mutate in memory, and it's on disk.**
-A cross-language file format with implementations.
+A cross-language file format and durability protocol with crash-safety guarantees, and libraries for building durable data types on top of it.
 
 Founded and currently maintained by [Robert Bamler](https://robamler.github.io/).
 Source on [GitHub](https://github.com/kladde-dev); all of these pages also as [one PDF](https://kladde-dev.github.io/kladde.pdf).
@@ -11,7 +11,7 @@ Source on [GitHub](https://github.com/kladde-dev); all of these pages also as [o
 **Kladde** is becoming a system for *durable data structures*: containers (strings, vectors, hash maps, trees, ...) and user-defined types that behave like their ordinary in-memory counterparts, but whose every mutation is durably recorded to a file as it happens, in a way that is optimized for disk I/O.
 Unlike serialization formats like JSON or XML, there is no save step and no serialization pass.
 Unlike sqlite, there is no SQL and no object-relational layer.
-You open a value from a file (typically a large and complex nested data type), you mutate some parts of it (almost) the way you would mutate any other value, and your changes are immediately and efficiently applied to the file.
+You open a kladde file containing some value (typically in some complex nested application-defined data type), you mutate some parts of the value in (almost) the same way you would mutate any other value, and each one of your changes is immediately and efficiently applied to the file.
 
 The idea is known as *orthogonal persistence*: a program works with persistent data exactly as it works with transient data, and data persists by being reachable from a persistent root.
 Kladde brings it to existing languages as libraries, as far as each language allows.

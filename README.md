@@ -3,7 +3,7 @@
 # kladde docs
 
 The specification, reference algorithms, and design documentation of **kladde**: durable data structures that you mutate in memory, and it's on disk.
-Kladde is a cross-language file format with implementations, the first of which is [kladde-rs](https://github.com/kladde-dev/kladde-rs).
+Kladde is becoming a cross-language file format and durability protocol with crash-safety guarantees, and libraries for building durable data types on top of it (the first of which is [kladde-rs](https://github.com/kladde-dev/kladde-rs)).
 
 Read these docs at **<https://kladde-dev.github.io/>**, or as [one PDF](https://kladde-dev.github.io/kladde.pdf).
 
