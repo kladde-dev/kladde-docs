@@ -957,8 +957,31 @@ REGION_BARS = [
 SETTLE_PASSES = 2
 
 
+def source_version():
+    """Which commit the PDF is built from, as markdown for the title page, or
+    None if that cannot be told -- a copy of the files outside git, say.
+
+    Names the commit, linked, and its date, and says so if `content/` or
+    `tools/` differ from it, since then the commit alone does not say what
+    the PDF shows.
+    """
+    def git(*args):
+        proc = subprocess.run(["git", "-C", str(ROOT), *args],
+                              capture_output=True, text=True)
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    sha = git("rev-parse", "HEAD")
+    if sha is None:
+        return None
+    date = git("log", "-1", "--format=%cd", "--date=format:%-d %B %Y", sha)
+    dirty = git("status", "--porcelain", "--", "content", "tools")
+    url = f"https://github.com/kladde-dev/kladde-docs/commit/{sha}"
+    version = f"Built from commit [{sha[:7]}]({url}) of {date}"
+    return version + (", with uncommitted changes" if dirty else "")
+
+
 def preamble(title, subtitle=None, documentclass="report", toc=True,
-             for_diff=False, title_graphic=None):
+             for_diff=False, title_graphic=None, date=None):
     """The pandoc YAML metadata block both modes share.
 
     Only the class and the front matter differ: the whole set is a `report`
@@ -969,6 +992,8 @@ def preamble(title, subtitle=None, documentclass="report", toc=True,
     title, in a YAML block scalar so that YAML leaves its backslashes alone;
     pandoc drops raw LaTeX from the plain-text title it puts in the PDF's
     metadata, so that stays the bare title.
+
+    `date`, markdown, goes below the title, where LaTeX puts `\\date`.
     """
     yaml_title = title.replace('"', '\\"')
     if title_graphic:
@@ -982,6 +1007,7 @@ def preamble(title, subtitle=None, documentclass="report", toc=True,
         "---",
         *title_lines,
         *([f'subtitle: "{subtitle}"'] if subtitle else []),
+        *([f'date: "{date}"'] if date else []),
         f"documentclass: {documentclass}",
         "papersize: a4",
         "geometry: margin=2.5cm",
@@ -1034,11 +1060,12 @@ def preamble(title, subtitle=None, documentclass="report", toc=True,
 
 def build_markdown(pages, problems, figdir=None, warnings=None,
                    subtitle="Specification and design documentation",
-                   by_content=False, for_diff=False):
+                   by_content=False, for_diff=False, version=None):
     # Not in a diff: an image in the title is one more thing latexdiff would
     # have to leave alone, for no gain in a document about changes.
     logo = render_figure(LOGO, figdir) if figdir and not for_diff else None
-    chunks = preamble("Kladde", subtitle, for_diff=for_diff, title_graphic=logo)
+    chunks = preamble("Kladde", subtitle, for_diff=for_diff, title_graphic=logo,
+                      date=version)
     # Two passes: every mermaid source in the document is collected first so
     # that node is started once rather than once per diagram.
     bodies = {}
@@ -1792,7 +1819,8 @@ def main():
         Path(args.output).stem + "-figures")
     warnings = []
     merged, diagrams = build_markdown(
-        pages, problems, None if args.check_only else figdir, warnings)
+        pages, problems, None if args.check_only else figdir, warnings,
+        version=source_version())
 
     for p in problems:
         print(f"link: {p}", file=sys.stderr)
