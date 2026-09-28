@@ -47,6 +47,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pages import (  # noqa: E402
     ORDER, ROOT, CONTENT, FRONT_MATTER, split_front_matter)
 
+# Above the title on the title page of the whole set.
+LOGO = ROOT / "logo.svg"
+
 # Prose and headings.  Alternatives that ship with `fonts-texgyre` and have a
 # matching math companion: "TeX Gyre Termes" (Times), "TeX Gyre Schola"
 # (Century Schoolbook -- more legible, but wider, so more pages), or
@@ -954,17 +957,29 @@ SETTLE_PASSES = 2
 
 
 def preamble(title, subtitle=None, documentclass="report", toc=True,
-             for_diff=False):
+             for_diff=False, title_graphic=None):
     """The pandoc YAML metadata block both modes share.
 
     Only the class and the front matter differ: the whole set is a `report`
     whose chapters are pages, a single page is an `article` with no table of
     contents -- one page rarely needs one, and it would land on the title page.
+
+    `title_graphic`, a PDF, goes above the title.  It is raw LaTeX inside the
+    title, in a YAML block scalar so that YAML leaves its backslashes alone;
+    pandoc drops raw LaTeX from the plain-text title it puts in the PDF's
+    metadata, so that stays the bare title.
     """
     yaml_title = title.replace('"', '\\"')
+    if title_graphic:
+        title_lines = [
+            "title: |",
+            f"  `\\includegraphics[width=2.5cm]{{{title_graphic}}}\\\\[2em]`{{=latex}}{title}",
+        ]
+    else:
+        title_lines = [f'title: "{yaml_title}"']
     return [
         "---",
-        f'title: "{yaml_title}"',
+        *title_lines,
         *([f'subtitle: "{subtitle}"'] if subtitle else []),
         f"documentclass: {documentclass}",
         "papersize: a4",
@@ -1019,7 +1034,10 @@ def preamble(title, subtitle=None, documentclass="report", toc=True,
 def build_markdown(pages, problems, figdir=None, warnings=None,
                    subtitle="Specification and design documentation",
                    by_content=False, for_diff=False):
-    chunks = preamble("Kladde", subtitle, for_diff=for_diff)
+    # Not in a diff: an image in the title is one more thing latexdiff would
+    # have to leave alone, for no gain in a document about changes.
+    logo = render_figure(LOGO, figdir) if figdir and not for_diff else None
+    chunks = preamble("Kladde", subtitle, for_diff=for_diff, title_graphic=logo)
     # Two passes: every mermaid source in the document is collected first so
     # that node is started once rather than once per diagram.
     bodies = {}

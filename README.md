@@ -1,3 +1,5 @@
+<img src="logo.svg" alt="kladde logo" width="80" align="right">
+
 # kladde docs
 
 The specification, reference algorithms, and design documentation of **kladde**: durable data structures that you mutate in memory, and it's on disk.
@@ -138,6 +140,7 @@ The push needs a deploy key, set up once:
 
 Quartz is not vendored.
 [`site/build.sh`](site/build.sh) fetches it at the commit it names in `QUARTZ_COMMIT`, and copies the two files that customize it over its own: [`site/quartz.config.yaml`](site/quartz.config.yaml) and [`site/custom.scss`](site/custom.scss).
+[`site/icons.mjs`](site/icons.mjs) then replaces Quartz's favicon and social-preview images with ones rendered from [`logo.svg`](logo.svg), which is also on the PDF's title page.
 To update, change `QUARTZ_COMMIT` to a newer commit of the [upstream repository](https://github.com/jackyzha0/quartz), build, and compare the result; if upstream has changed its default configuration, `quartz.config.default.yaml` there shows how.
 
 ## License

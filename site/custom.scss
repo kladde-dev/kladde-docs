@@ -22,3 +22,21 @@
     font-family: var(--bodyFont) !important;
   }
 }
+
+// The logo, in front of the site's title in the header.  A background image
+// rather than an <img>, because the title is Quartz's own component.  The URL
+// is relative to this stylesheet, which Quartz writes to the site's root, and
+// site/icons.mjs puts the logo in static/.
+.page-title a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+
+  &::before {
+    content: "";
+    flex: none;
+    width: 2.25rem;
+    height: 2.25rem;
+    background: url("static/logo.svg") center / contain no-repeat;
+  }
+}

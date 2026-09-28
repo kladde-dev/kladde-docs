@@ -6,7 +6,8 @@
 #
 # Quartz is not vendored.  The first run fetches it at QUARTZ_COMMIT into
 # site/.quartz/ (gitignored) and installs its dependencies; every run then
-# copies the two files that customize it over its own and builds.  Any further
+# copies the two files that customize it over its own, puts the logo where
+# Quartz looks for its icons (site/icons.mjs), and builds.  Any further
 # arguments go to `quartz build`.
 #
 # To update Quartz, change QUARTZ_COMMIT, build, and check the result: nothing
@@ -31,6 +32,7 @@ fi
 
 cp "$site/quartz.config.yaml" "$quartz/quartz.config.yaml"
 cp "$site/custom.scss" "$quartz/quartz/styles/custom.scss"
+node "$site/icons.mjs" "$quartz" "$root/logo.svg"
 
 cd "$quartz"
 npx quartz build -d "$root/content" -o "$root/public" "$@"
