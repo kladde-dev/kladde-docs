@@ -58,3 +58,9 @@ Early and moving.
 The Rust implementation is the only one that exists, it is not feature-complete, and the file format has not been frozen.
 These documents describe the system as it is *intended* to be; decisions not yet made are marked **TBD**, and designs since abandoned live in [Superseded](superseded/) rather than being deleted.
 Nothing here should be treated as a stable interface until the specification carries a version number and a conformance suite.
+
+## License
+
+Everything here — text, figures, and data — is available under your choice of CC BY 4.0, MIT, Apache 2.0, or the Boost Software License 1.0; the [repository](https://github.com/kladde-dev/kladde-docs#license) has the details.
+
+**Patent pledge.** I, Robert Bamler, will not assert any patent I own or control against any implementation of the kladde specification.
