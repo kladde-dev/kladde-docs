@@ -2,7 +2,7 @@
 title: Deriving your own types
 ---
 
-`#[derive(Persistable)]` turns your own struct or enum into a backed type, as long as every persisted field is itself `Persistable`.
+`#[derive(Persistable)]` turns your own struct or enum into a durable type, as long as every persisted field is itself `Persistable`.
 
 ## What to import
 

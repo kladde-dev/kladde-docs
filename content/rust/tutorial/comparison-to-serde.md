@@ -42,7 +42,7 @@ Kladde is early.
 
 **Zero setup.**
 `#[derive(Serialize)]` and you are done.
-Kladde asks you to restructure your types around backed containers.
+Kladde asks you to restructure your types around durable containers.
 
 ## What kladde does better
 

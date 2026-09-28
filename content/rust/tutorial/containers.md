@@ -2,7 +2,7 @@
 title: The built-in containers
 ---
 
-`kladde-types` provides four backed containers.
+`kladde-types` provides four durable containers.
 They are hand-implemented against the persistence layer rather than derived, the same way `std`'s collections hand-write raw pointer manipulation internally.
 
 ## A default library, not a privileged one
@@ -11,7 +11,7 @@ They are hand-implemented against the persistence layer rather than derived, the
 It is a collection of types most applications turn out to want, offered so that you do not have to write them yourself.
 
 Everything in it is built on the same public `Persistable`/`Guard` surface available to any crate.
-There is no internal kladde magic here that a third-party library — or your own application — could not use equally well, and third-party libraries of general-purpose backed types are welcome.
+There is no internal kladde magic here that a third-party library — or your own application — could not use equally well, and third-party libraries of general-purpose durable types are welcome.
 
 ## `PersistableVec<T>`
 
@@ -78,7 +78,7 @@ owner.push_str(" lovelace")?;
 
 It is a thin wrapper around `PersistableVec<u8>`, which is more interesting than it sounds.
 Plain `String` deliberately has **no** `Persistable` implementation, and that absence is the enforcement mechanism: a struct field typed `String` simply fails to compile, rather than silently persisting nothing.
-`PersistableString` exists because a backed string needs a field of its own to remember which allocation holds its bytes, and `String` has nowhere to put one.
+`PersistableString` exists because a durable string needs a field of its own to remember which allocation holds its bytes, and `String` has nowhere to put one.
 
 So this does not compile, and that is the point:
 
@@ -171,7 +171,7 @@ It is gated behind `kladde-types`' `serde` feature — the only thing in the wor
 A **rope**, for large text with efficient middle-insertion, is designed but not built.
 
 Tuples of up to twelve components are persistable, laid out like a tuple struct, and their guard's `parts()` hands out a guard per component.
-There is no backed `Option` or `Box` as such — a derived enum covers `Option`'s role.
+There is no durable `Option` or `Box` as such — a derived enum covers `Option`'s role.
 
 ## Choosing
 

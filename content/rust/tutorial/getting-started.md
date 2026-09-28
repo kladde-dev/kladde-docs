@@ -12,12 +12,12 @@ Nothing about reading touches the file.
 **In the file**, it is a compact binary representation that lags slightly behind, plus a *journal* of changes not yet folded into it.
 A mutation appends to the journal and then updates the in-memory value, before it returns.
 
-So: reads are as fast as the non-backed equivalent, writes cost one small append, and the bulk representation is brought up to date periodically rather than on every change.
+So: reads are as fast as the plain in-memory equivalent, writes cost one small append, and the bulk representation is brought up to date periodically rather than on every change.
 
 The name comes from this shape.
 A *Kladde* is a merchant's rough day-book — transactions scribbled down in order as they happen — later transcribed into the clean main ledger.
 
-## Your first backed value
+## Your first durable value
 
 <!-- kladde-example: name=journal file=src/main.rs mode=run deps=kladde,kladde-types
 after:
@@ -62,7 +62,7 @@ Four things are worth noticing.
 
 **`Kladde<T>` is the root.**
 It pairs your root value with the file that backs it.
-Everything reachable from it is backed; a value you construct outside it is not, until you store it into something that is.
+Everything reachable from it is durable; a value you construct outside it is not, until you store it into something that is.
 
 **Reading goes through `get()`**, which hands you `&T` — the plain value.
 From there you use ordinary methods: `len()`, `iter()`, indexing.
@@ -87,7 +87,7 @@ There is no hook that fires when you assign to a field.
 The guard is the substitute.
 It is an RAII token — exactly the relationship `MutexGuard` has to `Mutex` — that proves you have exclusive, recording access, and it carries two things a plain `&mut` could not: the backend to record into, and the *location* in the file that this particular field occupies.
 
-This is why you cannot mutate a backed value through a plain `&mut`.
+This is why you cannot mutate a durable value through a plain `&mut`.
 There is no such method.
 Persistence is not something you can forget, because the only mutating API is the one that records.
 
