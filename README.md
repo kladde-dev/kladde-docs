@@ -20,6 +20,9 @@ site/build.sh --serve
 Serves the site at `http://localhost:8080` and rebuilds on save; without `--serve`, it builds into `public/`.
 It needs Node.js 22 and git, and the first run fetches and installs [Quartz](https://quartz.jzhao.xyz/) into `site/.quartz/` (see [Updating Quartz](#updating-quartz)).
 
+After a build, `tools/check-site-links.py` checks every internal link and anchor in `public/`.
+That is what Quartz made of the links, which `tools/make-pdf.py --check-only` cannot see, since it reads the markdown.
+
 ## Tooling
 
 Scripts in [`tools/`](tools/).
@@ -120,7 +123,7 @@ The figures are SVG, byte for byte the same whenever the data and matplotlib's v
 ## Deployment
 
 [`.github/workflows/site.yml`](.github/workflows/site.yml) builds the site and the PDF on every push and pull request, and keeps both as artifacts of the run.
-It also checks the Rust examples, which does not hold up publishing.
+A broken link in the built site fails the run and so holds up publishing; the check of the Rust examples does not.
 On `main`, it also publishes them to <https://kladde-dev.github.io/>, by pushing to the `gh-pages` branch of [kladde-dev/kladde-dev.github.io](https://github.com/kladde-dev/kladde-dev.github.io): only a repository of that name can serve the organization's root URL.
 
 The push needs a deploy key, set up once:
