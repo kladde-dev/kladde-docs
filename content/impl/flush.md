@@ -339,7 +339,7 @@ This exists because two points in the argument are easy to get backwards: most p
   This includes journal segment `E − 1`, which header `E − 2` names.
   Pages belonging to both worlds are simply live, which is the common case rather than the exception: typically most pages of world `E − 2` are in both.
 
-**Steps 1–7** of [[spec/durability#The flush protocol|the flush protocol]] write data and address-table pages for epoch `E`, then fsync.
+**Steps 1–7** of [the flush protocol](../spec/durability.md#the-flush-protocol) write data and address-table pages for epoch `E`, then fsync.
 No header page is touched.
 On a power cut during or after this:
 

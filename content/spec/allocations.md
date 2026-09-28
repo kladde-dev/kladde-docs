@@ -27,7 +27,7 @@ A **zero-sized allocation** is the natural endpoint of the rules rather than a s
 Nothing may assume "at least one content statement": even a large allocation can have none, if it is entirely left to its default content of all-zero bytes.
 
 There is no distinction between resizable and fixed-size allocations.
-*Why not:* it existed in a [[relocatable-heap|superseded design]] so that neighbours of a fixed-size allocation could rely on it not moving, and in this design nothing is adjacent to anything — every reshape is a statement edit.
+*Why not:* it existed in a [superseded design](../superseded/relocatable-heap.md) so that neighbours of a fixed-size allocation could rely on it not moving, and in this design nothing is adjacent to anything — every reshape is a statement edit.
 
 ## Stable ids, and why pointers are not addresses
 

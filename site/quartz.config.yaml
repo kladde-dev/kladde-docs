@@ -76,7 +76,10 @@ plugins:
   - source: "@quartz-community/crawl-links"
     enabled: true
     options:
-      markdownLinkResolution: shortest
+      # Relative, as the links are written and as tools/make-pdf.py reads them.
+      # "shortest" looks a link up by its file name, and sends one whose name
+      # occurs in two folders (consolidation.md, ripeness.md) to the site root.
+      markdownLinkResolution: relative
     order: 60
   - source: "@quartz-community/description"
     enabled: true
@@ -137,8 +140,10 @@ plugins:
     enabled: true
   - source: "@quartz-community/og-image"
     enabled: true
+  # Off: it writes baseUrl into a CNAME file, which GitHub Pages would take for
+  # a custom domain when the site is deployed from a branch.
   - source: "@quartz-community/cname"
-    enabled: true
+    enabled: false
   - source: "@quartz-community/canvas-page"
     enabled: true
   - source: "@quartz-community/content-page"

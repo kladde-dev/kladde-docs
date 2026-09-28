@@ -40,7 +40,7 @@ That single decision is what keeps this design far simpler than a database engin
 What this costs is that opening a file is `O(live bytes)` and that the whole file image is resident.
 What it buys is that every read is an in-memory lookup and every flush writes only deltas.
 
-A future feature called *[[segments]]* will address the cost of bulk reads by allowing application authors to manually declare a subtree of their persisted data structure as being loaded and resolved lazily.
+A future feature called *[segments](../drafts/segments.md)* will address the cost of bulk reads by allowing application authors to manually declare a subtree of their persisted data structure as being loaded and resolved lazily.
 
 ## The four structures
 
