@@ -19,7 +19,7 @@ The file format has exactly that shape.
 Kladde is meant to be a **cross-language system**, not a library for one language.
 
 At the centre sits a language-independent specification of the file format and the schema description — everything all implementations must agree on.
-Around it sit implementations for individual languages: [kladde-rust](rust/) first, with `kladde-cpp`, `kladde-python`, and `kladde-java` intended to follow.
+Around it sit implementations for individual languages: [kladde-rs](rust/) first, with `kladde-cpp`, `kladde-python`, and `kladde-java` intended to follow.
 
 The contract between them is deliberately narrow and deliberately strict:
 
@@ -41,8 +41,8 @@ See [Tooling](spec/tooling.md) for how far each of those goes.
 | --- | --- | --- |
 | **[Specification](spec/)** | the normative, language-independent description: what a kladde file is, what invariants it must uphold, and what guarantees an implementation must provide | implementers porting kladde to a new language; tool authors |
 | **[Implementation](impl/)** | the reference algorithms and data structures — what must be maintained in memory to satisfy the spec, and how — stated in language-agnostic pseudocode | anyone building an implementation in any language |
-| **[kladde-rust](rust/)** | everything specific to the Rust implementation: crate layout, traits, guards, macros, and the Rust-specific half of the algorithms | Rust users, and Rust contributors |
-| **[Evaluation](evaluation/)** | measurements of kladde-rust on realistic workloads, and what they say about the design | anyone judging the design or choosing its constants |
+| **[kladde-rs](rust/)** | everything specific to the Rust implementation: crate layout, traits, guards, macros, and the Rust-specific half of the algorithms | Rust users, and Rust contributors |
+| **[Evaluation](evaluation/)** | measurements of kladde-rs on realistic workloads, and what they say about the design | anyone judging the design or choosing its constants |
 | **[Superseded](superseded/)** | designs that were worked out and then rejected, kept for the reasoning | anyone tempted to re-propose one of them |
 | **[Drafts](drafts/)** | half-baked ideas in progress, not yet held to the separation the other sections observe | the authors |
 

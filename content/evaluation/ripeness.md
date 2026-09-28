@@ -22,7 +22,7 @@ And after a mass free the price takes 13 to 19 flushes to climb back from where 
 
 ## What was measured
 
-**The [same benchmark](consolidation.md#what-was-measured) ran on the `ripeness` branch of kladde-rust, and on main.**
+**The [same benchmark](consolidation.md#what-was-measured) ran on the `ripeness` branch of kladde-rs, and on main.**
 Main is at commit `cb34576`, as on [the consolidation page](consolidation.md).
 Its tables here are from a run made back to back with the first version of the branch, so that their times compare; a run of main for this update reproduced every number in them but the times, as the benchmark is deterministic but for its times.
 The branch is at `362210a`, which follows the draft as of kladde-docs `b33a836`; the first version, at `f7d4eab`, ranked pages by their absolute fill.
@@ -32,7 +32,7 @@ The experiments this page cites besides, on the controller and on churn, ran on 
 
 The branch fills in what the draft leaves open with a forgetting rate `β = 0.1` per flush, a floor `R_MIN = 10⁻⁴` and a starting price `κ = 0.01` (the draft's own examples), a cursor that gives up pages older than `W = 8` flushes, and a budget of 256 pages per flush, which is now a fixed cap.
 Its controller aims the data pages and leaves at a fill `τ = 0.75` by default, where main aims the whole file at 0.8 and never gets there.
-`implementation-notes.md` in kladde-rust lists every departure from the draft.
+`implementation-notes.md` in kladde-rs lists every departure from the draft.
 
 Where main's page compares policies, it uses **steady states**: the file size averaged over the second half of each run, and the bytes written during that half per byte the application wrote.
 Both controllers take a live size or more of writes to settle, which end-of-run values would mix in.
@@ -209,7 +209,7 @@ The ranking takes `O(log P)` per page that changed and per victim, where main's 
 
 ## Reproducing
 
-The runs of the branch used one checkout of kladde-rust, with main in a worktree of its own:
+The runs of the branch used one checkout of kladde-rs, with main in a worktree of its own:
 
 ```sh
 git worktree add ../kladde-main main

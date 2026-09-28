@@ -9,7 +9,7 @@ Pseudocode is written in a Rust-like notation, because `enum`s and pattern match
 For implementations in other languages, it is recommended but not required to make substantially the same choices for, e.g., integer widths or fundamental data structures like B-trees or hash maps, both of which follow from the [bounds the specification states](../spec/address-table.md#bounds).
 
 What does *not* belong here is anything a different language would do differently: trait shapes or class hierarchies, memory layout, alignment, the mutation-capture mechanism.
-Those decisions are documented in the language-specific documentations (currently only [kladde-rust](../rust/)).
+Those decisions are documented in the language-specific documentations (currently only [kladde-rs](../rust/)).
 
 ## The documents
 

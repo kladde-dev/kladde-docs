@@ -34,7 +34,7 @@ After the last flush, each run reopens its file and compares every byte with a m
 Times include each flush's `fsync`.
 Journal appends are not fsynced, as [the journal's specification](../spec/journal.md) prescribes: an operation survives a crash of the application once its call returns, and a power cut once the next flush has returned.
 
-The runs measured [kladde-rust](../rust/) at commit `cb34576`, built with `--release` by Rust 1.97.1, with the default [options](../rust/store.md) unless a variant says otherwise, on an Intel Core i7-1165G7 with 16 GB of memory under Linux 7.0, in a development container whose files live on an overlay file system.
+The runs measured [kladde-rs](../rust/) at commit `cb34576`, built with `--release` by Rust 1.97.1, with the default [options](../rust/store.md) unless a variant says otherwise, on an Intel Core i7-1165G7 with 16 GB of memory under Linux 7.0, in a development container whose files live on an overlay file system.
 Identical configurations differed by up to 20 % in median flush time from one run to the next, so only differences well beyond that are worth reading into the times.
 
 ## Space
@@ -194,7 +194,7 @@ All four are fixed in the measured commit, and each has a test of its own.
 4. **Compaction mode ran almost permanently in small files** (fixed in `26dcc08`), because it counted pages in quarantine as holes, although they are working space that the next flushes reuse by themselves.
    In the 1 MiB uniform file it ran in 30 of 33 flushes, and the file ended 6 % larger than it does with the fix.
 
-`implementation-notes.md` in kladde-rust records the first, under "Flush"; [Compaction mode](../impl/consolidation.md#compaction-mode) now states the rules the last two fixes follow.
+`implementation-notes.md` in kladde-rs records the first, under "Flush"; [Compaction mode](../impl/consolidation.md#compaction-mode) now states the rules the last two fixes follow.
 
 ## What to change
 
@@ -210,7 +210,7 @@ All four are fixed in the measured commit, and each has a test of its own.
 
 ## Reproducing
 
-In kladde-rust, at the measured commit, run every workload and write one table per workload to a directory:
+In kladde-rs, at the measured commit, run every workload and write one table per workload to a directory:
 
 ```sh
 cargo run --release -p kladde-bench -- /tmp/kladde-bench

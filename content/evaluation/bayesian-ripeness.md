@@ -3,7 +3,7 @@ title: Bayesian ripeness
 ---
 
 **On kladde-bench's workloads, a posterior per chunk cleans no better than one rate per page, under either rule, and costs more to keep and to rank.**
-[The Bayesian draft](../drafts/bayesian-ripeness.md)'s cure model, started from the file's empirical prior, ran on a branch of kladde-rust, deciding by the expected gain, rule (a), and by the option to wait, rule (c′).
+[The Bayesian draft](../drafts/bayesian-ripeness.md)'s cure model, started from the file's empirical prior, ran on a branch of kladde-rs, deciding by the expected gain, rule (a), and by the option to wait, rule (c′).
 Without the consolidator state, its live pages take the same space as the single-rate branch's to within 0.3 % in every run of 8 MiB or more.
 It writes as much, to within 0.6 %, under uniform overwrites, on the mixed workload, and under churn, but 0.5 to 1.1 % more under skewed overwrites and 4 to 5 % more under appends.
 Rules (a) and (c′) write within 0.7 % of each other without the state, and within 1.2 % with it: (c′) is (a) in effect, as the draft's simulation found.
@@ -21,13 +21,13 @@ The pages written in the fill phase then look static while they drain: in the fi
 
 ## What was measured
 
-**The [same benchmark](consolidation.md#what-was-measured) ran on the `bayesian-ripeness` branch of kladde-rust, which implements [the draft](../drafts/bayesian-ripeness.md) as of kladde-docs commit `369ae0e`, in four configurations: rules (a) and (c′), each with and without the consolidator state.**
+**The [same benchmark](consolidation.md#what-was-measured) ran on the `bayesian-ripeness` branch of kladde-rs, which implements [the draft](../drafts/bayesian-ripeness.md) as of kladde-docs commit `369ae0e`, in four configurations: rules (a) and (c′), each with and without the consolidator state.**
 The branch is at `9f99a1f`, on top of the static-share branch at `a856b06`; it replaces the fit and its test with the posterior, and the consolidator state's entries with the posterior's, and changes nothing else that the benchmark exercises.
 The benchmark is deterministic but for its times, so every number of these runs but the times compares with those of the single-rate branch and main on [Cleaning by ripeness](ripeness.md), and of the static-share branch on [Ripeness with a static share](ripeness2.md), whose tables this page reuses.
 
 The branch takes the draft's constants, `β = 0.1` per flush, a class prior worth `ν_π = 10` chunks, and `R_MIN = 10⁻⁴`, and the draft's recommendations: the cure model per chunk, the empirical prior for all content, and the floor as a cap.
 The empirical prior learns from what the pages a flush writes lose in their first ten flushes, the posterior's memory; before it has two pages' worth, from the pages still young, and before any, it is the weakest prior the branch allows, 0.05 loss events over an exposure of one.
-`implementation-notes.md` in kladde-rust lists where the branch departs from the draft: a chunk's size is what its statement states, a `Ref` that the cut restates is a new, untouched chunk, and an `Inline` statement's death counts as two loss events.
+`implementation-notes.md` in kladde-rs lists where the branch departs from the draft: a chunk's size is what its statement states, a `Ref` that the cut restates is a new, untouched chunk, and an `Inline` statement's death counts as two loss events.
 
 **This page compares the space the live pages take, as well as the file's size.**
 The file's size also counts free pages that have not reached its end, where truncation returns them; the live pages, data pages and leaves, are what cleaning decides.
@@ -191,7 +191,7 @@ Each statement's slab record adds the size its statement states and whether it h
 
 ## Reproducing
 
-The runs of this page ran from kladde-rust's branch `bayesian-ripeness` at `9f99a1f`:
+The runs of this page ran from kladde-rs's branch `bayesian-ripeness` at `9f99a1f`:
 
 ```sh
 git checkout 9f99a1f

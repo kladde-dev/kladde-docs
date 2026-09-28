@@ -42,7 +42,7 @@ Attributes:
                    name is looked up in its [workspace.dependencies], so an
                    example can only use what the workspace itself uses.
 
-Usage:  tools/check-examples.py [--workspace ../kladde-rust] [--list] [-v]
+Usage:  tools/check-examples.py [--workspace ../kladde-rs] [--list] [-v]
 
 Needs: a cargo toolchain and a checkout of the Rust workspace next door.
 """
@@ -416,8 +416,8 @@ def dedupe(entries):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workspace", default=str(ROOT.parent / "kladde-rust"),
-                    help="checkout of the Rust workspace (default: ../kladde-rust)")
+    ap.add_argument("--workspace", default=str(ROOT.parent / "kladde-rs"),
+                    help="checkout of the Rust workspace (default: ../kladde-rs)")
     ap.add_argument("--list", action="store_true", help="list the marked examples and exit")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="include rustc's own rendering of each diagnostic")

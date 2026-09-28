@@ -12,7 +12,7 @@ That matches what the draft's own simulation found: the single-rate draft cleans
 
 ## What was measured
 
-**The [same benchmark](consolidation.md#what-was-measured) ran on the `ripeness2` branch of kladde-rust, which implements [the draft](../drafts/ripeness.md) as of kladde-docs commit `7c343b7`.**
+**The [same benchmark](consolidation.md#what-was-measured) ran on the `ripeness2` branch of kladde-rs, which implements [the draft](../drafts/ripeness.md) as of kladde-docs commit `7c343b7`.**
 The branch is at `074a0df`, on top of the single-rate branch at `362210a`; the two differ only in how a page's estimate is kept and fitted, and in two counters of static shares, which the benchmark records.
 The benchmark is deterministic but for its times, so every number of either branch's runs compares with the other's: the single-rate branch's and main's tables are those of [Cleaning by ripeness](ripeness.md).
 A second run of the static-share branch left the consolidator state out, as one of the single-rate branch did, to tell what the policy does from what its state costs.
@@ -21,7 +21,7 @@ This page compares no times, since its runs shared their host with other work.
 
 The branch takes the draft's constants, `β = 0.1` per flush, a starting estimate worth `n₀ = 10` flushes of losses, and a test that a static share must pass by `c = 3` statements' worth of log-likelihood, and the single-rate branch's for the rest.
 Its fit agrees with the `tested` estimator of `tools/simulate-ripeness.py` to within 0.1 % of the index, where the simulation fits rates on a fine grid, and reproduces the draft's worked example.
-`implementation-notes.md` in kladde-rust lists where it departs from the draft: both fits are solved exactly, and the test's unit, the mean statement size, is measured separately for data pages and leaves.
+`implementation-notes.md` in kladde-rs lists where it departs from the draft: both fits are solved exactly, and the test's unit, the mean statement size, is measured separately for data pages and leaves.
 
 ## How often pages earn a static share
 
@@ -123,7 +123,7 @@ The runs shared their host with other work, so this page does not say what that 
 
 ## Reproducing
 
-The static-share branch ran from one checkout of kladde-rust, at `074a0df`, and the mixed workload later, at `a856b06`; at `a856b06`, these commands run all of it:
+The static-share branch ran from one checkout of kladde-rs, at `074a0df`, and the mixed workload later, at `a856b06`; at `a856b06`, these commands run all of it:
 
 ```sh
 git checkout ripeness2
@@ -144,4 +144,4 @@ tools/plot-evaluation.py --only mixed --out content/evaluation/figures/ripeness2
     single-rate=$D/ripeness/ripeness static-share=$D/ripeness2/ripeness2
 ```
 
-`tools/simulate-ripeness.py example` prints the draft's worked example, which the unit test `the_fit_follows_the_drafts_example` in kladde-rust checks the fit against.
+`tools/simulate-ripeness.py example` prints the draft's worked example, which the unit test `the_fit_follows_the_drafts_example` in kladde-rs checks the fit against.

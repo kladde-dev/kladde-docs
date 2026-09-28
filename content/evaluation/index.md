@@ -2,7 +2,7 @@
 title: Evaluation
 ---
 
-Measurements of [kladde-rust](../rust/) under realistic workloads, and what they say about the design in [Implementation](../impl/).
+Measurements of [kladde-rs](../rust/) under realistic workloads, and what they say about the design in [Implementation](../impl/).
 
 Each page names the commit it measured and the commands that reproduce it.
 Its figures are drawn by `tools/plot-evaluation.py` from the tables in `data/`, which are kept, gzipped, so that a figure can be redrawn without rerunning the benchmark.
@@ -15,6 +15,6 @@ Ratios, such as the file's size over its live size or the bytes written per byte
 | page | what it measures |
 | --- | --- |
 | [Consolidation under load](consolidation.md) | the design in [Consolidation](../impl/consolidation.md), on six workloads: space and write amplification, compaction after a mass free, the growth of the description, flush times, and variants of the churn floor, the target fill, and defragmentation's share |
-| [Cleaning by ripeness](ripeness.md) | the [draft](../drafts/ripeness.md)'s policy, implemented on a branch of kladde-rust, against the design above on the same workloads: the trade-off between space and writes, the controller that sets the price of space, what the logarithm in its threshold contributes, whether it keeps content that never changes apart from content that does, and what keeping the estimates costs |
+| [Cleaning by ripeness](ripeness.md) | the [draft](../drafts/ripeness.md)'s policy, implemented on a branch of kladde-rs, against the design above on the same workloads: the trade-off between space and writes, the controller that sets the price of space, what the logarithm in its threshold contributes, whether it keeps content that never changes apart from content that does, and what keeping the estimates costs |
 | [Ripeness with a static share](ripeness2.md) | the draft's later estimate, a draining share over a static one fitted to each page's losses, against the single rate per page above: how often pages earn a static share, and what keeping the fit costs |
 | [Bayesian ripeness](bayesian-ripeness.md) | the [Bayesian draft](../drafts/bayesian-ripeness.md)'s posterior per chunk, started from the file's empirical prior and decided by the expected gain or by the option to wait, against both estimates above: what it finds static, how it cleans, how its prior fares, and what it costs to keep and to rank |

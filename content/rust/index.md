@@ -1,5 +1,5 @@
 ---
-title: kladde-rust
+title: kladde-rs
 ---
 
 The Rust implementation of kladde, and the reference implementation of the [specification](../spec/).
@@ -56,7 +56,7 @@ Every comparable system relies on exactly such a hook: Python has `__setattr__`,
 Those systems make persistence syntactically invisible — `self.foo = bar` just works — because the language hands them a place to stand.
 
 Rust hands them nothing.
-So kladde-rust makes the recording point **explicit and unforgeable** instead: the only mutating API is the one that records, and it is reached through a `Guard`.
+So kladde-rs makes the recording point **explicit and unforgeable** instead: the only mutating API is the one that records, and it is reached through a `Guard`.
 
 Everything idiosyncratic about this layer follows from that one constraint, and it is the single largest thing a port should expect to redesign.
 A Python implementation should use property hooks and have no guards at all.
@@ -79,7 +79,7 @@ A Python implementation should use property hooks and have no guards at all.
 ## Status
 
 A first prototype of the whole design exists; nothing is frozen.
-Where the implementation departs from the [implementation notes](../impl/), or found them unclear, `implementation-notes.md` in the kladde-rust repository says so.
+Where the implementation departs from the [implementation notes](../impl/), or found them unclear, `implementation-notes.md` in the kladde-rs repository says so.
 
 | area | status |
 | --- | --- |
