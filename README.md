@@ -84,7 +84,8 @@ tools/check-examples.py -v         # with rustc's own diagnostics
 tools/make-pdf.py --check-examples # both, in one go
 ```
 
-Needs a cargo toolchain and a checkout of [kladde-rs](https://github.com/kladde-dev/kladde-rs) next door (`--workspace`, default `../kladde-rs`), so it is opt-in rather than part of every build.
+Needs a cargo toolchain and a checkout of [kladde-rs](https://github.com/kladde-dev/kladde-rs) next door (`--workspace`, default `../kladde-rs`), so it is opt-in rather than part of every local build.
+CI runs it on every push, against kladde-rs's `main`.
 
 A Rust code block is compiled only if an HTML comment right above it says so:
 
@@ -119,6 +120,7 @@ The figures are SVG, byte for byte the same whenever the data and matplotlib's v
 ## Deployment
 
 [`.github/workflows/site.yml`](.github/workflows/site.yml) builds the site and the PDF on every push and pull request, and keeps both as artifacts of the run.
+It also checks the Rust examples, which does not hold up publishing.
 On `main`, it also publishes them to <https://kladde-dev.github.io/>, by pushing to the `gh-pages` branch of [kladde-dev/kladde-dev.github.io](https://github.com/kladde-dev/kladde-dev.github.io): only a repository of that name can serve the organization's root URL.
 
 The push needs a deploy key, set up once:

@@ -61,6 +61,20 @@ jobs:
           path: public
           if-no-files-found: error
 
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: kladde-docs
+      - uses: actions/checkout@v4
+        with:
+          repository: kladde-dev/kladde-rs
+          path: kladde-rs
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile and run the Rust examples against kladde-rs's main
+        run: python3 kladde-docs/tools/check-examples.py
+
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [pdf, site]
