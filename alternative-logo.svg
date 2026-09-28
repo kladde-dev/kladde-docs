@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>kladde</title>
+  <!-- A Kladde, the merchant's day-book: a light cover framed in ink, a cloth
+       spine, a ribbon, and a stroke of handwriting that hints at a k. -->
+  <path d="M40 52 h8 v11 l-4 -3.5 l-4 3.5 z" fill="#d1495b"/>
+  <rect x="12" y="5" width="45" height="53" rx="4" fill="#fbf8f3" stroke="#1c3647" stroke-width="2.5"/>
+  <rect x="9.5" y="3.5" width="42" height="50" rx="3" fill="#c2d0d9" stroke="#1c3647" stroke-width="3"/>
+  <path d="M12 2 H19 V55 H12 A4 4 0 0 1 8 51 V6 A4 4 0 0 1 12 2 Z" fill="#1c3647"/>
+  <path d="M23.5 39.1 C28 34.1 32.8 25.4 32 19.5 C31 13.5 25 15.5 26 23.5 C27 30.5 29 34.5 31 34.5 L38 27.5 L33 33.5 C35.6 36.1 39.8 38.8 45.6 38"
+        fill="none" stroke="#d1495b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
