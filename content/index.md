@@ -29,8 +29,8 @@ The file format has exactly that shape.
 The project is still very young and under active development.
 At the current stage, the **main products** are
 
-- a [detailed file format specification](spec) and
-- a [documentation of a reference implementation](impl).
+- a [detailed file format specification](spec/) and
+- a [documentation of a reference implementation](impl/).
 
 The reference implementation itself is *not production ready*.
 Its purpose at the moment is to allow rapid experimentation on new *policies* (non-normative decisions that an implementation may make without breaking interoperability).
