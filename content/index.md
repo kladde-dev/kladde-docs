@@ -8,7 +8,7 @@ A cross-language file format with implementations.
 Founded and currently maintained by [Robert Bamler](https://robamler.github.io/).
 Source on [GitHub](https://github.com/kladde-dev); all of these pages also as [one PDF](https://kladde-dev.github.io/kladde.pdf).
 
-**Kladde** is a system for *backed data structures*: containers and user-defined types that behave like their ordinary in-memory counterparts, but whose every mutation is durably recorded to a file as it happens.
+**Kladde** is a system for *durable data structures*: containers and user-defined types that behave like their ordinary in-memory counterparts, but whose every mutation is durably recorded to a file as it happens.
 There is no save step, no serialization pass, and no object-relational layer.
 You open a value from a file, you mutate it the way you would mutate any other value, and it is on disk.
 
@@ -16,7 +16,7 @@ The idea is known as *orthogonal persistence*: a program works with persistent d
 Kladde brings it to existing languages as libraries, as far as each language allows.
 
 Reads never touch the file.
-A backed data structure keeps a full, natively-typed in-memory representation, so reading a field or iterating a map costs what it costs in the host language, not what it costs in a database.
+A durable data structure keeps a full, natively-typed in-memory representation, so reading a field or iterating a map costs what it costs in the host language, not what it costs in a database.
 Writes go two places at once: into that in-memory representation, and into an append-only on-disk journal that is durable by the time the mutating call returns.
 The bulk on-disk form lags behind, and is brought up to date periodically when the journal is folded into it.
 

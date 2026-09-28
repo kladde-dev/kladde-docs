@@ -4,7 +4,7 @@ title: Getting started
 
 ## The mental model
 
-A backed data structure lives in two places at once.
+A durable data structure lives in two places at once.
 
 **In memory**, it is an ordinary Rust value: a `PersistableVec<T>` really does hold a `Vec<T>`, and reading from it is a plain memory access.
 Nothing about reading touches the file.

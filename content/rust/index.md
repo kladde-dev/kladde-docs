@@ -16,7 +16,7 @@ It assumes you know Rust and nothing about kladde, and works up from a first pro
 
 ## What it is
 
-A Rust workspace providing backed data structures: containers and derived types whose mutations are recorded durably as they happen.
+A Rust workspace providing durable data structures: containers and derived types whose mutations are recorded durably as they happen.
 
 <!-- kladde-example: name=notes file=src/main.rs mode=run deps=kladde,kladde-types
 before:
