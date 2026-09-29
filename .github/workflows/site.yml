@@ -30,20 +30,20 @@ jobs:
             ca-certificates git python3 pandoc texlive-xetex \
             texlive-fonts-recommended lmodern fonts-texgyre fonts-texgyre-math \
             fonts-dejavu-core fontconfig librsvg2-bin texlive-plain-generic
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The checkout belongs to the runner's user, not the container's root,
       # so git refuses the repository to any later step -- make-pdf.py asks it
       # which commit to name on the title page.
       - name: Let git read the checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Install the mermaid renderer
         run: npm ci --prefix tools --no-audit --no-fund
       - name: Build the PDF
         run: python3 tools/make-pdf.py -o kladde.pdf
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pdf
           path: kladde.pdf
@@ -52,17 +52,17 @@ jobs:
   site:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the pages' dates come from git
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Build the site
         run: site/build.sh
       - name: Check the site's internal links and anchors
         run: tools/check-site-links.py public
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: site
           path: public
@@ -71,10 +71,10 @@ jobs:
   examples:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: kladde-docs
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: kladde-dev/kladde-rs
           path: kladde-rs
@@ -90,15 +90,15 @@ jobs:
       group: deploy
       cancel-in-progress: false
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: site
           path: public
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: pdf
           path: public
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: source
           sparse-checkout: site/QUARTZ-LICENSE.txt
