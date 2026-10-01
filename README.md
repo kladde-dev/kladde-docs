@@ -141,6 +141,13 @@ The push needs a deploy key, set up once:
 Quartz is not vendored.
 [`site/build.sh`](site/build.sh) fetches it at the commit it names in `QUARTZ_COMMIT`, and copies the two files that customize it over its own: [`site/quartz.config.yaml`](site/quartz.config.yaml) and [`site/custom.scss`](site/custom.scss).
 [`site/icons.mjs`](site/icons.mjs) then replaces Quartz's favicon and social-preview images with ones rendered from [`logo.svg`](logo.svg), which is also on the PDF's title page.
+It also renders the landing page's preview, the image chat apps show for a link to the site, from [`site/social-preview.svg`](site/social-preview.svg).
+That file is generated: edit [`site/social-preview-editable.svg`](site/social-preview-editable.svg), whose text needs Schibsted Grotesk and Source Sans 3 installed, then turn its text into curves, so that the site renders it the same without those fonts:
+
+```sh
+inkscape site/social-preview-editable.svg --export-text-to-path --export-plain-svg \
+    --export-filename=site/social-preview.svg
+```
 To update, change `QUARTZ_COMMIT` to a newer commit of the [upstream repository](https://github.com/jackyzha0/quartz), build, and compare the result; if upstream has changed its default configuration, `quartz.config.default.yaml` there shows how.
 
 ## License

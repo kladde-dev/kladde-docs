@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <title>kladde: durable data structures</title>
+  <rect width="1280" height="640" fill="#fbf8f3"/>
+  <!-- the logo, as in logo.svg, but on a white tile so it stands off the paper -->
+  <g transform="translate(143.5 85.5) scale(4.375)">
+    <rect x="2" y="2" width="60" height="60" rx="8" fill="#ffffff" stroke="#284b63" stroke-width="3"/>
+    <g transform="translate(7.75 7.75)">
+      <g fill="#e8ecef">
+        <rect x="10" y="0" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="20" y="0" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="30" y="0" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="10" y="10" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="20" y="10" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="40" y="10" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="30" y="20" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="40" y="20" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="10" y="30" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="20" y="30" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="40" y="30" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="10" y="40" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="20" y="40" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="30" y="40" width="8.5" height="8.5" rx="1.5"/>
+      </g>
+      <g fill="#284b63">
+        <rect x="0" y="10" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="0" y="20" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="0" y="30" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="0" y="40" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="10" y="20" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="20" y="20" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="30" y="10" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="40" y="0" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="30" y="30" width="8.5" height="8.5" rx="1.5"/>
+        <rect x="40" y="40" width="8.5" height="8.5" rx="1.5"/>
+      </g>
+      <rect x="0" y="0" width="8.5" height="8.5" rx="1.5" fill="#d1495b"/>
+    </g>
+  </g>
+  <!-- the name, in the site's heading typeface -->
+  <text x="485.5" y="296" font-family="'Schibsted Grotesk', 'TeX Gyre Heros', Helvetica, Arial, sans-serif"
+        font-size="196" font-weight="700" fill="#284b63">kladde</text>
+  <!-- the tagline, in the site's body typeface -->
+  <g font-family="'Source Sans 3', 'Source Sans Pro', 'TeX Gyre Heros', Helvetica, Arial, sans-serif"
+     font-size="66" fill="#4e4e4e">
+    <text x="140" y="454.5" font-weight="600">Durable data structures.</text>
+    <text x="140" y="538.5">Mutate in memory, and it’s on disk.</text>
+  </g>
+</svg>

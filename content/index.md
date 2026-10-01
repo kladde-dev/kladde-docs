@@ -1,5 +1,6 @@
 ---
 title: kladde
+socialImage: social-preview.png
 ---
 
 **Durable data structures: mutate in memory, and it's on disk.**

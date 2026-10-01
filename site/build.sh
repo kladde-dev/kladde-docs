@@ -32,7 +32,7 @@ fi
 
 cp "$site/quartz.config.yaml" "$quartz/quartz.config.yaml"
 cp "$site/custom.scss" "$quartz/quartz/styles/custom.scss"
-node "$site/icons.mjs" "$quartz" "$root/logo.svg"
+node "$site/icons.mjs" "$quartz" "$root/logo.svg" "$site/social-preview.svg"
 
 cd "$quartz"
 npx quartz build -d "$root/content" -o "$root/public" "$@"
