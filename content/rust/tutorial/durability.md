@@ -41,9 +41,12 @@ Flushing is **automatic**: once the journal outgrows its budget, the mutation th
 Application authors mutate state and never call anything.
 
 An explicit `flush()` remains available for the cases where you want the fold to happen now — before a long idle period, say, since a flush is also what makes everything before it survive a power cut.
-`close()` flushes and then shrinks the file to its live pages.
+`close()` flushes and then truncates the file after its last live page, which does not shrink it to its live pages: free pages below that one stay in the file.
+They go only as later flushes consolidate, each moving a bounded amount of live content down; space freed by one flush becomes available from the flush after it on.
+To reclaim more of it before closing, call `flush()` a few times first; a freshly created file, for instance, needs one or two:
 
 ```rust
+journal.flush()?;
 journal.flush()?;
 journal.close()?;
 ```
