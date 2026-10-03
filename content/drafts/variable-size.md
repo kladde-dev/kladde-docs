@@ -289,15 +289,22 @@ A container that moves elements with `Copy` or `Move` records can do so only bet
 A field after a variable-size field sits at an offset that depends on that field's current value, which the in-memory value supplies, since every encoded size is computable from a value and its place without touching the file.
 A packed vector needs the offset of every element to hand out a guard for one, so it keeps an index of element offsets alongside its elements.
 As an array of prefix sums, a size change or an insertion updates the entries behind it in `O(n)`, as the memmove of an insertion into `Vec` already costs.
-A Fenwick tree would make a size change `O(log n)`; that is for containers such as a packed vector to choose, while a derived struct keeps no index at all and adds up its fields' sizes when it hands out a field's guard.
+A Fenwick tree would make a size change `O(log n)`; that is for containers such as a packed vector to choose.
+A composite value keeps no index in memory, but its guard does, as long as it lives: the offsets of the value's fields, added up from the in-memory value when the guard is made.
 Reads do not change at all: they go to the native in-memory values, which have no offsets and no varints.
 
-**Slotted values keep every optimization they have today, as long as the choice of encoding is part of a guard's type rather than a value it carries.**
-Today, a field's offset is a sum of constant inline sizes, which the compiler folds, and a guard holds only the value, the backend and the location, never a size.
-If a guard for a slotted value and a guard for a packed one are different types, generated together by the derive macro, the slotted one compiles to exactly today's code.
-The packed one has constant offsets too, up to its first variable-size field, and sums sizes it computes from the in-memory value after that, still storing none.
-The possibility of packing then costs nothing at run time, only the code for whichever of the two guards a program uses, compiled once per type.
-A guard that carried the choice as a flag would instead branch on it at every field access, whether the program ever packs or not.
+**A guard in a packed place asks its parent where its value is every time it writes, rather than holding a location.**
+A held location would go stale while the guard lives: `parts()` hands out the guards of all of a value's fields at once, so a field can grow while the guard of a field behind it is in use, and an ancestor small value can move its content to an allocation of its own while a guard inside it is.
+So a guard holds a link instead, either a fixed location with nobody to tell, or its parent's node and its own index among the parent's children; the parent works out the child's location from its own and the offsets it keeps, asking its own parent in turn.
+A change of size travels the same chain upwards: each node records what the change requires of it, and only once every node above has done so updates the offsets it keeps, so that a failed mutation leaves them matching the unchanged value.
+This was not foreseen by the draft as first written, which had a derived struct add up its fields' sizes when it hands out a field's guard, and held that a parent's borrow of its child was enough for the child to report to it.
+
+**Slotted values keep their static offsets, and the choice of encoding costs them one branch per child they hand out.**
+Today, a field's offset is a sum of constant slot sizes, which the compiler folds, and a guard holds only the value, the backend and the location, never a size.
+kladde-rs generates one guard type per Rust type, with the encoding as a type parameter, so the compiler builds a slotted and a packed guard from it, and the slotted one keeps constant offsets and fixed-width writes, with no test of the encoding at run time.
+What the slotted guard does carry is its place, a fixed location or a link, and room for its fields' offsets, which it fills only if its place is a link; a slotted value in a packed one, inside a `Slotted(T)`, sits behind siblings that can grow.
+So it tests which kind its place is whenever it hands out a field's guard, which is the one cost the possibility of packing adds to a program that never packs.
+The draft as first written expected none at all, from two guard types generated separately; that would still cost the test for a slotted value inside a packed one.
 
 ## Why it fits kladde
 
@@ -341,7 +348,7 @@ What a tool still cannot tell is what a library makes of a structure — that a 
 
 The Rust side would need:
 
-- a choice of encoding passed to `store`, `load`, and a new `encoded_size`, as a type parameter like the guards' below;
+- a choice of encoding passed to `encode`, `decode` and `encoded_size`, as a type parameter like the guards' below, with `store` and `load` built on them;
 - a trait for slottable types, `Slottable`, with the size of their fixed encoding as an associated constant in place of today's `INLINE_SIZE`, required by every slotted container and by every field declared slotted, so that a packed-only type there fails to compile, at `cargo check`, with a trait error;
 - a derive macro that implements `Slottable` for a struct or an enum by requiring it of every field, and an attribute, `#[kladde(packed_only)]`, for a type that holds a packed-only field;
 - both encodings for every scalar and for pointers, so that an application keeps declaring `u16` or `i64` and the place decides only the bytes on file, and structural descriptors for the built-in containers, built from `Pointer`, `Sequence` and `Packed`;
@@ -355,6 +362,13 @@ So without the attribute, a struct with a `SmallPersistableString` field fails t
 A generic type needs no attribute: `impl<T: Slottable> Slottable for Labelled<T>` holds for exactly the `T` that have a fixed encoding.
 `Kladde<T>` cannot ask whether `T` implements a trait without specialization, so the root's choice comes from an associated constant on `Persistable`, the fixed size or none, which the derive sets along with the trait.
 An associated constant checked by a `const` assertion in each slotted container would need no attribute at all, but would report a misuse inside the container's code, where it is instantiated, rather than at the type that is misused.
+
+**Storing a value became preparing it and then encoding it into one buffer, which also cuts the records a store writes.**
+A pointer's packed encoding depends on the id its allocation gets, so a value that owns content it has no allocation for yet, such as a vector built with `from_iter`, has no settled encoding until that allocation exists.
+kladde-rs therefore stores a value in two steps: `prepare` creates and fills every allocation the value lacks, recursively, and `encode` then writes the value's bytes into a buffer, which `store` writes with one record, and a guard with one `Write` or one `Splice`.
+The store as first implemented wrote every field with a record of its own, so storing a value now journals fewer records, with the same bytes: a slotted `PathSegment`, for instance, took one `Write` for its discriminant, one per field and one for its padding, and now takes one.
+Loading changed to match: a load reads each allocation's bytes once and decodes its values from them front to back, through a cursor that checks every bound.
+The constant `INLINE_SIZE` became two, `SLOTTED_SIZE`, the size of the fixed encoding or none, and `PACKED_SIZE`, the size of the packed encoding where every value's is the same, which makes a type fixed-size.
 
 ## Stages
 
