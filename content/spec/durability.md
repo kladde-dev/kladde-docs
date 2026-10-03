@@ -39,12 +39,14 @@ At any moment the two on-disk header slots define at most two worlds that can (a
 
 ```mermaid
 stateDiagram-v2
+  %% Bottom-up, starting from `live`, and in this order: anything else crosses arrows in mermaid or in make-pdf.py.
+  direction BT
+  live --> fallback: header E+k written, whose<br>world no longer contains<br>the page
+  fallback --> reusable: header E+k is fsynced<br>(at latest in flush E+k+1)
+  live --> nonexistent: file shrinks past the<br>journal's empty last page
   nonexistent --> reusable: file grows, bringing page<br>into existence
   reusable --> live: (a) written during flush E<br>and in header E's world<br>or (b) appended to journal
   reusable --> nonexistent: file shrinks once every<br>higher page is reusable<br>or the journal's empty<br>last page
-  live --> nonexistent: file shrinks past the<br>journal's empty last page
-  live --> fallback: header E+k written, whose<br>world no longer contains<br>the page
-  fallback --> reusable: header E+k is fsynced<br>(at latest in flush E+k+1)
   live --> live: append transaction<br>(journal pages only)
 ```
 
