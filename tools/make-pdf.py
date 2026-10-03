@@ -721,11 +721,12 @@ def collect_mermaid(body):
     return ["\n".join(b) for info, b in _fences(body) if info == "mermaid"]
 
 
-def render_mermaid(sources, figdir, warnings, by_content=False):
+def render_mermaid(sources, figdir, warnings, by_content=False, strict=True):
     """Render every mermaid source to a laid-out, checked, flattened SVG file.
 
     One node call for the whole document. Layout defects that are always bugs
-    stop the build here rather than shipping a plausible-looking PDF.
+    stop the build here rather than shipping a plausible-looking PDF, unless
+    `strict` is off, which demotes them to warnings.
     """
     script = Path(__file__).resolve().parent / "render-mermaid.mjs"
     if not _shutil.which("node"):
@@ -753,9 +754,13 @@ def render_mermaid(sources, figdir, warnings, by_content=False):
         laid_out = separate_channels(straighten_svg(spread_ports(svg)))
         errors, warned = lint_diagram(laid_out)
         svg_path.write_text(flatten_svg(laid_out))
-        if errors:
+        if errors and strict:
             sys.exit(f"diagram {i + 1} is malformed:\n  " + "\n  ".join(errors)
                      + f"\n(written to {svg_path} for inspection)")
+        # A diff may compare committed versions, whose diagrams can no longer
+        # be fixed; refusing to render it would only hide the changes.  The
+        # plain build still refuses, so nothing malformed ships from it.
+        warned = [f"malformed: {e}" for e in errors] + warned
         for w in warned:
             print(f"diagram {i + 1}: {w}", file=sys.stderr)
         warnings.extend(warned)
@@ -1081,7 +1086,7 @@ def build_markdown(pages, problems, figdir=None, warnings=None,
         bodies[rel] = stamp_headings(body, page["prefix"])
     sources = [s for body in bodies.values() for s in collect_mermaid(body)]
     figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [],
-                                  by_content)
+                                  by_content, strict=not for_diff)
                    if sources and figdir else [])
 
     for rel, page in pages.items():
@@ -1102,7 +1107,7 @@ def build_standalone(text, rel, problems, figdir=None, warnings=None,
     body = stamp_headings(body, page["prefix"])
     sources = collect_mermaid(body)
     figures = iter(render_mermaid(sources, figdir, warnings if warnings is not None else [],
-                                  by_content)
+                                  by_content, strict=not for_diff)
                    if sources and figdir else [])
     body = substitute_mermaid(body, figures)
     # No synthesised H1: the title comes from the metadata block, and pandoc
@@ -1454,17 +1459,27 @@ def version_at(repo, rel, ref):
 
 
 def describe(ref):
+    """`ref` as `resolve_ref` left it: None, "staged", or a commit hash."""
     return "the working tree" if ref is None else (
-        "the index" if ref in STAGED else f"`{ref}`")
+        "staged" if ref in STAGED else f"`{ref}`")
 
 
-def check_ref(repo, ref):
-    """Fail early on a typo, rather than after rendering half the document."""
-    if ref is None or ref in STAGED:
-        return
-    if subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
-                       f"{ref}^{{commit}}"], capture_output=True).returncode != 0:
+def resolve_ref(repo, ref):
+    """The commit `ref` names, as a short hash; None and "staged" pass through.
+
+    Resolving up front fails early on a typo, rather than after rendering half
+    the document.  It also means the front page records which commit was
+    compared: a branch name or `HEAD` says nothing once the branch has moved.
+    """
+    if ref is None:
+        return None
+    if ref in STAGED:
+        return "staged"
+    proc = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+                           "--short", f"{ref}^{{commit}}"], capture_output=True, text=True)
+    if proc.returncode != 0:
         sys.exit(f"not a git revision: {ref}")
+    return proc.stdout.strip()
 
 
 def to_latex(md_text, tex_path, extra=()):
@@ -1618,10 +1633,8 @@ def run_pandoc(md_path, out_path, extra=()):
 
 def render_one_diff(path, out_path, args):
     """One page, as the difference between two of its versions."""
-    old_ref, new_ref = parse_diff_spec(args.diff)
     repo = repo_root(path)
-    for ref in (old_ref, new_ref):
-        check_ref(repo, ref)
+    old_ref, new_ref = (resolve_ref(repo, ref) for ref in parse_diff_spec(args.diff))
     git_rel = path.resolve().relative_to(repo).as_posix()
     doc_rel = (path.resolve().relative_to(CONTENT).as_posix()
                if path.resolve().is_relative_to(CONTENT) else path.name)
@@ -1743,10 +1756,8 @@ def heading_skeleton(text):
 
 def render_whole_diff(args):
     """The whole of content/, as the difference between two of its versions."""
-    old_ref, new_ref = parse_diff_spec(args.diff)
     repo = repo_root(CONTENT)
-    for ref in (old_ref, new_ref):
-        check_ref(repo, ref)
+    old_ref, new_ref = (resolve_ref(repo, ref) for ref in parse_diff_spec(args.diff))
     prefix = CONTENT.resolve().relative_to(repo).as_posix()
     out_path = Path(args.output or (ROOT / "kladde-diff.pdf"))
     subtitle = f"changes from {describe(old_ref)} to {describe(new_ref)}"
