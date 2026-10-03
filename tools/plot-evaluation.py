@@ -7,6 +7,10 @@ plain or gzipped (`uniform.csv.gz`), or those of kladde-svg's `svg-bench`
 (`svg-<drawing>.csv`), which the figure `svg` draws.
 With one run, the figures show that run; with several, the figures that
 compare policies overlay them, labelled.
+Runs of `svg-bench` in several layouts of kladde-svg's model, one run per
+layout, give the figure `svg-layouts`; an `edit-kinds.tsv` table in a run's
+directory, of what each kind of edit writes per edit in each layout, gives
+`svg-edit-kinds`.
 `--only` draws only the figures it names, such as `--only tradeoff,kappa`.
 The figures are SVG, written so that the same data gives the same bytes,
 with every coordinate rounded to a hundredth of a point.
@@ -55,6 +59,8 @@ plt.rcParams.update(
 
 SIZE_COLORS = {1 * MIB: "#4c72b0", 8 * MIB: "#dd8452", 16 * MIB: "#8172b3", 64 * MIB: "#55a868"}
 RUN_STYLES = ["-", "--", ":", "-."]
+# Each run's directory, by label, for figures that read a table of their own.
+RUN_DIRS = {}
 
 
 def num(v):
@@ -577,6 +583,67 @@ def svg(runs, out):
     save(fig, out, "svg")
 
 
+LAYOUT_COLORS = ["#4c72b0", "#dd8452", "#55a868", "#c44e52", "#8172b3", "#937860"]
+
+
+def svg_layouts(runs, out):
+    """kladde-svg's editing benchmark in several layouts of its model, one
+    column per drawing: the file's size, its live pages, and the bytes
+    written per edit so far, as the same edits accumulate. Absolute, since
+    the live size is what the layouts change."""
+    drawings = sorted({name[4:] for run in runs.values() for name in run if name.startswith("svg-")})
+    if len(runs) < 2 or not drawings:
+        return
+    fig, axes = plt.subplots(3, len(drawings), figsize=(7.5, 6.6), squeeze=False)
+    for column, drawing in enumerate(drawings):
+        for color, (label, run) in zip(LAYOUT_COLORS, runs.items()):
+            for rows in run.get(f"svg-{drawing}", {}).values():
+                x = [r["ops"] / 1000 for r in rows]
+                axes[0][column].plot(x, [r["file_pages"] * PAGE / 1024 for r in rows], color=color, label=label, lw=1.2)
+                axes[1][column].plot(x, [(r["data_pages"] + r["table_pages"]) * PAGE / 1024 for r in rows],
+                                     color=color, label=label, lw=1.2)
+                axes[2][column].plot(x, [written(r) / r["ops"] for r in rows], color=color, label=label, lw=1.2)
+        axes[0][column].set_title(drawing, fontsize=9)
+        axes[2][column].set_xlabel("edits, thousands")
+        for ax in axes[:, column]:
+            ax.set_ylim(0, None)
+    axes[0][0].set_ylabel("file size, KiB")
+    axes[1][0].set_ylabel("data and table pages, KiB")
+    axes[2][0].set_ylabel("bytes written per edit")
+    legend(axes[0][0])
+    save(fig, out, "svg-layouts")
+
+
+def svg_edit_kinds(runs, out):
+    """What each kind of edit writes per edit, in each layout of kladde-svg's
+    model, from the `edit-kinds.tsv` table in a run's directory: one panel
+    per drawing, one bar per layout."""
+    tables = [RUN_DIRS[label] / "edit-kinds.tsv" for label in runs if (RUN_DIRS[label] / "edit-kinds.tsv").exists()]
+    if not tables:
+        return
+    with open(tables[0], newline="") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    layouts = list(dict.fromkeys(r["layout"] for r in rows))
+    kinds = list(dict.fromkeys(r["kind"] for r in rows))
+    drawings = list(dict.fromkeys(r["drawing"] for r in rows))
+    fig, axes = plt.subplots(1, len(drawings), figsize=(7.5, 3.2), sharey=True, squeeze=False)
+    width = 0.8 / len(layouts)
+    for ax, drawing in zip(axes[0], drawings):
+        for i, layout in enumerate(layouts):
+            values = {r["kind"]: float(r["written_per_edit"]) for r in rows
+                      if r["drawing"] == drawing and r["layout"] == layout}
+            ax.barh([k + (i - (len(layouts) - 1) / 2) * width for k in range(len(kinds))],
+                    [values.get(kind, 0) for kind in kinds], height=width,
+                    color=LAYOUT_COLORS[i % len(LAYOUT_COLORS)], label=layout)
+        ax.set_title(drawing, fontsize=9)
+        ax.set_xlabel("bytes written per edit")
+        ax.set_yticks(range(len(kinds)), kinds)
+        ax.grid(axis="y", visible=False)
+    axes[0][0].invert_yaxis()  # once: the panels share it
+    legend(axes[0][-1], loc="upper right")
+    save(fig, out, "svg-edit-kinds")
+
+
 def summary(runs):
     """The end state of every series, as a Markdown table on stdout."""
     print("| run | scenario | variant | size | file/live | data fill | table fill | written/app | flushes | median flush ms |")
@@ -607,8 +674,9 @@ def main():
     for spec in args.runs:
         label, _, directory = spec.partition("=")
         runs[label] = load(directory)
+        RUN_DIRS[label] = Path(directory)
     figures = [space_amplification, mixed, live_fraction, write_breakdown, budget, shrink, description, flush_latency,
-               throughput, tradeoff, defrag_share, kappa, svg]
+               throughput, tradeoff, defrag_share, kappa, svg, svg_layouts, svg_edit_kinds]
     only = set(args.only.split(",")) if args.only else None
     for figure in figures:
         if only is None or figure.__name__.replace("_", "-") in only:

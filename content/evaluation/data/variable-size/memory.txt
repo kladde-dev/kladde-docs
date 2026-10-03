@@ -1,0 +1,15 @@
+base tiger model_parsed=433470 opened=416890 open_us=1226 parse_us=873
+base coat-of-arms-spain model_parsed=574910 opened=695907 open_us=1980 parse_us=1956
+base world-map model_parsed=2729484 opened=2999340 open_us=7624 parse_us=9233
+packed tiger model_parsed=570110 opened=470358 open_us=1787 parse_us=969
+packed coat-of-arms-spain model_parsed=693182 opened=785015 open_us=2116 parse_us=1916
+packed world-map model_parsed=3328012 opened=3501912 open_us=8839 parse_us=9380
+small-ids tiger model_parsed=570110 opened=445038 open_us=1782 parse_us=1384
+small-ids coat-of-arms-spain model_parsed=693182 opened=666703 open_us=1930 parse_us=1901
+small-ids world-map model_parsed=3328012 opened=2921912 open_us=7501 parse_us=9112
+small-attrs tiger model_parsed=570110 opened=375142 open_us=1828 parse_us=1440
+small-attrs coat-of-arms-spain model_parsed=693182 opened=576307 open_us=1735 parse_us=2039
+small-attrs world-map model_parsed=3328012 opened=2560684 open_us=6205 parse_us=9129
+small tiger model_parsed=579870 opened=314282 open_us=953 parse_us=901
+small coat-of-arms-spain model_parsed=701630 opened=530139 open_us=1496 parse_us=1919
+small world-map model_parsed=3370764 opened=2263972 open_us=5739 parse_us=9226

@@ -1,0 +1,71 @@
+diff --git a/crates/kladde-store/src/flush.rs b/crates/kladde-store/src/flush.rs
+index d3552d9..3e8e6b8 100644
+--- a/crates/kladde-store/src/flush.rs
++++ b/crates/kladde-store/src/flush.rs
+@@ -296,6 +296,12 @@ impl Inner {
+             }
+         }
+         for (id, k, src, so, len) in reads {
++            let counter = if src == id {
++                &crate::HOISTED_OWN
++            } else {
++                &crate::HOISTED_OTHER
++            };
++            counter.fetch_add(len as u64, std::sync::atomic::Ordering::Relaxed);
+             let mut bytes = vec![0u8; len as usize];
+             self.read_committed(src, so, &mut bytes)?;
+             let pos = self.segment_records.arena.len() as u64;
+diff --git a/crates/kladde-store/src/lib.rs b/crates/kladde-store/src/lib.rs
+index 3322aa6..eb645bf 100644
+--- a/crates/kladde-store/src/lib.rs
++++ b/crates/kladde-store/src/lib.rs
+@@ -20,6 +20,11 @@
+ //! # Ok::<(), kladde_store::Error>(())
+ //! ```
+ 
++/// Scratch counters: bytes the fold hoisted from the id's own committed
++/// content at a shifted offset, and from another id's.
++pub static HOISTED_OWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static HOISTED_OTHER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
+ mod backend;
+ mod consolidate;
+ mod constate;
+diff --git a/crates/kladde-svg/src/bin/svg-bench.rs b/crates/kladde-svg/src/bin/svg-bench.rs
+index 8ba002b..cbebd1f 100644
+--- a/crates/kladde-svg/src/bin/svg-bench.rs
++++ b/crates/kladde-svg/src/bin/svg-bench.rs
+@@ -616,6 +616,8 @@ fn main() {
+     let mut drawing = Kladde::<Document>::create(&file, doc).expect("create the kladde file");
+     drawing.flush().expect("flush");
+     let base = drawing.stats();
++    kladde::HOISTED_OWN.store(0, std::sync::atomic::Ordering::Relaxed);
++    kladde::HOISTED_OTHER.store(0, std::sync::atomic::Ordering::Relaxed);
+     let live = base.allocation_bytes;
+     let index = Index::of(drawing.get());
+     let initial = index.leaves.len();
+@@ -688,6 +690,12 @@ fn main() {
+     let canonical = write(bench.drawing.get());
+     let write_time = t.elapsed();
+     let file_bytes = s.file_pages * 4096;
++    eprintln!(
++        "HOISTED own {:.1} other {:.1} fresh {:.1} per edit",
++        kladde::HOISTED_OWN.load(std::sync::atomic::Ordering::Relaxed) as f64 / bench.ops as f64,
++        kladde::HOISTED_OTHER.load(std::sync::atomic::Ordering::Relaxed) as f64 / bench.ops as f64,
++        (s.fresh_bytes - base.fresh_bytes) as f64 / bench.ops as f64
++    );
+     bench.drawing.close().expect("close");
+     let t = Instant::now();
+     let reopened = Kladde::<Document>::open(&file).expect("reopen");
+diff --git a/crates/kladde/src/lib.rs b/crates/kladde/src/lib.rs
+index 8abfa3e..cc67e32 100644
+--- a/crates/kladde/src/lib.rs
++++ b/crates/kladde/src/lib.rs
+@@ -60,6 +60,7 @@ pub use kladde_persist::{
+ // The storage layer's application-facing items: the backend guards run
+ // against, how it is tuned, what it reports, and where its bytes live.
+ pub use kladde_store::{FileStorage, MemoryStorage, Options, Stats, Storage, Store};
++pub use kladde_store::{HOISTED_OTHER, HOISTED_OWN};
+ 
+ /// The guard of a root value of type `T`, as [`Kladde::guard`] hands it out:
+ /// in a slotted place if `T` has a fixed encoding, and in a packed one if it
