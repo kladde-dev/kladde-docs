@@ -106,17 +106,43 @@ An enum is a discriminant followed by the selected variant's fields, each varian
 Its inline size is the discriminant width plus the largest variant's field sum — so, like a struct, it owns no allocation.
 Positional fields are named by their position: `Mobile(PersistableString)` has a field called `"0"`.
 
-**Only whole-value replacement is supported so far:**
+**To mutate the current variant in place, match on the guard's `parts()`.**
+It hands out the guards of the current variant's fields, in an enum named after yours, `PhoneNumberParts`, with the same variants:
 
+<!-- kladde-example: name=enum-parts file=src/main.rs mode=run deps=kladde,kladde-types -->
 ```rust
-guard.set(PhoneNumber::Mobile(PersistableString::from("555-0100")))?;
+use kladde::{Kladde, Persistable};
+use kladde_types::PersistableString;
+
+#[derive(Persistable)]
+enum PhoneNumber {
+    Mobile(PersistableString),
+    Landline(PersistableString),
+}
+
+fn main() -> kladde::Result<()> {
+    let mut number = Kladde::new(PhoneNumber::Mobile(PersistableString::from("555-01")));
+
+    let mut guard = number.guard();
+    match guard.parts() {
+        PhoneNumberParts::Mobile(mut digits) => digits.push_str("00")?,
+        PhoneNumberParts::Landline(mut digits) => digits.set("555-0199")?,
+    }
+
+    // To switch to another variant, replace the whole value.
+    guard.set(PhoneNumber::Landline(PersistableString::from("555-0123")))?;
+    assert!(matches!(number.get(), PhoneNumber::Landline(digits) if digits == "555-0123"));
+    Ok(())
+}
 ```
 
-It stores the new value, then frees whatever the old one owned.
-Mutating a field *within* the current variant in place, and matching directly on a generated guard, are both intended and not yet built.
+Each field guard writes inside its field, so the variant stays what it was.
+`set` replaces the whole value, which is how the variant changes: it stores the new value, then frees whatever the old one owned.
+`parts()` borrows the guard, so the compiler stops you from calling `set` while you still hold a field's guard.
 
-**The discriminant is Rust's own**, a 4-byte value on file: the one you write (`Mobile = 1`), or else one more than the previous variant's, counting from 0.
-Explicit values on variants with fields need a `#[repr]`, as Rust requires:
+**The discriminant is Rust's own**: the one you write (`Mobile = 1`), or else one more than the previous variant's, counting from 0.
+On file it takes the smallest of 1, 2, 4 or 8 bytes that holds the largest discriminant, unless an integer `#[repr]` such as `#[repr(u16)]` fixes the width; negative discriminants and signed or pointer-sized `repr`s are not supported.
+Explicit values on variants with fields need a `#[repr]` anyway, as Rust requires, and this one also makes the discriminant 4 bytes wide where 1 would do:
 
 <!-- kladde-example: name=pinned-discriminants file=src/lib.rs deps=kladde,kladde-types
 before:
@@ -169,7 +195,7 @@ The presence of a third, non-persisted field in your Rust source is invisible.
 
 ## Layout stability
 
-Two things you should know before you ship a file format built on a derived type.
+A few things you should know before you ship a file format built on a derived type.
 
 **Field order is layout.**
 Reordering fields in the source changes every subsequent field's offset, and therefore changes the type's [fingerprint](../../spec/schema/fingerprints.md), and `Kladde::open` refuses a file whose fingerprint differs from your type's.
@@ -178,6 +204,10 @@ Once [evolution](../../spec/schema/evolution.md) lands, reordering will be non-b
 **Variant order is layout only through implicit discriminants.**
 A variant without an explicit discriminant takes the next number, so inserting or reordering variants renumbers the ones after them, and changes the fingerprint.
 With [explicit discriminants](#enums), reordering changes nothing, since enum variants are canonicalized by discriminant value.
+
+**The discriminant's width is layout too, unless you pin it.**
+Without a `#[repr]`, adding a 257th variant, or giving one a discriminant of 256 or more, widens the discriminant of every value of the type, which moves every field behind it in every struct that contains it, and changes the fingerprint.
+An integer `#[repr]`, such as `#[repr(u16)]`, fixes the width up front.
 
 **Renaming a type is free.**
 A struct's or enum's own name is not fingerprinted.

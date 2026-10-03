@@ -38,7 +38,7 @@ Every type has a fixed-size **inline representation** — what a containing stru
 
 - a scalar: its own bytes;
 - a derived struct: the sum of its fields';
-- a derived enum: a four-byte discriminant plus the largest variant;
+- a derived enum: a discriminant of 1, 2, 4 or 8 bytes plus the largest variant;
 - an owning type: a fixed header, *not* the size of its content.
 
 Having *some* fixed inline size is what makes sibling fields' offsets statically computable, and computing them at compile time is what makes field access free.
