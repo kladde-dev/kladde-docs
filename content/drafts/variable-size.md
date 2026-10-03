@@ -245,6 +245,12 @@ The containers' descriptors do change, since they stop being opaque, and with th
 Recursive containers need nothing new: a tree whose children are a `PersistableVec` of trees refers to itself through a `Pointer(Sequence(...))`, a [cycle](../spec/schema/fingerprints.md#cycles) the fingerprint already handles.
 
 A descriptor table must keep the rules of nesting: a reference to a packed-only type may stand only where no value around it, up to the nearest pointer, is slotted; a `Sequence` and a `Packed` wrapper only where they may; and a reader refuses a table that breaks any of them.
+The kind tags are `132` for `Pointer`, the tag the specification reserved for it, and `133` to `136` for `Sequence`, `Packed`, `Slotted` and `Small`, each followed by its references; kladde-schema checks the rules whenever it decodes a table.
+
+**Implementing the check added three rules that the draft as first written left unsaid.**
+A `Sequence` or a `Packed` wrapper cannot be the root, since neither is a type a place can hold.
+A struct or an enum may not contain itself inline, through fields alone: such a type has no finite fixed encoding, and a slottability computed over it would not terminate, though no language binding can produce one.
+And an opaque type's parameters start afresh, as a root does, slotted if they have a fixed encoding: the opaque type lays them out by its own rules, which the schema cannot see.
 
 A file whose types hold no `Packed` wrapper and no small value has no packed place, so every plain reference in it resolves to slotted, as it always has.
 A bit on every reference would carry the same information as the wrappers, but would change the encoding, and so the fingerprint, of every type that has a field.
@@ -279,6 +285,12 @@ Typing into an inline string, inserting an attribute into an inline attribute li
 For both small types of kladde-types, spilling writes the content to a new allocation, then splices the tag and the pointer in where the content was; folding back splices the content in where the pointer was, then frees the allocation: prepare, publish, clean up, as the [ordering discipline](../spec/journal.md#ordering) demands.
 Since the content's bytes are the same in both places, a [`Move`](move-op.md) could hand them over without writing them again, and a small vector keeps its offset index, which counts from the content's start in either place.
 A `T` with several allocations does the same for each, in the order its library sets.
+
+**kladde-rs writes the moved content in one of two ways, depending on who crosses the threshold.**
+When the small value's own guard does, by a push, an insertion, a removal, or an edit of a small string, it encodes the content from memory, as the paragraph above has it.
+When an element inside a small vector does, by growing or shrinking through its own guard, that element is borrowed and cannot be encoded again, so the vector moves the bytes already on file: spilling copies the content into the new allocation with a `Copy` record before splicing the tag and pointer in, and folding splices in a tag and room for the content, copies the content over, and frees the allocation.
+The guard of the element, and of anything around it, keeps working after either move, since it asks its parent where it is at every write.
+The hysteresis applies to both, so an element's change can spill or fold the vector around it, as an operation on the vector can.
 
 A value that owns allocations is replaced as today: the new value's allocations are stored before the record that publishes them, and the old ones are freed after it.
 A container that moves elements with `Copy` or `Move` records can do so only between places with the same choice; between a packed place and a slotted one, it encodes them again.
@@ -350,18 +362,28 @@ The Rust side would need:
 
 - a choice of encoding passed to `encode`, `decode` and `encoded_size`, as a type parameter like the guards' below, with `store` and `load` built on them;
 - a trait for slottable types, `Slottable`, with the size of their fixed encoding as an associated constant in place of today's `INLINE_SIZE`, required by every slotted container and by every field declared slotted, so that a packed-only type there fails to compile, at `cargo check`, with a trait error;
-- a derive macro that implements `Slottable` for a struct or an enum by requiring it of every field, and an attribute, `#[kladde(packed_only)]`, for a type that holds a packed-only field;
+- a derive macro that implements `Slottable` for a struct or an enum whose fields all have a fixed encoding, and an attribute, `#[kladde(packed_only)]`, for a type that holds a packed-only field;
 - both encodings for every scalar and for pointers, so that an application keeps declaring `u16` or `i64` and the place decides only the bytes on file, and structural descriptors for the built-in containers, built from `Pointer`, `Sequence` and `Packed`;
 - a `#[kladde(slotted)]` attribute on fields, the only declaration of a place a derived type needs, since a field can be packed only by inheriting it, and derived offsets that are computed at runtime after the first variable-size field;
-- guards that take the choice of encoding as a type parameter, as [In memory](#in-memory) argues, and report a change in their value's size to the parent that keeps the offset index, which the parent's borrow of the child makes possible;
+- guards that take the choice of encoding as a type parameter, as [In memory](#in-memory) argues, and report a change in their value's size to their parent, through a link to the parent's node that also tells them where they are;
 - `PackedPersistableVec`, and on it `SmallPersistableVec`, with `SmallPersistableString` beside them in kladde-types, and a packed root for a packed-only root type.
 
 The attribute is needed because a derive macro sees a field's type only as written, and cannot tell whether it implements `Slottable`.
 It could not simply require the trait conditionally either: Rust rejects an `impl` whose `where` clause names a concrete type that lacks the trait, such as `SmallPersistableString: Slottable`, even where nothing uses the `impl`.
-So without the attribute, a struct with a `SmallPersistableString` field fails to compile at the derive, with a message that the trait's `#[diagnostic::on_unimplemented]` can word to name the attribute; with it, the derive leaves `Slottable` out, and the struct fails only where something tries to slot it.
+So without the attribute, a struct with a `SmallPersistableString` field fails to compile at the derive, with a message that names the attribute; with it, the derive leaves `Slottable` out, and the struct fails only where something tries to slot it, with a trait error that `#[diagnostic::on_unimplemented]` words to name the packed containers.
 A generic type needs no attribute: `impl<T: Slottable> Slottable for Labelled<T>` holds for exactly the `T` that have a fixed encoding.
-`Kladde<T>` cannot ask whether `T` implements a trait without specialization, so the root's choice comes from an associated constant on `Persistable`, the fixed size or none, which the derive sets along with the trait.
 An associated constant checked by a `const` assertion in each slotted container would need no attribute at all, but would report a misuse inside the container's code, where it is instantiated, rather than at the type that is misused.
+
+**The derive requires `Slottable` of a type's parameters, as `#[derive(Debug)]` requires `Debug`, rather than of its fields' types, and checks the fields whose types name no parameter with a `const` assertion.**
+Requiring it of every field's type, as the draft first had it, makes it circular for any type that holds itself through a container: `struct Node { children: PersistableVec<Node> }` would require `PersistableVec<Node>: Slottable`, which holds only if `Node: Slottable` does, and the compiler gives up on the cycle rather than assuming it holds.
+The assertion compares the field type's slot size with none, which needs no trait, and its message names `#[kladde(packed_only)]`, as the trait error would have.
+What it costs is precision for generic types: a parameter used only inside a packed container, which holds any type, is still required to be slottable, so the derived type is slottable for fewer arguments than it could be.
+And since a slotted container now requires `Slottable` of its elements, a generic type holding a `PersistableVec<T>` must say `where T: Slottable` itself, which the derive cannot infer.
+
+**The root's choice of encoding comes from an associated type, not a constant.**
+`Kladde<T>` hands out the root's guard, whose type depends on the encoding, and a constant can choose behaviour but not a type.
+So `Persistable` carries a type `RootEncoding`, `Slotted` or `Packed`, which every implementation sets: the scalars and the slottable containers to `Slotted`, the small types to `Packed`, and the derive by joining its fields' with a type-level function on the two encodings, `Slotted` only if all are.
+Beside it, `SLOTTED_SIZE`, the fixed encoding's size or none, says the same thing about the bytes, and `Kladde` allocates a slotted root its slot and a packed one nothing, which its encoding then grows.
 
 **Storing a value became preparing it and then encoding it into one buffer, which also cuts the records a store writes.**
 A pointer's packed encoding depends on the id its allocation gets, so a value that owns content it has no allocation for yet, such as a vector built with `from_iter`, has no settled encoding until that allocation exists.
@@ -484,6 +506,7 @@ It pays only for long runs of zeros, which padding between small elements is not
 
 - **Should `Slotted(T)` be written where `T` is fixed-size?**
   It changes no byte, only the fingerprint, so the derive could leave it out, or the fingerprint could ignore it.
+  kladde-rs writes it for every field declared slotted, fixed-size or not, which keeps a declaration and its descriptor in step; whether to normalize it away is still open.
 - **Small values with a fixed size.**
   Whether kladde-types should also offer types that keep a few bytes inline with a fixed size, such as a string of at most 15 bytes in a 16-byte slot, which a slotted struct could hold, is open.
 - **The hash map's layout.**
