@@ -40,7 +40,7 @@ Still requires no application knowledge.
 
 A tool at this level can:
 
-- list every type in the file, with its kind, fields, variants, and inline size;
+- list every type in the file, with its kind, fields, variants, and slot size, or that it has none;
 - compute and display each type's [fingerprint](schema/fingerprints.md);
 - identify the root type;
 - report which types are Opaque, and their declaring library and version — which is exactly the list of things a reader would need an implementation of;
@@ -54,36 +54,26 @@ Requires: additionally the ability to walk the value graph from the root.
 Requires no application knowledge, but is **inherently partial**.
 
 A tool at this level can render the file as text — JSON, or something more structured — by starting at the root type and recursing.
-Primitives decode by their code, structs by their fields, enums by their discriminant.
+Primitives decode by their code, structs by their fields, enums by their discriminant, a small value by its tag; every packed encoding marks its own end, so a tool decodes it once it has resolved each [place's](schema/type-descriptors.md#places) encoding from the wrappers and from inheritance.
+A [pointer](schema/type-descriptors.md#pointer) says what its allocation holds, so a tool follows it into the allocation and reads its content — a vector's elements, a string's text, a hash map's slots.
 
-It stops at two boundaries:
+It stops at one boundary:
 
 **Opaque types.**
 By definition their content is not decomposable.
-A tool can report identity, version, and inline size, and can dump the bytes, but cannot interpret them.
-This includes the built-in container types, which is a significant limitation — see below.
+A tool can report identity, version, and inline size, and can dump the bytes, but cannot interpret them, and cannot follow a pointer an opaque type holds.
 
-**Pointers.**
-A tool can follow the ownership graph only if it can tell which bytes are pointers.
-Today that knowledge lives in the language bindings, not in the schema, which is why the [Pointer descriptor kind](schema/type-descriptors.md#pointer-reserved) is reserved.
+## Containers
 
-## The container problem
+**Containers describe their structure, so a tool walks them without knowing the library that defines them.**
+A vector is a `Pointer` to a `Sequence` of its elements, a string a `Pointer` to a `Packed` `Sequence` of `char`s, a hash map a `Pointer` to a `Sequence` of slots, each a liveness flag, a key and a value.
+Their layouts are therefore part of the format, and changing one changes the descriptors that files contain; that is the price of a file that describes itself.
+The alternative, registering container layouts out of band so that a tool knows the standard containers while they stay opaque in the file, would have needed a tool to carry a table of known types, and would not reach a third party's containers at all.
 
-The most significant gap between this design intent and what is achievable today is that the **built-in containers are Opaque**.
+A container that serializes its content with an external format, such as the reference implementation's blob, stays opaque.
 
-A vector is currently described as an opaque type with a library name, a version, and an inline header size.
-So a level-3 tool can see *that* a field holds a vector, but not its length, not its element layout, and not how to reach its contents — even though a vector is one of the most structurally regular things in the file.
-
-Two possible resolutions, neither decided:
-
-1. **Give containers structural descriptors.**
-   A vector's representation really is describable — a header plus a dense array of fixed-size element slots — and the reserved [Array](schema/type-descriptors.md#array-reserved) and Pointer kinds exist partly for this.
-   This would make containers fully walkable by any tool, at the cost of freezing more of their layout into the format.
-2. **Register container layouts out of band**, so a tool can be taught about the standard containers without them ceasing to be Opaque in the file.
-   Cheaper, but it means a tool needs a table of known types and is no longer purely self-describing.
-
-**TBD.**
-This decision determines how useful generic tooling can actually be, and it is worth making before the format is frozen: option 1 changes the descriptors that files contain, so it cannot be retrofitted silently.
+**What a tool still cannot tell is what a library makes of a structure** — that a string is kept normalized, or that a hash map's slot whose flag is clear holds no entry.
+A way to annotate a structural descriptor with the library that defines it is a [draft](../drafts/library-annotations.md).
 
 ## Cross-implementation testing
 

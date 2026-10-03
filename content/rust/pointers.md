@@ -48,3 +48,6 @@ It is a load-time operation only, and the single-owner property is therefore con
 
 The format [fixes ids at 32 bit](../spec/address-table.md#bounds), and so does `Pointer`.
 `Pointer` is nevertheless generic over a `Word`, defaulted to `u32`, and `Persistable` is generic over the pointer type, so that a per-file width, should one ever arrive, is a type argument rather than a rewrite.
+
+On file, a container writes its pointer in the [encoding of its place](../spec/allocations.md#pointer-encoding): `Pointer`'s little-endian bytes in a slotted place, all zeros for none, and the varint of its id in a packed one, `0` for none.
+The containers share one helper for it, which also turns a pointer that changes its varint's length — when a container first gets an allocation — into a `Splice` that the values around it hear about.

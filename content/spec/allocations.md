@@ -57,14 +57,15 @@ The flush must instead emit statements that fully cover the new extent, which de
 
 ### Pointer encoding
 
-How a pointer is represented **inside an allocation's bytes** is a separate question from the [address table](address-table.md), and is **TBD**:
+**A pointer inside an allocation's bytes is the id it points at, and the schema says where the pointers are.**
+A [`Pointer` descriptor](schema/type-descriptors.md#pointer) describes one: in a slotted place, the id in 4 bytes, little-endian; in a packed place, the unsigned LEB128 varint of the id, 1 to 5 bytes.
+Zero, which is never an id, is the null pointer in either.
+Pointers need no alignment.
 
-- the width — the table fixes ids at 32 bit, but whether the in-allocation representation is always four bytes, or a per-file property, is not decided;
-- the **null representation**, and whether it is a reserved id value or a separate tag;
-- alignment requirements, if any.
+The varint form is short because ids are dense: they are 32 bits, and a file's ids are about as many as its allocations, since an implementation [recycles](../impl/id-recycling.md) them, so a file of fewer than 16,384 allocations needs at most two bytes for any of its pointers.
+A pointer changes size only when it changes at all: when a container first gets an allocation, gives it up, or is replaced.
 
-The reference implementation uses a 32-bit value with zero reserved for null, which gives an optional pointer the null niche for free in memory as well as on file.
-That is [an implementation choice](../rust/pointers.md#why-exactly-one-copyable-type) until this section says otherwise.
+A pointer inside an [opaque](schema/type-descriptors.md#opaque) type is encoded as that type's library decides, and is invisible to a tool.
 
 ## Ownership
 

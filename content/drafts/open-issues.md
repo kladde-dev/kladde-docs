@@ -135,10 +135,8 @@ Blocking for both creation and open, and it is the one structure whose layout ca
 
 ### 6. The pointer encoding inside allocations
 
-[Pointer encoding](../spec/allocations.md#pointer-encoding) is TBD: width, null representation, alignment.
-
-This blocks the very first derived struct with a container field, because storing a `PersistableVec` means writing a pointer into the parent's bytes.
-The reference implementation's choice — 32-bit, zero reserved for null — is probably just right, but it needs to be *decided*, since it is a format-level fact that readers depend on.
+**Settled.**
+[Pointer encoding](../spec/allocations.md#pointer-encoding) fixes it: the id in 4 bytes, little-endian, in a slotted place, and as a varint in a packed one, with zero for null in either and no alignment, and a [`Pointer` descriptor](../spec/schema/type-descriptors.md#pointer) marks every pointer outside an opaque type.
 
 ### 7. The in-memory address table
 

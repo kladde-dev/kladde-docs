@@ -45,6 +45,10 @@ The descriptor exists only to answer "does the writer's layout for this field ma
 This principle resolves several questions that otherwise look hard.
 A type with a hand-written implementation that happens to write exactly the bytes of a plain struct *has* that struct's descriptor — the presence of non-persisted fields in the author's source type is invisible and irrelevant.
 A type is [Opaque](type-descriptors.md#opaque) not because its implementation is hand-written but because its representation is genuinely not decomposable.
+And a string and a packed vector of `char`s, which lay out the same UTF-8 bytes behind the same kind of pointer, share a descriptor however differently they keep their content in memory.
+
+What a descriptor therefore cannot say is what a library makes of a structure — that a string is kept normalized, say — and only an Opaque descriptor names the library that defines its type.
+A way to annotate any descriptor with that library is a [draft](../../drafts/library-annotations.md).
 
 ## Scope
 

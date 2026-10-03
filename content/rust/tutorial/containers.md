@@ -2,7 +2,7 @@
 title: The built-in containers
 ---
 
-`kladde-types` provides four durable containers.
+`kladde-types` provides seven durable containers: a vector, its packed variant, a string, a small string and a small vector, a hash map, and a blob.
 They are hand-implemented against the persistence layer rather than derived, the same way `std`'s collections hand-write raw pointer manipulation internally.
 
 ## A default library, not a privileged one
@@ -16,7 +16,7 @@ There is no internal kladde magic here that a third-party library — or your ow
 ## `PersistableVec<T>`
 
 A growable sequence.
-`T` must be `Persistable`, and nothing more — no `Clone`, no `Serialize`.
+`T` must be `Slottable` — have a fixed size on file, which every type but a small string or vector does — and nothing more: no `Clone`, no `Serialize`.
 
 <!-- kladde-example: name=containers file=src/vec.rs deps=kladde,kladde-types
 before:
@@ -52,6 +52,38 @@ The length is that allocation's size divided by the element size, so it is never
 **Removal.** `remove` and `pop` hand the element back with everything it owns, so you can store it elsewhere; `delete` and `clear` free it.
 An element you take out and then drop leaks its allocations in the file, the way a value passed to `std::mem::forget` leaks its memory.
 
+## `PackedPersistableVec<T>`
+
+A growable sequence whose elements take as many bytes as their values need, with the same methods as `PersistableVec`.
+
+<!-- kladde-example: name=containers file=src/packed.rs
+before:
+  use kladde::{Kladde, Persistable};
+  use kladde_types::PackedPersistableVec;
+  #[derive(Persistable)]
+  enum Step {
+      Close,
+      Line { x: f32, y: f32 },
+      Curve { x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32 },
+  }
+  fn demo(path: &mut Kladde<PackedPersistableVec<Step>>) -> kladde::Result<()> {
+after:
+  Ok(())
+  }
+-->
+```rust
+let mut steps = path.guard();
+steps.push(Step::Line { x: 1.0, y: 2.0 })?;   // 9 bytes, where a slot would take 25
+steps.push(Step::Close)?;                      // 1 byte
+steps.get_mut(1).unwrap().set(Step::Line { x: 0.0, y: 0.0 })?; // grows, and moves what follows
+```
+
+**Layout.** A pointer inline, plus a separate allocation holding the elements back to back: an enum takes only its current variant rather than its largest, an integer is a varint, and a `char` is its UTF-8 bytes.
+
+**Cost.** An element whose bytes change length — an enum switching to a larger variant, an integer crossing a power of 128 — is spliced in, which moves every element behind it, where a `PersistableVec` would write in place.
+The vector keeps every element's offset in memory to find it, which a slotted vector computes.
+Use it where the elements' sizes differ widely, such as path segments, and for elements that have no fixed size at all.
+
 ## `PersistableString`
 
 Growable text.
@@ -76,7 +108,8 @@ owner.set("ada")?;
 owner.push_str(" lovelace")?;
 ```
 
-It is a thin wrapper around `PersistableVec<u8>`, which is more interesting than it sounds.
+`replace_range` edits the middle, as `String::replace_range` does.
+It is a thin wrapper around a byte vector, which is more interesting than it sounds.
 Plain `String` deliberately has **no** `Persistable` implementation, and that absence is the enforcement mechanism: a struct field typed `String` simply fails to compile, rather than silently persisting nothing.
 `PersistableString` exists because a durable string needs a field of its own to remember which allocation holds its bytes, and `String` has nowhere to put one.
 
@@ -93,10 +126,46 @@ struct Journal {
 }
 ```
 
+## Small strings and vectors
+
+`SmallPersistableString` and `SmallPersistableVec<T>` keep their content inline, inside the value that holds them, while it takes at most 128 bytes, and move it to an allocation of their own beyond that — for the many short strings and lists of a document, which would otherwise each own an allocation.
+
+<!-- kladde-example: name=containers file=src/small.rs
+before:
+  use kladde::{Kladde, Persistable};
+  use kladde_types::{PackedPersistableVec, SmallPersistableString, SmallPersistableVec};
+  #[derive(Persistable)]
+  #[kladde(packed_only)]
+  struct Shape {
+      id: SmallPersistableString,
+      classes: SmallPersistableVec<SmallPersistableString>,
+  }
+  fn demo(shapes: &mut Kladde<PackedPersistableVec<Shape>>) -> kladde::Result<()> {
+after:
+  Ok(())
+  }
+-->
+```rust
+let mut guard = shapes.guard();
+guard.push(Shape { id: "logo".into(), classes: SmallPersistableVec::new() })?;
+let mut shape = guard.get_mut(0).unwrap();
+shape.id_mut().push_str("-dark")?;                 // still inline
+shape.classes_mut().push("brand".into())?;         // inline too, string and all
+assert!(shape.classes.is_inline());
+```
+
+They read and mutate like `PersistableString` and `PackedPersistableVec`, and a small vector holds any `T`, small strings included.
+
+**Layout.** A one-byte length, then the content itself; or, once the content outgrew 128 bytes, a marker and a pointer to the allocation that holds it.
+Content moves back inline only once it shrinks below 64 bytes, so that editing it around one threshold does not allocate and free at every edit.
+
+**Where they can stand.** A small value has no fixed size, so it stands only inside a packed container — a `PackedPersistableVec`, another small vector — or as the root; a struct holding one is marked [`#[kladde(packed_only)]`](deriving.md#small-strings-and-slotted-fields).
+A `PersistableVec` of small strings does not compile, and the error points to the packed containers.
+
 ## `PersistableHashMap<K, V>`
 
 A key-value map.
-`K: Eq + Hash + Persistable`, `V: Persistable`.
+`K: Eq + Hash + Slottable`, `V: Slottable`.
 
 <!-- kladde-example: name=containers file=src/map.rs
 before:
@@ -178,7 +247,9 @@ There is no durable `Option` or `Box` as such — a derived enum covers `Option`
 | you have | use |
 | --- | --- |
 | a sequence | `PersistableVec<T>` |
+| a sequence of values of very different sizes | `PackedPersistableVec<T>` |
 | text | `PersistableString` |
+| many short strings or lists, inside packed values | `SmallPersistableString`, `SmallPersistableVec<T>` |
 | a lookup table | `PersistableHashMap<K, V>` |
 | a few values that belong together | a tuple, or a derived struct |
 | your own struct or enum | [`#[derive(Persistable)]`](deriving.md) |

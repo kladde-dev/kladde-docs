@@ -86,6 +86,7 @@ Where the implementation departs from the [implementation notes](../impl/), or f
 | Schema descriptors, encoding, fingerprints | implemented and specified |
 | Schema binding to Rust types, fingerprint check at open | implemented |
 | Containers, derive macro, guards | implemented |
+| Packed places, structural container descriptors, small values | implemented |
 | File format, address table, journal, recovery | implemented |
 | Flush and consolidation | implemented |
 | Transactions and batches | implemented, with the [behaviour on unwind](transactions.md#behaviour-on-unwind) |

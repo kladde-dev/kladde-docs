@@ -24,16 +24,19 @@ If your type is a foreign one you cannot change, you probably want [`Persistable
 
 ```rust
 pub trait Persistable<P: PointerRepr = Pointer>: Sized {
-    const INLINE_SIZE: usize;
+    const SLOTTED_SIZE: Option<usize>;
+    const PACKED_SIZE: Option<usize>;
+    type RootEncoding: Encoding;
 
-    fn store<B: WriteBackend<Pointer = P>>(
-        &mut self, backend: &B, location: Location<P, B::Size>,
-    ) -> Result<(), Error>;
-
-    fn load<B: ReadBackend<Pointer = P>>(
-        backend: &mut B, location: Location<P, B::Size>,
+    fn encoded_size<E: Encoding>(&self) -> usize;
+    fn encode<E: Encoding>(&self, out: &mut Vec<u8>);
+    fn decode<B: ReadBackend<Pointer = P>, E: Encoding>(
+        backend: &mut B, input: &mut Input<'_>,
     ) -> Result<Self, Error>;
 
+    fn prepare<B: WriteBackend<Pointer = P>>(&mut self, backend: &B) -> Result<(), Error> {
+        Ok(())
+    }
     fn free<B: WriteBackend<Pointer = P>>(&mut self, backend: &B) -> Result<(), Error> {
         Ok(())
     }
@@ -42,21 +45,32 @@ pub trait Persistable<P: PointerRepr = Pointer>: Sized {
 
 Plus a `Guard` type and a `guard()` method for the mutation side, and `describe_local` for the schema.
 
-**`INLINE_SIZE`** is how many bytes your value occupies *inline*, in whatever allocation contains it.
+**Your type has two encodings**, and every method that touches bytes takes the one it means as a type parameter `E`: `Slotted`, a fixed encoding that takes the same number of bytes for every value, or `Packed`, as many bytes as the value needs.
+A value stands in a slotted place — a field of an ordinary struct, an element of a `PersistableVec` — or in a packed one, an element of a `PackedPersistableVec` and everything inside it.
+For a type whose bytes are always the same length, the two are one, and you can ignore `E`.
+
+**`SLOTTED_SIZE`** is how many bytes your fixed encoding takes, the slot a slotted place reserves for it.
 For a scalar, its own width.
-For a type that owns a separate allocation, the size of its fixed header — not the size of its contents.
-This must be a constant, because it is what makes sibling fields' offsets statically computable.
+For a type that owns a separate allocation, the size of its pointer — not the size of its contents.
+It is a constant because it is what makes the offsets of slotted fields statically computable.
+A type with no fixed encoding at all says `None`, and stands only in packed places.
 
-**`Location`** is where your value's inline bytes live: an anchor pointer plus a byte offset within it.
-It is threaded down the same chain that carries the backend.
+**`PACKED_SIZE`** is the size of your packed encoding if every value's is the same, and `None` otherwise.
 
-**`store` takes `&mut self`**, which surprises people.
-A value that owns an allocation may not have one yet — a `PersistableVec` built by `from_iter` holds real content but no pointer, because nothing gave it a backend — and `store` is where that allocation happens the first time, so it must record the new pointer in `self`.
+**`RootEncoding`** is `Slotted` if your type has a fixed encoding, and `Packed` if it does not: what a root of your type holds.
 
-**`load` takes `&mut B`**, not `&B`.
-Loads are sequential, so a single exclusive borrow reborrowed down the recursion suffices, and it lets the read path hand out a real seekable cursor.
+**`encode`** appends your value's bytes in encoding `E`, and **`encoded_size`** says how many that is.
+**`decode`** reads them back from an `Input`, a cursor over the bytes of the allocation that holds your value, advancing past them; it fails with `Error::Corrupt` on bytes no value encodes to.
+
+**`prepare` takes `&mut self`**, which surprises people.
+A value that owns an allocation may not have one yet — a `PersistableVec` built by `from_iter` holds real content but no pointer, because nothing gave it a backend — and `prepare` is where that allocation happens the first time, before anything encodes the value, so it must record the new pointer in `self`.
+
+**`decode` takes `&mut B`**, not `&B`.
+Loads are sequential, so a single exclusive borrow reborrowed down the recursion suffices, and it lets the read path follow your pointers into other allocations through a real cursor.
 
 **`free`** releases whatever your value owns; the default, for a type that owns nothing, does nothing.
+
+The trait provides `store` and `load` on top: `store` prepares a value and writes its encoding with one record, and `load` reads an allocation's bytes and decodes from them.
 
 ## What to import
 
@@ -72,15 +86,14 @@ If you are writing a *library* on top of `kladde-persist` and have no reason to 
 ## A complete example
 
 A fixed-size type owning no allocation of its own.
-This is everything the trait requires: the inline size, a guard, the two halves of the round trip, and the descriptor.
+This is everything the trait requires: the sizes, a guard, the two halves of the round trip, and the descriptor.
 
 <!-- kladde-example: name=rgb file=src/lib.rs deps=kladde -->
 ```rust
 use kladde::{
-    Error, Field, Guard, Location, Persistable, PointerRepr, ReadBackend, SchemaBuilder,
-    TypeDescriptor, WriteBackend,
+    write_encoded, Encoding, Error, Field, Guard, Input, Persistable, Place, PointerRepr,
+    ReadBackend, SchemaBuilder, Slottable, Slotted, TypeDescriptor, WriteBackend,
 };
-use std::io::Read;
 
 pub struct Rgb {
     r: u8,
@@ -88,21 +101,21 @@ pub struct Rgb {
     b: u8,
 }
 
-pub struct RgbGuard<'s, B: WriteBackend> {
+pub struct RgbGuard<'s, B: WriteBackend, E: Encoding> {
     inner: &'s mut Rgb,
     backend: &'s B,
-    location: Location<B::Pointer, B::Size>,
+    place: Place<'s, B, E>,
 }
 
-impl<'s, B: WriteBackend> RgbGuard<'s, B> {
-    pub fn set(&mut self, mut value: Rgb) -> Result<(), Error> {
-        <Rgb as Persistable<B::Pointer>>::store(&mut value, self.backend, self.location)?;
+impl<'s, B: WriteBackend, E: Encoding> RgbGuard<'s, B, E> {
+    pub fn set(&mut self, value: Rgb) -> Result<(), Error> {
+        write_encoded(self.backend, &self.place, 3, &[value.r, value.g, value.b])?;
         *self.inner = value;
         Ok(())
     }
 }
 
-impl<'s, B: WriteBackend> Guard for RgbGuard<'s, B> {
+impl<'s, B: WriteBackend, E: Encoding> Guard for RgbGuard<'s, B, E> {
     type Persistable = Rgb;
     type Backend = B;
     fn as_persistable(&self) -> &Rgb {
@@ -116,37 +129,40 @@ impl<'s, B: WriteBackend> Guard for RgbGuard<'s, B> {
     }
 }
 
-impl<P: PointerRepr> Persistable<P> for Rgb {
-    const INLINE_SIZE: usize = 3;
+impl<P: PointerRepr> Slottable<P> for Rgb {}
 
-    type Guard<'s, B: WriteBackend<Pointer = P>>
-        = RgbGuard<'s, B>
+impl<P: PointerRepr> Persistable<P> for Rgb {
+    const SLOTTED_SIZE: Option<usize> = Some(3);
+    const PACKED_SIZE: Option<usize> = Some(3);
+    type RootEncoding = Slotted;
+
+    type Guard<'s, B: WriteBackend<Pointer = P>, E: Encoding>
+        = RgbGuard<'s, B, E>
     where
         B: 's;
 
-    fn guard<'s, B: WriteBackend<Pointer = P>>(
+    fn guard<'s, B: WriteBackend<Pointer = P>, E: Encoding>(
         &'s mut self,
         backend: &'s B,
-        location: Location<P, B::Size>,
-    ) -> RgbGuard<'s, B> {
-        RgbGuard { inner: self, backend, location }
+        place: Place<'s, B, E>,
+    ) -> RgbGuard<'s, B, E> {
+        RgbGuard { inner: self, backend, place }
     }
 
-    fn store<B: WriteBackend<Pointer = P>>(
-        &mut self,
-        backend: &B,
-        location: Location<P, B::Size>,
-    ) -> Result<(), Error> {
-        backend.write(location.anchor, location.offset, &[self.r, self.g, self.b])
+    fn encoded_size<E: Encoding>(&self) -> usize {
+        3
     }
 
-    fn load<B: ReadBackend<Pointer = P>>(
-        backend: &mut B,
-        location: Location<P, B::Size>,
+    fn encode<E: Encoding>(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&[self.r, self.g, self.b]);
+    }
+
+    fn decode<B: ReadBackend<Pointer = P>, E: Encoding>(
+        _backend: &mut B,
+        input: &mut Input<'_>,
     ) -> Result<Self, Error> {
-        let mut buf = [0u8; 3];
-        backend.read_at(location.anchor, location.offset)?.read_exact(&mut buf)?;
-        Ok(Rgb { r: buf[0], g: buf[1], b: buf[2] })
+        let [r, g, b] = input.array()?;
+        Ok(Rgb { r, g, b })
     }
 
     fn describe_local(builder: &mut SchemaBuilder) -> TypeDescriptor {
@@ -164,34 +180,40 @@ impl<P: PointerRepr> Persistable<P> for Rgb {
 }
 ```
 
-Four things worth noting.
+Five things worth noting.
 
-`INLINE_SIZE` is 3 because `store` writes exactly three bytes.
+The sizes are 3 because `encode` writes exactly three bytes in either encoding.
 Every offset computed by a containing struct depends on that number being right.
 
 **The guard is a separate type**, generated for you by the derive macro but written out here.
-It holds the value, the backend and the location, and its mutating methods do both halves in order: record the bytes, then update the in-memory value, so that a failed append leaves the value as it was.
+It holds the value, the backend and its place, and its mutating methods do both halves in order: record the bytes, then update the in-memory value, so that a failed append leaves the value as it was.
+
+**The guard writes through `write_encoded`**, which writes the new bytes in place when they are as long as the old ones, and otherwise splices them in and tells the values around this one, in one transaction.
+`Rgb`'s bytes never change length, but writing through it keeps the guard right for a type whose bytes do.
+And the guard asks its place for its location at every write, rather than keeping one, since in a packed place a sibling that grows can move it.
 
 **`describe_local` declares what the bytes are, not what the Rust type is.**
 `Rgb` writes three consecutive `u8`s, so it declares a `Struct` of three `u8` fields — even though the implementation is hand-written.
 Declare `Opaque` only when the representation genuinely is not decomposable; see [Your descriptor](#your-descriptor).
 
-The impl is generic over `P: PointerRepr`, so `Rgb` works at any pointer width.
+The impl is generic over `P: PointerRepr`, so `Rgb` works at any pointer width, and it implements `Slottable`, since it has a fixed encoding.
 A type that *holds* a pointer is written for one `P`.
 
 ## Owning an allocation
 
-If your type owns content, it holds an `Option<UniquePointer>` — `None` until first stored — and its inline representation is that pointer.
+If your type owns content, it holds an `Option<UniquePointer>` — `None` until first prepared — and its encoding is that pointer.
 The pattern:
 
-- in `store`, allocate if `None` — `backend.alloc(size)` — and write the content;
-- write the pointer itself *last*, since it is what makes the content reachable;
+- in `prepare`, allocate if `None` — `backend.alloc(size)` — and write the content, before anything encodes the pointer;
+- encode the pointer as the place's encoding asks: four bytes, little-endian, in a slotted place, and the varint of its id in a packed one, with zero for none in either;
 - in `free`, free what the content owns, then the allocation itself;
-- for a whole-value `set` on its guard, call `kladde::replace`, which stores the new value and then frees the old one, in one transaction.
+- for a whole-value `set` on its guard, call `kladde::replace`, which prepares the new value, writes it, and then frees the old one, in one transaction.
 
 That ordering is not stylistic.
 It is the [ordering discipline](../../spec/journal.md#ordering): a crash between the content write and the pointer write must leave a valid, if stale, state, and publishing the pointer first would leave it pointing at content that was never written.
 The rule generalizes to *prepare new state → one publishing write → clean up what it replaced*.
+
+The easiest way to own content is often to hold a container that already does — a byte vector, a string — and delegate to it, as the built-in blob does.
 
 ## Your descriptor
 
@@ -200,7 +222,8 @@ A hand-written implementation must also declare its [type descriptor](../../spec
 > Declare the descriptor that matches **the bytes you actually read and write**, not the shape of your Rust type.
 
 A struct with a non-persisted cache field declares the struct *without* that field.
-Declare `Opaque` only when your representation genuinely is not decomposable into fields and variants — a length-prefixed blob, an externally serialized payload.
+A type that owns an allocation declares a `Pointer` to what the allocation holds — a `Sequence` of elements, `Packed` if they are packed — so that a tool can follow it.
+Declare `Opaque` only when your representation genuinely is not decomposable into the other kinds — an externally serialized payload, a format of your own.
 "Hand-written" and "opaque" are different axes, and conflating them makes your type needlessly invisible to [tooling](../../spec/tooling.md).
 
 ## The obligations you are taking on
@@ -208,8 +231,9 @@ Declare `Opaque` only when your representation genuinely is not decomposable int
 A hand-written implementation is trusted, not checked.
 You are promising:
 
-- `INLINE_SIZE` matches what `store` writes and `load` reads;
-- `store` and `load` are exact inverses;
+- `encoded_size` matches what `encode` writes, and `SLOTTED_SIZE` matches the fixed encoding;
+- `encode` and `decode` are exact inverses, in both encodings;
+- your packed encoding is [canonical](../../spec/schema/type-descriptors.md#canonical-form), and `decode` refuses one that is not;
 - writes within one mutation are ordered so every prefix is valid;
 - `free` releases exactly what the value owns;
 - your declared descriptor matches your actual bytes.

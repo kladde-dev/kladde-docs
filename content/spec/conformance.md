@@ -90,6 +90,7 @@ Files written by each implementation are added to the corpus, so that the suite 
 
 A complementary check is a **leak detector**: walk every allocation reachable from the root via the type structure, add the allocations the header names directly, compare against the set the address table says is live, and assert they match.
 That checks the "clean up" half of the ordering discipline, which the prefix test does not.
+Since every owning pointer outside an opaque type is a [`Pointer` descriptor](schema/type-descriptors.md#pointer), the walk needs only the file's own descriptors, and no application's types, as long as no opaque type holds a pointer.
 
 ## Open questions
 

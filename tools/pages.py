@@ -42,6 +42,7 @@ ORDER = [
     "impl/consolidation.md",
     "impl/consolidator-state.md",
     "impl/transactions-and-batches.md",
+    "impl/packed-values.md",
     "impl/related-work.md",
     # Rust: tutorial before design, since the tutorial motivates the traits.
     "rust/index.md",
@@ -81,7 +82,8 @@ ORDER = [
     "drafts/ripeness.md",
     "drafts/bayesian-ripeness.md",
     "drafts/survivor-classes.md",
-    "drafts/variable-size.md",
+    "drafts/decimal-floats.md",
+    "drafts/library-annotations.md",
 ]
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)

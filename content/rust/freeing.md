@@ -50,4 +50,4 @@ So a free walk never recurses into uninitialized bytes, and the format needs no 
 ## The schema-level alternative
 
 A tool that does not link the application cannot use a type-driven hook, so a language-independent garbage collector or leak checker would need the schema to say which fields are owning pointers.
-That is what the reserved [`Pointer` descriptor kind](../spec/schema/type-descriptors.md#pointer-reserved) is for, and it stays deferred until such a tool exists.
+The [`Pointer` descriptor kind](../spec/schema/type-descriptors.md#pointer) makes such a tool possible for every type but an opaque one, and none exists yet.

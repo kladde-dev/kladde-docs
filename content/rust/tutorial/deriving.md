@@ -73,8 +73,9 @@ It also generates a `ContactParts` struct, and a `parts()` method on the guard t
 A tuple struct's accessors are named by position — `field_0_mut()`, `field_1_mut()` — and its `parts()` returns a tuple struct.
 
 **A struct owns no allocation of its own.**
-Its fields are laid out consecutively in whatever allocation contains it, so its inline size is just the sum of its fields' inline sizes, and each field's offset is the sum of the earlier ones'.
+Its fields are laid out consecutively in whatever allocation contains it, so its slot — the bytes it takes in an ordinary field or vector element — is just the sum of its fields' slots, and each field's offset is the sum of the earlier ones'.
 Those offsets are compile-time constants, which is why field access costs nothing at runtime.
+Inside a [packed container](containers.md#packedpersistablevect) a struct is packed instead, its integers varints and its enums as short as their variants, and its fields' offsets are worked out from their values.
 
 That includes primitive fields.
 `bool`, `i32`, `char` and friends all implement `Persistable`, specifically so the macro can treat every field uniformly rather than special-casing leaves.
@@ -103,7 +104,8 @@ Its guard's `get_mut()` returns the field's guard.
 ## Enums
 
 An enum is a discriminant followed by the selected variant's fields, each variant laid out like a struct in its own right.
-Its inline size is the discriminant width plus the largest variant's field sum — so, like a struct, it owns no allocation.
+Its slot is the discriminant width plus the largest variant's field sum, which every value pays, whichever variant it holds; packed, it takes only its current variant.
+Like a struct, it owns no allocation.
 Positional fields are named by their position: `Mobile(PersistableString)` has a field called `"0"`.
 
 **To mutate the current variant in place, match on the guard's `parts()`.**
@@ -171,6 +173,40 @@ struct Labelled<T> {
 ```
 
 Lifetime and const parameters are not supported.
+A type that keeps a parameter in a `PersistableVec` says `where T: Slottable`, since the vector requires it.
+
+## Small strings and slotted fields
+
+**A struct that holds a [small string or vector](containers.md#small-strings-and-vectors) is marked `#[kladde(packed_only)]`**, since a small value has no fixed encoding, and stands only in packed places — an element of a `PackedPersistableVec`, say.
+Without the mark it does not compile, and the error names the attribute.
+
+**Inside a packed value, a field marked `#[kladde(slotted)]` keeps its fixed bytes**, so that it never changes size: for a counter that changes often, whose varint would otherwise grow every time it crosses a power of 128, which moves everything behind it.
+
+<!-- kladde-example: name=packed-only file=src/main.rs mode=run deps=kladde,kladde-types -->
+```rust
+use kladde::{Kladde, Persistable};
+use kladde_types::{PackedPersistableVec, SmallPersistableString};
+
+#[derive(Persistable)]
+#[kladde(packed_only)]
+struct Page {
+    title: SmallPersistableString,
+    #[kladde(slotted)]
+    visits: u32,
+}
+
+fn main() -> kladde::Result<()> {
+    let mut site = Kladde::new(PackedPersistableVec::<Page>::new());
+    site.guard().push(Page { title: "home".into(), visits: 0 })?;
+
+    let mut guard = site.guard();
+    let mut page = guard.get_mut(0).unwrap();
+    page.title_mut().push_str(" page")?; // the title grows; `visits` moves with it
+    page.visits_mut().set(1_000_000)?; // four bytes, as it always was
+    assert_eq!(site.get()[0].title, "home page");
+    Ok(())
+}
+```
 
 ## What the derive needs
 
@@ -208,6 +244,9 @@ With [explicit discriminants](#enums), reordering changes nothing, since enum va
 **The discriminant's width is layout too, unless you pin it.**
 Without a `#[repr]`, adding a 257th variant, or giving one a discriminant of 256 or more, widens the discriminant of every value of the type, which moves every field behind it in every struct that contains it, and changes the fingerprint.
 An integer `#[repr]`, such as `#[repr(u16)]`, fixes the width up front.
+
+**So is the choice of encoding.**
+Marking a field `#[kladde(slotted)]`, or moving values from a `PersistableVec` to a `PackedPersistableVec`, changes their bytes and the fingerprint, as a reordered field does.
 
 **Renaming a type is free.**
 A struct's or enum's own name is not fingerprinted.

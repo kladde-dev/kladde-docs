@@ -33,11 +33,12 @@ The fingerprint of a type is computed from **the type graph reachable from that 
 
 **Included** — everything that affects the representation or the identities used to reconcile it:
 
-- the kind of each descriptor;
+- the kind of each descriptor, `Packed` and `Slotted` wrappers included, so that a changed choice of encoding is a changed fingerprint;
 - primitive codes;
 - discriminant widths and discriminant values;
 - field names and variant names;
-- field order and canonical variant order.
+- field order and canonical variant order;
+- what each pointer points to, and a small value's two forms.
 
 **Excluded:**
 
@@ -52,6 +53,7 @@ Patch releases, and minor releases above `0.x`, therefore do not churn the finge
 ## Cycles
 
 The type graph may contain cycles, so a naive post-order fold does not terminate.
+A tree whose children are a vector of trees, for instance, reaches itself through a `Pointer` to a `Sequence` of itself.
 
 The traversal is a **white/grey/black depth-first search with memoization**.
 A node currently on the stack (grey) that is encountered again is a back edge, and is encoded as a **relative reference** — "the *k*-th enclosing type currently being hashed" — rather than by recursing.
@@ -77,7 +79,7 @@ An implementation that cannot demonstrate this on the conformance vectors is not
 The [file header](../file-format.md#header-pages) stores the root type's fingerprint.
 
 This makes the overwhelmingly common case — an application opening a file it wrote itself, with an unchanged schema — a single 16-byte comparison.
-If it matches, the reader knows its own compile-time layout is exactly the writer's, and can read at static offsets without parsing the descriptor table at all.
+If it matches, the reader knows its own layout is exactly the writer's, and can read with it — at static offsets in slotted values — without parsing the descriptor table at all.
 
 Only when it *differs* does the reader parse the writer's descriptors and attempt [resolution](evolution.md).
 So the fast path costs one comparison and the slow path costs one graph reconciliation per open — never per value.

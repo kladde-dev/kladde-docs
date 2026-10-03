@@ -31,12 +31,18 @@ A struct declares a `Struct` descriptor with its fields in declaration order; an
 A hand-written implementation declares **whatever descriptor matches the bytes it actually reads and writes** — which is the rule that most often trips people up.
 A hand-written implementation of a plain field-sum declares `Struct`, not `Opaque`; "hand-written" and "opaque" are different axes, see [the guiding principle](../spec/schema/index.md#the-guiding-principle).
 
-The containers declare `Opaque`, carrying their library name, type name, version, inline size, and element types as parameters.
-Whether they *should* — as opposed to declaring structural descriptors so that tools can walk them — is [an open format question](../spec/tooling.md#the-container-problem).
+The containers declare their structure, so that [tools can walk them](../spec/tooling.md#containers): a `PersistableVec<T>` is a `Pointer` to a `Sequence` of `T`, a `PersistableString` a `Pointer` to a `Packed` `Sequence` of `char`, and so on, as [Containers](containers.md) lists.
+`SchemaBuilder` has helpers for the nodes such a descriptor wraps around another's — `sequence::<P, T>()`, `packed_sequence::<P, T>()`, `slotted::<P, T>()` — each registered under an identity of its own, so that a `Sequence(char)` shared by two containers occupies one table entry.
+Only the blob declares `Opaque`, since its payload is serialized by a format the schema cannot describe.
+
+A field declared `#[kladde(slotted)]` refers to a `Slotted` wrapper around its type's descriptor rather than to the descriptor itself.
+
+`kladde-schema` checks the [rules of nesting](../spec/schema/type-descriptors.md#the-rules-of-nesting) whenever it decodes a table, and `TypeTable::validate` checks them on a table built in memory.
 
 ## At create and at open
 
 `Kladde::create` encodes the root type's descriptor table into an allocation that the header's `schema_table` names, and writes the root's fingerprint into the header.
+It stores the root in the encoding its type's `RootEncoding` gives, slotted unless the type has no fixed encoding, which is what the descriptors say [the root](../spec/schema/type-descriptors.md#the-root) holds.
 `Kladde::open` compares the header's fingerprint with the application's and **fails closed** on a mismatch, with an error carrying both fingerprints.
 It never parses the descriptor table on the matching path, which is the [fast path](../spec/schema/fingerprints.md#as-a-fast-path) the fingerprint exists for.
 

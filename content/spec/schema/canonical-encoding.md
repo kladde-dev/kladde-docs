@@ -30,9 +30,15 @@ The descriptor has no further content.
 | 129 | Enum | `string(name) byte(discriminant_width) varint(variant_count)`, then per variant `varint(discriminant_value) string(variant_name) varint(field_count)`, then per field `string(field_name) reference(type)` |
 | 130 | Opaque | `string(library_name) string(type_name) varint(major) varint(minor) varint(patch) varint(inline_size) varint(param_count)`, then per parameter `reference(type)` |
 | 131 | Array *(reserved)* | `reference(element) varint(count)` |
-| 132 | Pointer *(reserved)* | content undefined |
+| 132 | Pointer | `reference(target)` |
+| 133 | Sequence | `reference(element)` |
+| 134 | Packed | `reference(target)` |
+| 135 | Slotted | `reference(target)` |
+| 136 | Small | `reference(content) reference(spilled)` |
 
-Tags `133..=255` are unassigned and reserved for future kinds.
+Tags `137..=255` are unassigned and reserved for future kinds.
+
+A decoder applies the [rules of nesting](type-descriptors.md#the-rules-of-nesting) to every table it reads, and refuses one that breaks them.
 
 ## Canonical order
 
@@ -46,6 +52,8 @@ A variant's position does not affect any value's layout, so declaration order is
 Two enums differing only in the source order of their variants encode identically.
 
 **Opaque parameters** and an **Array's element** keep their given order, being positional type arguments.
+
+**A Small's references** are emitted `content` first, then `spilled`.
 
 ## Table encoding
 

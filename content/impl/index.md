@@ -24,6 +24,7 @@ Those decisions are documented in the language-specific documentations (currentl
 | [Consolidation](consolidation.md) | reclaiming garbage: victim selection, the three candidate kinds, and the budget |
 | [Consolidator state](consolidator-state.md) | what consolidation carries from one session to the next, and how it checks that it is still current |
 | [Transactions and batches](transactions-and-batches.md) | grouping operations into transactions, and the buffering state machine |
+| [Packed values](packed-values.md) | offsets kept in memory, values that find themselves through their parents, changes of size, and when small values move |
 | [Related work](related-work.md) | where the design comes from, and where it parts company |
 
 ## The shape of an implementation
@@ -78,8 +79,8 @@ Keeping error handling explicit is worth the extra copy.
 Should that trade ever be revisited, note also that the mapping must be read-only, since kladde writes with ordinary writes and `fsync` and mixing the two is only coherent by grace of the platform's unified page cache.
 
 *Reading through a cursor.*
-When a data type reads its allocations during `Persistable::load`, the reference implementation hands it an iterator over shared byte slices (fragments) rather than an assembled owned byte slice to avoid unnecessary copies.
-Over the mirror, such a cursor costs no syscalls at all.
+When a data type reads its allocations during `Persistable::load`, the storage layer hands it a cursor over the allocation's fragments, which over the mirror costs no syscalls at all.
+The reference implementation copies each allocation's bytes out through it once, into a buffer from which it decodes the allocation's values front to back, since [packed values](packed-values.md) have to be decoded in order anyway.
 
 ### The indexes
 

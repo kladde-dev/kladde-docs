@@ -43,9 +43,13 @@ Concretely: reconcile the writer's type graph against the reader's once at open,
 Every value then follows the cached plan, with no string comparison and no graph walk.
 
 **A reader must be able to read at writer offsets.**
-A loader cannot assume its own compile-time inline size.
-This is the mechanism that lets inline sizes evolve at all: the writer's graph encodes the old sizes, the reader's encodes the new ones, and resolution bridges them.
+A loader cannot assume its own compile-time slot size.
+This is the mechanism that lets slot sizes evolve at all: the writer's graph encodes the old sizes, the reader's encodes the new ones, and resolution bridges them.
 It is a real constraint on the shape of a language binding's load path, and it needs designing in from the start even if resolution itself lands later.
+
+**For packed values, the read plan is a small program that decodes the writer's encoding.**
+The writer's offsets inside a [packed](type-descriptors.md#places) value depend on each value, but the writer's descriptors, and the choices of encoding they record, still determine them, so resolution produces a per-type parse rather than a list of offsets, run during the sequential load that decodes every value anyway.
+A changed choice of encoding is a changed layout like any other: a reader whose type declares a field slotted that the writer packed reads the writer's varint, and stores a fixed-width integer on its next write.
 
 **In-place mutation must run against the allocation's active layout.**
 This is the corollary, and it is the subtle one.
@@ -56,6 +60,7 @@ An implementation must make "which layout is this allocation in" explicit:
 - a **retain**-mode allocation carries a runtime layout that the mutation path must use.
 
 Static offsets are valid **only** for native allocations.
+Retaining a packed value is harder still, since its offsets would have to be computed from the writer's descriptors at every mutation, so upgrade is the natural mode for packed values.
 
 **Cycle-aware canonicalization is shared machinery.**
 Recursive types need it for fingerprinting and for descriptor equality alike; see [Fingerprints](fingerprints.md#cycles).
