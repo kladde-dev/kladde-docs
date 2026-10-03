@@ -3,7 +3,8 @@
 
 Every argument after the options names a run, `label=directory`, where the
 directory holds the CSV tables `kladde-bench` wrote (`uniform.csv`, ...),
-plain or gzipped (`uniform.csv.gz`).
+plain or gzipped (`uniform.csv.gz`), or those of kladde-svg's `svg-bench`
+(`svg-<drawing>.csv`), which the figure `svg` draws.
 With one run, the figures show that run; with several, the figures that
 compare policies overlay them, labelled.
 `--only` draws only the figures it names, such as `--only tradeoff,kappa`.
@@ -153,6 +154,8 @@ def legend(ax, **kwargs):
 def space_amplification(runs, out):
     """File size over the live allocation size, as the writes accumulate."""
     scenarios = [s for s in ("uniform", "skewed") if any(s in r for r in runs.values())]
+    if not scenarios:
+        return
     fig, axes = plt.subplots(1, len(scenarios), figsize=(7.5, 3.2), sharey=True, squeeze=False)
     for ax, scenario in zip(axes[0], scenarios):
         for style, (label, run) in zip(RUN_STYLES, runs.items()):
@@ -543,6 +546,37 @@ def defrag_share(runs, out):
     save(fig, out, "defrag-share")
 
 
+def svg(runs, out):
+    """kladde-svg's editing benchmark, one line per drawing: file size over
+    live size, bytes written per byte the edits stored, and flush time, as
+    the edits accumulate."""
+    series = [(style, label, rows)
+              for style, (label, run) in zip(RUN_STYLES, runs.items())
+              for name, table in sorted(run.items()) if name.startswith("svg-")
+              for rows in table.values()]
+    if not series:
+        return
+    fig, axes = plt.subplots(1, 3, figsize=(7.5, 2.8))
+    colors = ["#4c72b0", "#dd8452", "#55a868", "#c44e52", "#8172b3"]
+    drawings = sorted({rows[0]["variant"] for _, _, rows in series})
+    for style, label, rows in series:
+        drawing = rows[0]["variant"]
+        color = colors[drawings.index(drawing) % len(colors)]
+        name = drawing if len(runs) == 1 else f"{label}, {drawing}"
+        x = x_writes(rows, rows[0]["size"])
+        axes[0].plot(x, [r["file_pages"] * PAGE / max(r["alloc_bytes"], 1) for r in rows], style, color=color, label=name, lw=1.2)
+        axes[1].plot(x, [written(r) / max(r["app_bytes"], 1) for r in rows], style, color=color, label=name, lw=1.2)
+        axes[2].plot(x, rolling_median([r["flush_us"] / 1000 for r in rows]), style, color=color, label=name, lw=1.2)
+    axes[0].set_ylabel("file size / live size")
+    axes[1].set_ylabel("bytes written to the file\nper byte the edits stored")
+    axes[2].set_ylabel("flush time, ms\n(median of 21)")
+    for ax in axes:
+        ax.set_xlabel("bytes stored / live size")
+        ax.set_ylim(0, None)
+    legend(axes[0])
+    save(fig, out, "svg")
+
+
 def summary(runs):
     """The end state of every series, as a Markdown table on stdout."""
     print("| run | scenario | variant | size | file/live | data fill | table fill | written/app | flushes | median flush ms |")
@@ -574,7 +608,7 @@ def main():
         label, _, directory = spec.partition("=")
         runs[label] = load(directory)
     figures = [space_amplification, mixed, live_fraction, write_breakdown, budget, shrink, description, flush_latency,
-               throughput, tradeoff, defrag_share, kappa]
+               throughput, tradeoff, defrag_share, kappa, svg]
     only = set(args.only.split(",")) if args.only else None
     for figure in figures:
         if only is None or figure.__name__.replace("_", "-") in only:
