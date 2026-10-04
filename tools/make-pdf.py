@@ -1482,6 +1482,16 @@ def resolve_ref(repo, ref):
     return proc.stdout.strip()
 
 
+# `lists_without_preceding_blankline` lets a list follow the paragraph above it
+# directly, as it does on the website (CommonMark).  Pandoc's default would read
+# such a list as part of the paragraph.  It cannot catch prose by accident,
+# since the sources break lines only between sentences and no sentence starts
+# with "- " or "1. ".
+PANDOC_FROM = ("markdown+pipe_tables+backtick_code_blocks+tex_math_dollars"
+               "+header_attributes+fenced_code_attributes+raw_attribute"
+               "+lists_without_preceding_blankline")
+
+
 def to_latex(md_text, tex_path, extra=()):
     """Render one version to standalone LaTeX, for latexdiff to compare."""
     if not shutil.which("pandoc"):
@@ -1490,9 +1500,7 @@ def to_latex(md_text, tex_path, extra=()):
     md_path.write_text(md_text)
     subprocess.run(
         ["pandoc", str(md_path), "-o", str(tex_path), "--standalone", "--to", "latex",
-         "--from", "markdown+pipe_tables+backtick_code_blocks+tex_math_dollars"
-                   "+header_attributes+fenced_code_attributes+raw_attribute",
-         "--highlight-style=tango", *extra],
+         "--from", PANDOC_FROM, "--highlight-style=tango", *extra],
         check=True)
     return tex_path
 
@@ -1618,8 +1626,7 @@ def run_pandoc(md_path, out_path, extra=()):
         sys.exit("pandoc not found; install it or use --check-only")
     cmd = [
         "pandoc", str(md_path), "-o", str(out_path),
-        "--from", "markdown+pipe_tables+backtick_code_blocks+tex_math_dollars"
-                  "+header_attributes+fenced_code_attributes+raw_attribute",
+        "--from", PANDOC_FROM,
         "--pdf-engine", "xelatex",
         "--highlight-style=tango",
         "-V", "linkcolor=RoyalBlue",
