@@ -47,11 +47,14 @@ Anything the model does not type it keeps as a string, so every SVG fits, and it
 
 **Three drawings from Wikimedia Commons, and resvg's test suite at v0.48.1, are the workloads**, pinned by the crate's `corpus/fetch.sh`:
 
-| drawing | SVG bytes | elements to edit | paths | path segments | of them cubic | live bytes, slotted |
+| drawing | canonical SVG bytes | elements to edit | paths | path segments | of them cubic | live bytes, slotted |
 | --- | --- | --- | --- | --- | --- | --- |
-| the Ghostscript tiger | 68,630 | 481 | 240 | 2,510 | 52 % | 102,775 |
-| the coat of arms of Spain, from Inkscape | 197,965 | 606 | 494 | 5,612 | 53 % | 202,815 |
-| a blank world map | 1,101,801 | 2,528 | 2,213 | 29,666 | 92 % | 971,531 |
+| the Ghostscript tiger | 66,850 | 481 | 240 | 2,510 | 52 % | 102,775 |
+| the coat of arms of Spain, from Inkscape | 163,768 | 606 | 494 | 5,612 | 53 % | 202,815 |
+| a blank world map | 1,005,908 | 2,528 | 2,213 | 29,666 | 92 % | 971,531 |
+
+The canonical SVG is what kladde-svg writes: no whitespace between tags outside text, single spaces between attributes, and path data in the grammar's two shortcuts, a command letter left out where the previous segment implies it and no separator before a minus sign.
+It is smaller than every original, by 3 % for the tiger, which its authors had written compactly, and by 9 to 17 % for the two drawings that Inkscape and others had indented; so it, rather than the originals, is what the kladde files compare with.
 
 The test suite contributes 1,800 small files that cover SVG's features; a 1,801st, not UTF-8, is skipped.
 
