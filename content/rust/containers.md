@@ -22,6 +22,11 @@ That halves the inline footprint and removes a field that could drift out of ste
 The price is that a zero-sized element type is unrepresentable, and `PersistableVec` refuses one.
 
 A push costs one `Write`, a pop one `Resize`, and a removal from the middle one `Splice`, which the [fold](../impl/flush.md#what-falls-out-unasked) turns into a statement edit when the vector was written in the same flush.
+Otherwise the flush [restates](../impl/flush.md#per-record-rules) the elements behind the splice point where they lie, a statement for each fragment they lie in, rather than writing them again.
+
+**Moving an element writes no data bytes.**
+`move_element(from, to)` does what removing an element and inserting it at `to` would, in one transaction of three records: a `Splice` that opens a gap at the destination, a `Copy` of the element's bytes into it from where they lie, and a `Splice` that closes the old place.
+The flush finds the element's bytes shifted within their allocation and restates them too, so a move costs statements however large the element is, and what the element owns is untouched; the packed and small vectors have the same method.
 
 `T` needs `Slottable` — no `Clone`, no `Serialize` — since the elements take fixed slots.
 That falls out of storing a fixed-size encoding rather than going through a serializer: a guard method encodes a value into the record while only *borrowing* it.

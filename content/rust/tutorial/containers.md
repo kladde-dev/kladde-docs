@@ -47,9 +47,10 @@ Reading needs no guard: `PersistableVec<T>` dereferences to `[T]`, so `len`, ind
 **Layout.** A pointer inline, plus a separate allocation holding a dense array of fixed-size element slots — the same shape as `Vec<T>`'s in memory.
 The length is that allocation's size divided by the element size, so it is never stored separately.
 
-**Cost.** A push grows the allocation and writes the new slot, a pop shrinks it, and an insertion or removal in the middle is one splice, which shifts the tail exactly as `Vec` does.
+**Cost.** A push grows the allocation and writes the new slot, a pop shrinks it, and an insertion or removal in the middle is one splice, which shifts the tail exactly as `Vec` does in memory, while the file keeps the tail's bytes where they lie and states their new offsets.
 
 **Removal.** `remove` and `pop` hand the element back with everything it owns, so you can store it elsewhere; `delete` and `clear` free it.
+To reorder, `move_element(from, to)` moves an element within the vector without writing its bytes again.
 An element you take out and then drop leaks its allocations in the file, the way a value passed to `std::mem::forget` leaks its memory.
 
 ## `PackedPersistableVec<T>`
