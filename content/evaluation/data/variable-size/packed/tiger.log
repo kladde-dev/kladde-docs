@@ -1,9 +1,9 @@
 tiger: 68630 bytes of SVG, 60988 live bytes in kladde, 481 elements to edit (240 without children), 240 paths, 0 texts
-svg-tiger: 31 rows in 1.0 s
-31613 edits storing 428625 bytes (13.6 per edit), 72 flushes, 31 of them at rows
+svg-tiger: 31 rows in 0.9 s
+31613 edits storing 428627 bytes (13.6 per edit), 72 flushes, 31 of them at rows
   mix: Drag 30.3 %, MoveNode 20.0 %, InsertNode 7.9 %, DeleteNode 7.0 %, Recolor 15.0 %, Duplicate 7.0 %, Delete 7.6 %, Restack 5.2 %, Text 0.0 %
-kladde wrote 2721723 bytes: 86 per edit, 6.35 per byte stored; the file is 188416 bytes, 6.02 times its live size
+kladde wrote 2832560 bytes: 90 per edit, 6.61 per byte stored; the file is 151552 bytes, 4.84 times its live size
 saving the canonical SVG (66850 bytes before, 41034 after) would write per edit: 41034 after every edit, 410 every 100, 41 every 1000
-edits: 103320 per second in kladde's calls; flushes take 5.0 ms at the median
-closed: the file takes 188416 bytes, 6.02 times the live size
-opening: parsing the SVG took 2.5 ms, reopening the closed kladde file 2.29 ms at the median of 21; writing the SVG took 0.6 ms
+edits: 114198 per second in kladde's calls; flushes take 4.0 ms at the median
+closed: the file takes 155648 bytes, 4.97 times the live size
+opening: parsing the SVG took 0.9 ms, reopening the closed kladde file 1.76 ms at the median of 21; writing the SVG took 0.6 ms

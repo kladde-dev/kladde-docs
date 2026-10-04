@@ -115,7 +115,7 @@ fn resized(&self, owner, index, old, new) -> Result<()> {
 
 **Each node records what the change requires before it updates what it keeps in memory**, and reports upwards before that too, so that a failure anywhere leaves every node matching the unchanged value, as a failed mutation leaves the value itself.
 
-On file, the `Splice` moves no data bytes, but the address table restates every statement of the allocation behind the splice point, `O(fragments behind it)` [in table bytes](../spec/address-table.md#design-directions); on an allocation that the current journal created, it [costs nothing](flush.md#what-falls-out-unasked).
+On file, the `Splice` moves no data bytes, but the address table restates every statement of the allocation behind the splice point, `O(fragments behind it)` [in table bytes](../spec/address-table.md#design-directions), except where [writing a run of short fragments again](flush.md#shifted-bytes-restated-or-merged) costs less over the splices to come; on an allocation that the current journal created, it [costs nothing](flush.md#what-falls-out-unasked).
 
 A value that owns allocations is replaced as any value is: the new value's allocations are prepared before the record that publishes them, and the old ones are freed after it.
 A container that moves elements with `Copy` or `Move` records can do so only between places with the same choice of encoding; between a packed place and a slotted one, it encodes them again.

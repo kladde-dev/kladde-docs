@@ -62,6 +62,33 @@ This is not a micro-optimization; it is what keeps the common case at one or two
   `Storage(self, k)` with `k` equal to the segment start means the bytes are already where they belong.
   Without this check, every untouched region of every persistent allocation would emit a self-copy.
 
+### Shifted bytes: restated, or merged
+
+**Bytes that a splice or a move shifts within their allocation are restated where they lie, except runs whose fragments cost more to describe, over the shifts still to come, than to write again as one chunk.**
+A shifted piece of the fold, `Storage(self, k′)` at an offset other than `k′`, becomes the fragments its committed bytes lie in, each taken at its new offset with its place unchanged: a `Ref` keeps its address, an `Inline` its payload, and zeros stay zeros.
+That moves no data bytes, but it costs a statement per fragment, and it keeps every fragment there was, while every splice cuts one more where its new bytes go.
+A list spliced flush after flush is therefore described by ever more and ever shorter statements, each of which the next splice restates; left alone, its description grows with the number of edits rather than with its content.
+
+**Writing a run of fragments again merges them into one chunk, and pays not once but at every later shift.**
+Per fragment, restating costs its statement's framing, about 9 bytes for a `Ref` and 4 for a `Zero`, and an `Inline` its payload besides; writing a run again costs its bytes, and a `Ref` per page it fills, which later shifts restate in turn.
+With `h` the shifts still to come, the run is written again if
+
+```
+(1 + h) · Σ framing(fragment)  >  Σ bytes(fragment)  +  (1 + h) · framing(Ref) · pages(run)
+```
+
+and the runs to write are found as [description defragmentation finds its envelope](consolidation.md#the-envelope-is-a-maximum-subarray-problem): every fragment weighs `(1 + h) · framing − bytes`, a maximum-weight run is taken in each stretch of fragments that may be merged, and a run is kept if its weight outweighs its `Ref`s.
+Zeros past the allocation's old size are never merged, since they need no statement at all.
+A run written again is read from where its bytes lie and becomes a chunk for [`pack`](#cutting-and-packing-concretely); a short literal run beside it, such as the element a splice inserted, goes into the same data page rather than `Inline`, so that the cut states both with one `Ref`.
+
+**The shifts still to come are predicted from those already seen.**
+Each allocation keeps, in memory only, a count of the flushes that shifted bytes within it, decayed by a factor `γ` per flush since, and that count, before the current flush adds its own shift, is `h`.
+An allocation shifted at every flush settles at `h = γ / (1 − γ)`, and one shifted once long ago at nearly nothing, so a first shift is judged on its own, as if no later one would follow; `γ = 0` judges every shift on its own.
+The count starts at zero when a file is opened, which costs nothing in the format and at worst restates a few fragments more in a session's first flushes.
+
+This is the fold's half of description defragmentation, and it complements [the window's half](consolidation.md#description-defragmentation-rides-the-rotating-window): the window repairs descriptions that edits left stippled long ago, and skips content written recently, which a spliced list always is; the fold repairs a description at the moment it would otherwise restate every fragment of it, when writing the bytes costs least extra.
+The bytes it writes leave their old fragments behind as dead data, which consolidation then reclaims like any other overwrite.
+
 ### Representing a piece table cheaply
 
 Most touched allocations have exactly one segment, so a tree each is wasteful:
