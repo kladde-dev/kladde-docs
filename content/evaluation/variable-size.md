@@ -163,7 +163,7 @@ Each drawing's statements number its allocations plus 2 to 81.
 
 The rest is table pages and headers, 7 to 36 bytes per edit, which fall as the allocations go.
 
-**The live pages shrink at nearly every step, but the file does not follow once the writes grow**, since a small file keeps [three to four flushes' worth of written pages free](consolidation.md#space) in quarantine.
+**The live pages shrink at nearly every step, but the file does not follow once the writes grow**, since a small file keeps about two to three flushes' worth of written pages free, half of it fallback and half reusable.
 
 | over the second half of each run, KiB | slotted | packed | small ids | small attributes | small |
 | --- | --- | --- | --- | --- | --- |
@@ -238,10 +238,10 @@ On the world map, whose root holds 234 children and whose largest group 286, the
 | written, the mix | 283 | 177 | 212 | 342 |
 | tails rewritten, the mix | 87 | 39 | 69 | 181 |
 | tails rewritten: drag | 0 | 11 | 23 | 90 |
-| recolor | 0 | 0 | 20 | 69 |
-| restack | 50 | 12 | 26 | 100 |
-| insert a path node | 192 | 161 | 161 | 261 |
-| delete a path node | 142 | 147 | 147 | 231 |
+| tails rewritten: recolor | 0 | 0 | 20 | 69 |
+| tails rewritten: restack | 50 | 12 | 26 | 100 |
+| tails rewritten: insert a path node | 192 | 161 | 161 | 261 |
+| tails rewritten: delete a path node | 142 | 147 | 147 | 231 |
 
 A drag that inserts a translation grows a transform list inline, and with it the shape; a restack moves a whole shape's content, 72 bytes on average instead of 9.5; a path node inserted into inline path data grows the path element.
 Each splices a child list, and the flush rewrites the list's tail.
@@ -298,7 +298,8 @@ Opening the world map takes less than parsing its SVG into the model in every la
   It is the precondition for small child lists and small path data.
 - **Until then, keep small values to ids and strings, and to attribute lists where memory counts for more than writes**; keep child lists and path data in packed vectors.
   Packed vectors for every list of enums whose variants differ in size pay on all three drawings, in space and in writes, for 13 to 17 % more memory, which small ids nearly win back.
-- **Keep a packed vector's offsets behind one pointer, allocated with the first element**, so that they take 8 bytes in the value rather than a vector's 24.
+- **Keep a packed vector's offsets in a `thin_vec::ThinVec<Cell<u32>>`**, which keeps its length and capacity at the start of its heap block, so that the offsets take one pointer's 8 bytes in the value rather than a `Vec`'s 24, and an empty one points to a shared static header and allocates nothing.
+  A packed vector would then take 40 bytes in memory against a slotted one's 32, and an `Element` about 200 against 168.
   Most of the lists in a drawing are empty: a path has no children, and in these drawings at most one element in six has a style, and fewer a transform.
 - **Declare a pointer that changes from null to an id often `#[kladde(slotted)]`**, as an element's transform list, so that creating the allocation writes the four bytes in place rather than growing its owner.
   It costs three bytes per element on file; with restated tails, it would buy little.
