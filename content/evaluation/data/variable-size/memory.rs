@@ -1,7 +1,8 @@
 //! The heap that opening a drawing allocates, and the median time of 21 opens
 //! and parses: `memory <drawing.svg> <scratch.kladde>`, one line of
 //! `memory.txt`. `memory --empty` prints an empty drawing's live bytes and
-//! the model's sizes, as in `empty.txt`.
+//! the model's sizes, as in `empty.txt`. Files are created and opened with a
+//! journal budget of 4 pages.
 //!
 //! Built as the binary of a crate that depends on kladde and kladde-svg by
 //! path, with features `packed`, `small-ids`, `small-attrs` and `small` that
@@ -64,17 +65,26 @@ fn main() {
     let base = LIVE.load(Relaxed);
     let doc = kladde_svg::parse(&text).unwrap();
     let model = LIVE.load(Relaxed) - base;
-    let k = kladde::Kladde::create(&path, doc).unwrap();
+    let opts = kladde::Options {
+        journal_budget_pages: 4,
+        ..Default::default()
+    };
+    let storage = Box::new(kladde::FileStorage::create(path.as_ref()).unwrap());
+    let k = kladde::Kladde::create_in(storage, doc, opts.clone()).unwrap();
     k.close().unwrap();
+    let open = || {
+        let storage = Box::new(kladde::FileStorage::open(path.as_ref()).unwrap());
+        kladde::Kladde::<kladde_svg::Document>::open_in(storage, opts.clone()).unwrap()
+    };
     let base = LIVE.load(Relaxed);
-    let k = kladde::Kladde::<kladde_svg::Document>::open(&path).unwrap();
+    let k = open();
     let opened = LIVE.load(Relaxed) - base;
     drop(k);
     let mut open_us = Vec::new();
     let mut parse_us = Vec::new();
     for _ in 0..21 {
         let t = std::time::Instant::now();
-        let k = kladde::Kladde::<kladde_svg::Document>::open(&path).unwrap();
+        let k = open();
         open_us.push(t.elapsed().as_micros());
         drop(k);
         let t = std::time::Instant::now();

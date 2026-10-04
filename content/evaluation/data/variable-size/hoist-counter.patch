@@ -32,11 +32,11 @@ index 3322aa6..eb645bf 100644
  mod consolidate;
  mod constate;
 diff --git a/crates/kladde-svg/src/bin/svg-bench.rs b/crates/kladde-svg/src/bin/svg-bench.rs
-index 8ba002b..cbebd1f 100644
+index 2df7035..ef94a31 100644
 --- a/crates/kladde-svg/src/bin/svg-bench.rs
 +++ b/crates/kladde-svg/src/bin/svg-bench.rs
-@@ -616,6 +616,8 @@ fn main() {
-     let mut drawing = Kladde::<Document>::create(&file, doc).expect("create the kladde file");
+@@ -628,6 +628,8 @@ fn main() {
+         .expect("create the kladde file");
      drawing.flush().expect("flush");
      let base = drawing.stats();
 +    kladde::HOISTED_OWN.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -44,10 +44,10 @@ index 8ba002b..cbebd1f 100644
      let live = base.allocation_bytes;
      let index = Index::of(drawing.get());
      let initial = index.leaves.len();
-@@ -688,6 +690,12 @@ fn main() {
-     let canonical = write(bench.drawing.get());
+@@ -701,6 +703,12 @@ fn main() {
      let write_time = t.elapsed();
      let file_bytes = s.file_pages * 4096;
+     let all_flushes = s.flushes - base.flushes;
 +    eprintln!(
 +        "HOISTED own {:.1} other {:.1} fresh {:.1} per edit",
 +        kladde::HOISTED_OWN.load(std::sync::atomic::Ordering::Relaxed) as f64 / bench.ops as f64,
@@ -55,8 +55,8 @@ index 8ba002b..cbebd1f 100644
 +        (s.fresh_bytes - base.fresh_bytes) as f64 / bench.ops as f64
 +    );
      bench.drawing.close().expect("close");
-     let t = Instant::now();
-     let reopened = Kladde::<Document>::open(&file).expect("reopen");
+     let closed_bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+     let reopen = || {
 diff --git a/crates/kladde/src/lib.rs b/crates/kladde/src/lib.rs
 index 8abfa3e..cc67e32 100644
 --- a/crates/kladde/src/lib.rs
