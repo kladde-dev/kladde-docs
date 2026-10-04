@@ -1,8 +1,8 @@
 diff --git a/crates/kladde-store/src/flush.rs b/crates/kladde-store/src/flush.rs
-index d3552d9..3e8e6b8 100644
+index 2d65b12..8dc7c49 100644
 --- a/crates/kladde-store/src/flush.rs
 +++ b/crates/kladde-store/src/flush.rs
-@@ -296,6 +296,12 @@ impl Inner {
+@@ -410,6 +410,12 @@ impl Inner {
              }
          }
          for (id, k, src, so, len) in reads {
@@ -32,10 +32,10 @@ index 3322aa6..eb645bf 100644
  mod consolidate;
  mod constate;
 diff --git a/crates/kladde-svg/src/bin/svg-bench.rs b/crates/kladde-svg/src/bin/svg-bench.rs
-index 2df7035..ef94a31 100644
+index 3bc7f74..215ef7f 100644
 --- a/crates/kladde-svg/src/bin/svg-bench.rs
 +++ b/crates/kladde-svg/src/bin/svg-bench.rs
-@@ -628,6 +628,8 @@ fn main() {
+@@ -616,6 +616,8 @@ fn main() {
          .expect("create the kladde file");
      drawing.flush().expect("flush");
      let base = drawing.stats();
@@ -44,15 +44,16 @@ index 2df7035..ef94a31 100644
      let live = base.allocation_bytes;
      let index = Index::of(drawing.get());
      let initial = index.leaves.len();
-@@ -701,6 +703,12 @@ fn main() {
+@@ -689,6 +691,13 @@ fn main() {
      let write_time = t.elapsed();
      let file_bytes = s.file_pages * 4096;
      let all_flushes = s.flushes - base.flushes;
 +    eprintln!(
-+        "HOISTED own {:.1} other {:.1} fresh {:.1} per edit",
++        "HOISTED own {:.1} other {:.1} fresh {:.1} restated {:.1} per edit",
 +        kladde::HOISTED_OWN.load(std::sync::atomic::Ordering::Relaxed) as f64 / bench.ops as f64,
 +        kladde::HOISTED_OTHER.load(std::sync::atomic::Ordering::Relaxed) as f64 / bench.ops as f64,
-+        (s.fresh_bytes - base.fresh_bytes) as f64 / bench.ops as f64
++        (s.fresh_bytes - base.fresh_bytes) as f64 / bench.ops as f64,
++        (s.restated_bytes - base.restated_bytes) as f64 / bench.ops as f64
 +    );
      bench.drawing.close().expect("close");
      let closed_bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);

@@ -1,9 +1,9 @@
 coat-of-arms-spain: 197965 bytes of SVG, 118744 live bytes in kladde, 606 elements to edit (504 without children), 494 paths, 0 texts
-svg-coat-of-arms-spain: 41 rows in 3.0 s
-41130 edits storing 915281 bytes (22.3 per edit), 123 flushes, 41 of them at rows
+svg-coat-of-arms-spain: 41 rows in 2.2 s
+41130 edits storing 915263 bytes (22.3 per edit), 124 flushes, 41 of them at rows
   mix: Drag 30.3 %, MoveNode 20.0 %, InsertNode 8.0 %, DeleteNode 7.0 %, Recolor 14.9 %, Duplicate 7.4 %, Delete 7.3 %, Restack 5.1 %, Text 0.0 %
-kladde wrote 7847811 bytes: 191 per edit, 8.57 per byte stored; the file is 409600 bytes, 2.62 times its live size
+kladde wrote 6227376 bytes: 151 per edit, 6.80 per byte stored; the file is 450560 bytes, 2.88 times its live size
 saving the canonical SVG (163768 bytes before, 211710 after) would write per edit: 211710 after every edit, 2117 every 100, 212 every 1000
-edits: 44000 per second in kladde's calls; flushes take 7.6 ms at the median
-closed: the file takes 409600 bytes, 2.62 times the live size
-opening: parsing the SVG took 2.2 ms, reopening the closed kladde file 4.63 ms at the median of 21; writing the SVG took 3.6 ms
+edits: 74668 per second in kladde's calls; flushes take 4.4 ms at the median
+closed: the file takes 442368 bytes, 2.83 times the live size
+opening: parsing the SVG took 2.3 ms, reopening the closed kladde file 3.71 ms at the median of 21; writing the SVG took 3.2 ms
