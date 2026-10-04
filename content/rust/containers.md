@@ -39,9 +39,10 @@ The same interface as `PersistableVec`, for any `T`, packed-only types included,
 An enum element takes its current variant rather than its largest, integers are varints, and a `char` is UTF-8; but an element whose encoding changes size moves every element behind it, a `Splice` where a slotted vector writes in place.
 
 **The offsets live in memory.**
-The vector keeps each element's offset beside its elements, as prefix sums with one more entry than there are elements, built while the content is decoded.
-A size change or an insertion updates the entries behind it in `O(n)`, as the memmove of the insertion itself costs; the offsets are `Cell`s, so that an element's guard can shift them through the shared reference its place holds while the element itself is borrowed mutably.
-They are `u32`s, since no allocation is larger, so a packed vector costs four bytes per element in memory beyond its elements, and a second vector's 24 bytes in the value; both arrays are sized exactly once the content is decoded, since only then is the count known.
+The vector keeps where each element starts beside its elements, as prefix sums built while the content is decoded, but only for the second and later elements, since the first starts at 0, and with the content's end kept apart.
+So a vector of zero or one element allocates nothing for them, and one of `n` elements `n − 1` entries, in a `thin_vec::ThinVec`, whose length and capacity sit in its heap block.
+A size change or an insertion updates the entries behind it in `O(n)`, as the memmove of the insertion itself costs; the entries are `Cell`s, so that an element's guard can shift them through the shared reference its place holds while the element itself is borrowed mutably.
+They are `u32`s, since no allocation is larger, so a packed vector costs four bytes per element in memory beyond its elements, and its starts, end and content pointer together take 16 bytes in the value, which makes it 40 bytes against a slotted vector's 32; both arrays are sized exactly once the content is decoded, since only then is the count known.
 Its elements' guards are in packed places, linked to those offsets, so an element whose size changes splices its new encoding in and has the vector shift the offsets behind it; the vector's own encoding, its pointer, stays as it is.
 
 ## `PersistableString`
