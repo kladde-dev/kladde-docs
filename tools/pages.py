@@ -82,6 +82,7 @@ ORDER = [
     "drafts/bayesian-ripeness.md",
     "drafts/survivor-classes.md",
     "drafts/variable-size.md",
+    "drafts/consolidation-from-statements.md",
 ]
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
