@@ -360,20 +360,24 @@ The corpus comes from `crates/kladde-svg/corpus/fetch.sh` in kladde-rs, and each
 ```sh
 C=crates/kladde-svg/corpus
 B="--journal-budget 4"
+F="--focus 0"  # svg-bench's uniform mix; empty for svg-bench before 795b3b9
 for layout in base packed small-ids small-attrs small; do
     features=$([ $layout = base ] || echo "--features $layout")
     cargo build --release -p kladde-svg $features
     ./target/release/svg-roundtrip $B --csv rt-$layout.csv $C/drawings $C/resvg
-    ./target/release/svg-bench $C/drawings/tiger.svg mix-$layout --edits 31613 $B
-    ./target/release/svg-bench $C/drawings/coat-of-arms-spain.svg mix-$layout --edits 41130 $B
-    ./target/release/svg-bench $C/drawings/world-map.svg mix-$layout --edits 177831 $B
+    ./target/release/svg-bench $C/drawings/tiger.svg mix-$layout --edits 31613 $B $F
+    ./target/release/svg-bench $C/drawings/coat-of-arms-spain.svg mix-$layout --edits 41130 $B $F
+    ./target/release/svg-bench $C/drawings/world-map.svg mix-$layout --edits 177831 $B $F
     for kind in Drag MoveNode InsertNode DeleteNode Recolor Duplicate Delete Restack; do
         for d in coat-of-arms-spain world-map; do
-            ./target/release/svg-bench $C/drawings/$d.svg only-$layout-$kind --edits 20000 --only $kind $B
+            ./target/release/svg-bench $C/drawings/$d.svg only-$layout-$kind --edits 20000 --only $kind $B $F
         done
     done
 done
 ```
+
+These runs edit uniformly: `--focus 0` makes svg-bench pick every edit from the whole drawing, as it did before kladde-rs `795b3b9` made edits that keep to one part of the drawing its default.
+svg-bench at `2b109e7` has no `--focus` and makes the same edits without it, so `F` stays empty there.
 
 Main's runs, at `113cfc3` with `journal_budget_pages: 4` as the default in `kladde-store/src/options.rs`, are `svg-roundtrip` on the same paths and `svg-bench` on each drawing without `--edits`.
 The decay of 0.75 came from runs of the slotted, packed and small layouts on the three drawings with `--shift-decay` 0, 0.5, 0.75, 0.875 and 0.95, of which 0.5 and 0.75 wrote least over all nine, and 0.75 reopened faster.
