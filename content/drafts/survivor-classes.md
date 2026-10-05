@@ -64,8 +64,10 @@ So the bit is kept as it goes, as [the Bayesian draft proposes](bayesian-ripenes
   When a page rewrite, the rotating window, or the header restates a `Ref` whose bytes stay where they are, the new statement states only the live bytes, and the old extent is gone; so the bit rides on the pending entry, as [heat does](../impl/in-memory-state.md#during-a-flush), and a statement derived from several fragments takes it if any of them had it.
 - **A relocation clears it.**
   A survivor that moves to a new page is a new chunk there, untouched until it loses bytes again; the class it was sorted by has already acted on it, and its allocation's `last_written` still says that it is in use.
+  @Claude: explain why its allocation's `last_written` still says that the chunk is in use after being moved to a new page. Doesn't moving the chunk implicitly update its $E_v$ to the current epoch, which is larger than `last_written` by construction, and isn't that what we want? Or are you saying that the allocation's `last_written` still says that *other chunks of the same allocation*, which were not relocated, are still warm?
 - **Open rebuilds it**, since it is not persisted: open decodes every statement, so a `Ref` whose live fragments cover less than it states is set.
   Statements restated in an earlier session have lost their old extent and come back clear, which turns some hot survivors into warm ones until they lose bytes again.
+  @Claude: (this is probably related to my previous question above:) Explain the last sentence. Whouldn't restated statements always go from hot to warm or from hot to cold, even within one session? Don't take my question as an opinion that that should be the case, I am genuinely unsure; I don't fully understand the proposal yet.
 
 ### Where each class goes
 
@@ -73,9 +75,8 @@ So the bit is kept as it goes, as [the Bayesian draft proposes](bayesian-ripenes
 
 | class | where it goes | why |
 | --- | --- | --- |
-| hot | among the flush's own chunks, which `pack` places in key order | it is being written now, as the flush's fresh content is |
-| warm | budgeted pages for warm survivors | content of allocations in use, which dies when they are rewritten, shrunk, or freed |
-| cold | budgeted pages for cold survivors, together with description defragmentation's rewrites | LFS's segregation: no hot content to wait for, and the page stays full |
+| hot | among the flush's own chunks, which | it is being written now, as the flush's fresh content is |
+| wa | content of allocations in use, which dies w budgeted pages for cold survivors, together with description defragmentation's rewrites @Claude: does this mean that, in this proposal, we should do description defragmentation only on cold statements? I'm not sure if that would play well together with the new splice handling that restates descriptions when they move, which happens mostly on hot statements and is cheaper for defragmented descriptions (note that this new splice handling was introduced after the "Sorting survivors by temperature" proposal was written) ons  ons  ons  ons  ons  ons  ons  ked  ked  ked  ked  ked  ked | LFS's segregation: no hot content to wait for, and the page stays full |
 
 **The budget loop takes its victims before `pack`, and hands their hot survivors to it.**
 Today, `pack` runs first and [pulls victims into the room](../impl/consolidation.md#victims-are-pulled-one-at-a-time) of the flush's own pages, and the budget loop opens pages for more victims afterwards.
@@ -103,7 +104,7 @@ They are cold by selection, and today share pages with the flush's fresh content
 **Each class is packed in `(id, offset)` order, as [the flush's chunks are](../impl/consolidation.md#packing-in-id-order-with-look-ahead).**
 Key order keeps the [reverse index](../impl/consolidation.md#finding-the-referrers-of-a-data-page) small and lets the cut merge fragments of one allocation that land side by side into one `Ref`.
 Sorting survivors by age within a class would mix allocations further for a distinction the classes already draw.
-
+@Claude: would each of these classes use the same finite look-ahead and "split large chunks if necessary" approach that we're currently using?
 ### What it costs
 
 - **Memory**: one bit per statement, which the slab record can spare, and one flag on the pending entry.
@@ -121,6 +122,8 @@ A cold page could start at the floor rate and with its chunks static, and a warm
 Neither estimate needs it, but both would learn less from the page's first losses.
 
 ### What to expect on kladde-bench
+
+@Claude: this section is still based on the old benchmark that relied on somewhat artificial workloads. Rewrite this section based on what you expect in the SVG workloads. You might need to measure some things in those workloads to base your estimates on evidence. But don't implement the proposal yet, try to estimate from what you can observe in the existing workload. Also, note the new clarification on file sizes in `/home/devuser/.claude/projects/-workspaces-backed-data-structures/memory/project_target_file_sizes.md` — the estimates in this section still rely on an outdated assumption that kladde would only focus large files, and they assume some exorbitantly large journals.
 
 These follow from the workloads' parameters, not from runs.
 
@@ -158,6 +161,7 @@ These follow from the workloads' parameters, not from runs.
 
 - [Consolidation](../impl/consolidation.md): the budget loop would choose its victims before `pack`, keep an open page per class, and leave small victims to free filling; free filling would sort the survivors it takes; description defragmentation's rewrites would go to the cold page.
 - [In-memory state](../impl/in-memory-state.md): the statement slab's record would gain the bit, and the pending entry a flag carried through restatements.
+  @Claude: explain what you mean with the "pending entry flag".
 - [Opening a file](../impl/address-table-operations.md#opening-a-file) would set the bit for every `Ref` whose live fragments cover less than it states.
 - The [ripeness draft](ripeness.md#where-survivors-go) would split "survivors of ripe pages" in its table by class, and its starting estimates could take the class into account.
 
