@@ -207,15 +207,91 @@ At $\lambda = 1$, data pages end 72 to 79 % full, and packing them exactly would
 The rest of the live pages are address-table pages, which the proposal does not touch: 7 to 54 % of them.
 $\lambda = 0.25$ itself saves 15 to 21 % of the data pages over $\lambda = 1$, at 30 to 51 % more writes.
 
-**Young victims make "cold" weak.**
+**Young victims make "cold" weak, and ripeness does not change that.**
 "Not written since $E_v$" says little when $v$ is a flush or two old, and on the tiger and the coat of arms, 67 to 99 % of the survivor bytes come from victims under 16 flushes old.
 That argues for a floor under the age that makes a survivor cold: cold only if its allocation has not been written since $\min(E_v, \text{now} - T')$, which keeps the relative test for old victims and borrows [the absolute threshold](#alternatives) for young ones.
-Under ripeness, victims are pages whose content has stopped dying, so they should be older and their cold survivors more telling.
+The ripeness branches take victims no older than main's, as [the next section](#under-ripeness) shows, so the floor is the remedy left.
 
-- **TODO:** try first if ripeness solves this issue, but if not, consider introducing a floor under the age that makes a survivor cold.
+- **TODO:** consider introducing a floor under the age that makes a survivor cold; ripeness does not solve this.
 
-**So the run worth making next is this survey on the ripeness branches.**
-Their victims should be older, which would make their cold survivors more telling and their cold pages fuller for longer.
+#### Under ripeness
+
+**No ripeness branch makes a better case for the proposal than main at $\lambda = 0.25$: their victims are no older, the classes predict no better, cold content dies as much, and at their most cleaning the bound is about the same, 10 to 28 % of the writes.**
+The survey ran unchanged on the three ripeness branches, ported onto `defrag-shifts` and its focused edits as kladde-rs branches `ripeness-svg`, `ripeness2-svg`, and `bayesian-ripeness-svg`: one drain rate per page, a draining share fitted over a static one, and the Bayesian posterior per chunk under rule (a).
+The Bayesian branch caps its empirical prior's weight at the loss events its pages have shown, as [its evaluation](../evaluation/bayesian-ripeness.md) recommends, and keeps a chunk known to drain across the restatements in place that splices cause, where it used to start a restated chunk untouched; kladde-rs' `implementation-notes.md` lists what the ports change.
+Ripeness has no churn floor: a controller moves the price of space $\kappa$ until the data pages and leaves together are $\tau$ full.
+The runs use the default, $\tau = 0.75$, and $\tau = 0.9$, which the leaves keep out of reach, so that the controller cleans as much as it can; that is the counterpart of $\lambda = 0.25$, at which main's data pages end about as full.
+
+| policy | victims' age in flushes: tiger, coat of arms, world map | survivors hot / warm / cold | bytes moved as hot that died | as cold | cold survivors moved again, share of the writes |
+| --- | --- | --- | --- | --- | --- |
+| main, $\lambda = 1$ | 4–6, 8–13, 34–51 | 20–36 / 7–24 / 40–69 % | 60–73 % | 35–49 % | 3–6 % |
+| main, $\lambda = 0.25$ | 2–3, 3–6, 15–24 | 15–22 / 9–28 / 50–74 % | 38–52 % | 16–23 % | 16–21 % |
+| ripeness, $\tau = 0.75$ | 3–4, 5–8, 31–36 | 15–30 / 8–21 / 50–76 % | 38–60 % | 21–40 % | 6–16 % |
+| ripeness, $\tau = 0.9$ | 3–4, 5–7, 16–21 | 13–26 / 8–25 / 54–76 % | 28–59 % | 18–25 % | 10–24 % |
+| static share, $\tau = 0.75$ | 2–3, 4–7, 29–34 | 14–29 / 7–23 / 50–79 % | 37–53 % | 16–39 % | 6–18 % |
+| static share, $\tau = 0.9$ | 2–3, 3–5, 15–19 | 12–20 / 8–26 / 55–78 % | 27–50 % | 15–18 % | 17–24 % |
+| Bayesian, $\tau = 0.75$ | 3–4, 5–7, 32–36 | 15–30 / 8–20 / 51–74 % | 40–62 % | 19–40 % | 5–18 % |
+| Bayesian, $\tau = 0.9$ | 3–4, 5–6, 14–18 | 11–25 / 8–25 / 54–77 % | 26–59 % | 15–24 % | 12–28 % |
+
+**Ripeness takes victims no older than main's.**
+At $\tau = 0.75$ they are as old as main's at $\lambda = 1$ on the world map and younger on the smaller drawings, and at $\tau = 0.9$ as young as main's at $\lambda = 0.25$.
+Victims under 4 flushes old still hold the most cold survivors, 59 to 90 % of their bytes on the static-share branch at $\tau = 0.75$.
+The draft's hope that ripe pages are old ones whose content has stopped dying does not hold on these drawings: ripeness judges a page by how fast it drains, not by its age, and the pages the focused edits work on drain fast and turn ripe young.
+
+**The classes predict as well as under main, and no better.**
+Hot bytes died 1.3 to 3.4 times as often as cold ones in each run, and cold bytes died 15 to 25 % at $\tau = 0.9$, as at $\lambda = 0.25$; at that much cleaning, a cold page would be cleaned again too.
+
+**At their most cleaning, the four policies end with nearly the same data pages, so the space the proposal could save is the same small share; they differ in what they write.**
+At $\tau = 0.9$, the ripeness branches end with 3 % fewer to 20 % more data pages than main at $\lambda = 0.25$, the 20 % being the packed tiger's 12 pages against 10, and write 16 % less to 34 % more.
+Packing their data pages exactly would save 4 to 24 % of them, 2 to 16 % of the live pages.
+At $\tau = 0.75$, they end with up to 20 % fewer data pages than main at $\lambda = 1$, and write 7 to 49 % more.
+
+**Live pages and file sizes after the workload, in the base / packed / small layouts:**
+Address-table pages pile up as nearly empty leaves for a dozen flushes and are then collected at once, under every policy, so the live pages at the end swing with where a run stops in that cycle, as on the small tiger at $\tau = 0.9$; the data pages and the mean over the run's second half are steadier.
+
+The tiger, 60 to 100 KB live:
+
+| policy | live pages at the end | of them data | mean live pages, second half | closed file, KB | bytes written per edit |
+| --- | --- | --- | --- | --- | --- |
+| main, $\lambda = 1$ | 34 / 26 / 20 | 25 / 12 / 15 | 41 / 25 / 26 | 244 / 176 / 144 | 155 / 98 / 96 |
+| main, $\lambda = 0.25$ | 31 / 17 / 13 | 20 / 10 / 12 | 34 / 20 / 17 | 232 / 192 / 152 | 210 / 127 / 134 |
+| ripeness, $\tau = 0.75$ | 32 / 22 / 15 | 22 / 12 / 13 | 38 / 20 / 16 | 228 / 192 / 164 | 176 / 111 / 110 |
+| ripeness, $\tau = 0.9$ | 30 / 18 / 37 | 22 / 12 / 13 | 37 / 20 / 34 | 292 / 172 / 264 | 185 / 117 / 112 |
+| static share, $\tau = 0.75$ | 36 / 16 / 14 | 20 / 10 / 13 | 34 / 19 / 15 | 296 / 200 / 160 | 195 / 133 / 124 |
+| static share, $\tau = 0.9$ | 36 / 23 / 17 | 21 / 10 / 12 | 34 / 18 / 16 | 312 / 188 / 180 | 213 / 138 / 140 |
+| Bayesian, $\tau = 0.75$ | 35 / 20 / 21 | 23 / 11 / 15 | 38 / 20 / 17 | 228 / 164 / 160 | 185 / 119 / 113 |
+| Bayesian, $\tau = 0.9$ | 32 / 20 / 15 | 21 / 11 / 13 | 35 / 22 / 16 | 296 / 176 / 168 | 194 / 118 / 115 |
+
+The coat of arms of Spain, 120 to 200 KB live:
+
+| policy | live pages at the end | of them data | mean live pages, second half | closed file, KB | bytes written per edit |
+| --- | --- | --- | --- | --- | --- |
+| main, $\lambda = 1$ | 112 / 64 / 52 | 68 / 36 / 43 | 113 / 65 / 52 | 616 / 384 / 312 | 193 / 121 / 136 |
+| main, $\lambda = 0.25$ | 95 / 49 / 41 | 56 / 30 / 34 | 98 / 54 / 40 | 612 / 324 / 304 | 278 / 173 / 204 |
+| ripeness, $\tau = 0.75$ | 105 / 54 / 46 | 58 / 30 / 39 | 96 / 58 / 45 | 568 / 388 / 280 | 260 / 157 / 164 |
+| ripeness, $\tau = 0.9$ | 94 / 51 / 40 | 59 / 31 / 37 | 96 / 54 / 44 | 600 / 336 / 328 | 268 / 162 / 172 |
+| static share, $\tau = 0.75$ | 91 / 47 / 38 | 61 / 32 / 36 | 92 / 51 / 46 | 556 / 272 / 260 | 274 / 172 / 184 |
+| static share, $\tau = 0.9$ | 90 / 51 / 38 | 56 / 29 / 35 | 92 / 56 / 40 | 588 / 380 / 320 | 313 / 187 / 207 |
+| Bayesian, $\tau = 0.75$ | 84 / 49 / 68 | 58 / 30 / 36 | 95 / 55 / 50 | 544 / 376 / 392 | 274 / 161 / 166 |
+| Bayesian, $\tau = 0.9$ | 94 / 55 / 43 | 57 / 29 / 36 | 95 / 55 / 44 | 596 / 376 / 280 | 286 / 170 / 177 |
+
+The world map, 0.8 to 1 MB live:
+
+| policy | live pages at the end | of them data | mean live pages, second half | closed file, KB | bytes written per edit |
+| --- | --- | --- | --- | --- | --- |
+| main, $\lambda = 1$ | 538 / 350 / 289 | 327 / 214 / 254 | 579 / 389 / 328 | 2512 / 1552 / 1316 | 227 / 176 / 225 |
+| main, $\lambda = 0.25$ | 496 / 325 / 228 | 269 / 181 / 212 | 530 / 355 / 279 | 2220 / 1516 / 1228 | 317 / 238 / 330 |
+| ripeness, $\tau = 0.75$ | 451 / 307 / 279 | 261 / 197 / 249 | 506 / 359 / 328 | 2116 / 1472 / 1332 | 308 / 213 / 241 |
+| ripeness, $\tau = 0.9$ | 456 / 300 / 233 | 264 / 182 / 211 | 491 / 337 / 279 | 2136 / 1408 / 1192 | 372 / 284 / 333 |
+| static share, $\tau = 0.75$ | 465 / 303 / 283 | 270 / 202 / 254 | 503 / 362 / 330 | 2120 / 1464 / 1292 | 337 / 222 / 252 |
+| static share, $\tau = 0.9$ | 460 / 297 / 232 | 262 / 181 / 210 | 495 / 333 / 275 | 2084 / 1448 / 1160 | 409 / 307 / 349 |
+| Bayesian, $\tau = 0.75$ | 455 / 305 / 282 | 263 / 197 / 253 | 503 / 360 / 329 | 2308 / 1460 / 1292 | 319 / 224 / 251 |
+| Bayesian, $\tau = 0.9$ | 475 / 299 / 238 | 260 / 180 / 209 | 495 / 337 / 275 | 2140 / 1552 / 1212 | 413 / 319 / 340 |
+
+**So the survey cannot rule the proposal out, and cannot promise much either.**
+At the most cleaning any policy does, cold survivors moved again are 10 to 28 % of the writes, the most the proposal could save in writes, and the classes do sort content by how soon it dies.
+But cold content dies 15 to 25 % before it is moved again, which is what such cleaning cleans a page at, so cold pages would be cleaned again too, and in space the proposal could gain at most 4 to 24 % of the data pages.
+What an implementation would keep of the write bound is the question left, and the cheapest test is [allocation age alone](#alternatives), with the fallback, under main at $\lambda = 0.25$, which needs no ripeness branch and ends with as few data pages as any.
 
 ## Alternatives
 
