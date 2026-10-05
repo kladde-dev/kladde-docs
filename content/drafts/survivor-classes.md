@@ -102,17 +102,11 @@ Evacuation reads the class, moves the chunk to its class's page, and starts it c
 | --- | --- | --- |
 | hot | among the flush's own chunks, which `pack` places in key order | it is being written now, as the flush's fresh content is |
 | warm | budgeted pages for warm survivors | content of allocations in use, which dies when they are rewritten, shrunk, or freed |
-| cold | budgeted pages for cold survivors, together with description defragmentation's rewrites | LFS's segregation: no hot content to wait for, and the page stays full |
+| cold | budgeted pages for cold survivors, together with the rotating window's description defragmentation rewrites | LFS's segregation: no hot content to wait for, and the page stays full |
 
-@Claude: does this mean that, in this proposal, we should do description defragmentation only on cold statements? I'm not sure if that would play well together with the new splice handling that restates descriptions when they move, which happens mostly on hot statements and is cheaper for defragmented descriptions (note that this new splice handling was introduced after the "Sorting survivors by temperature" proposal was written)
-
-**Claude:** No: the table says only where the rotating window's rewrites put their bytes, not which statements may be defragmented, and the fold's merging of shifted runs goes where hot survivors go.
-(The garbled warm and cold rows above are restored from the committed draft; your question was inside the cold row.)
-The window's rewrites are cold by selection, since its age filter skips content written recently, so they are cold already, and the cold page is where they belong; the proposal changes nothing about which candidates the window finds.
-The fold's half, the merging on `defrag-shifts`, works on content that a splice has just shifted, which is as hot as content gets, and its runs become chunks for `pack` among the flush's own content.
-That is exactly where hot survivors go under this proposal, so the two meet in the same place and neither constrains the other; the draft should say so explicitly rather than leave "description defragmentation" to mean only the window's half.
-They do interact in one place: an allocation split across classes lands in more pieces, each a statement now and a fragment that later shifts restate, until the fold merges them.
-On kladde-svg's drawings that costs few statements, 2.3 to 14 pieces per evacuating flush beyond one per allocation, at about 9 bytes each, which comes to under half a byte per edit (see [below](#what-to-expect-on-kladde-svgs-drawings)).
+**The cold page takes only where the window's rewrites go, not which descriptions are defragmented.**
+The window's age filter already skips content written recently, so its rewrites are cold by selection.
+The fold's half of description defragmentation, which [merges the runs a splice has just shifted](../impl/flush.md#shifted-bytes-restated-or-merged), writes hot content, and its runs stay among the flush's own chunks, where hot survivors go too; the proposal changes neither half.
 
 **The budget loop takes its victims before `pack`, and hands their hot survivors to it.**
 Today, `pack` runs first and [pulls victims into the room](../impl/consolidation.md#victims-are-pulled-one-at-a-time) of the flush's own pages, and the budget loop opens pages for more victims afterwards.
@@ -132,7 +126,7 @@ When the budget is spent or no ripe victim is left, each class's last page is ch
 A small victim that rides in the room of a flush's own page sends its hot and warm survivors there, and its cold ones to the cold page if the flush has opened one; if it has not, they ride along as well, as a share of at most $\theta$.
 [The cursor](ripeness.md#the-flushs-own-pages-take-survivors-from-the-previous-flush), where ripeness has one, is left as it is: its page is a flush or two old, so the classes say little about its content, and it exists to match the flush's own temperature anyway.
 
-**Description defragmentation's rewrites go to the cold page.**
+**The rotating window's description defragmentation rewrites go to the cold page.**
 They are cold by selection, and today share pages with the flush's fresh content, [an open question of the ripeness draft](ripeness.md#open-questions) that this answers.
 
 ### Within a class, key order
@@ -162,56 +156,66 @@ Neither estimate needs it, but both would learn less from the page's first losse
 
 ### What to expect on kladde-svg's drawings
 
-**Expect little: on main's victims, the proposal could save at most 1 to 3 % of what kladde writes directly, its fallback makes it nearly free in pages, and at the file sizes kladde is for, a flush has too few survivors to keep the classes apart.**
-The numbers come from a survey of [svg-bench](../evaluation/variable-size.md)'s runs on the `defrag-shifts` branch, which classified every survivor that main's consolidation moved, without changing where it went.
+**On main's cleaning, the proposal could save at most 3 to 6 % of what kladde writes at the default churn floor, and 16 to 21 % at a floor of 0.25; its classes do tell content that dies from content that waits, but what they call cold still dies, a fifth of it at the lower floor, which is what that floor cleans a page at.**
+The numbers come from a survey of [svg-bench](../evaluation/variable-size.md)'s runs on the `defrag-shifts` branch, at kladde-rs `795b3b9`, which classified every survivor that main's consolidation moved, without changing where it went, and then followed each chunk it had moved to see what became of it.
 Each data page remembered the chunks `place` had put into it, so a survivor was hot if its chunk had lost bytes since, as the bit says within a session; the allocation's `last_written` against the victim's epoch told warm from cold.
-The runs are the evaluation's: a journal of 4 pages, so a flush every 240 to 490 edits, in the base, packed, and small layouts.
-The drawings are the tiger, the coat of arms of Spain, and the world map, at 60 to 100 KB, 120 to 200 KB, and 0.8 to 1 MB live.
-For the sizes kladde is for, a median of about 12 KB, the survey also ran the tiger cut to its first 20, 60, and 120 paths, at 9, 17, and 38 KB live, in the packed and small layouts.
-Victims are chosen by data-page scoring and the churn floor, not by ripeness, whose victims would be older.
-The survey counts bytes that description defragmentation or the fold's merging took out of a chunk as lost, so it calls a few chunks hot that the bit would not; it was not run on `variable-size`.
+The runs edit the tiger, the coat of arms of Spain, and the world map, at 60 to 100 KB, 120 to 200 KB, and 0.8 to 1 MB live, in the base, packed, and small layouts, with a journal of 4 pages, so a flush every 230 to 360 edits.
+Their edits keep to one part of the drawing at a time, svg-bench's default since `795b3b9`: nine in ten pick from a window of a tenth of the drawing, which jumps every 3000 edits.
+The uniform mix that earlier runs used touched nearly every shape within a flush or two, and made 38 to 52 % of the survivors hot.
+The churn floor is the default, $\lambda = 1$, which takes victims at most half live, and $\lambda = 0.25$, which takes them up to four fifths live, and so gives the proposal as much moved content to work with as main's cleaning gets to.
+The survey counts bytes that description defragmentation or the fold's merging took out of a chunk as lost, so it calls a few chunks hot that the bit would not.
 
-**All three classes are large, and hot is often the largest.**
-On the full drawings, hot survivors are 38 to 52 % of the survivor bytes, warm ones 15 to 30 %, and cold ones 24 to 46 %; on the tiger cut to 60 and 120 paths, 41 to 45, 16 to 20, and 38 to 40 %.
-So many hot survivors contradict [the expectation](#alternatives) that they are few, which assumed ripe victims; main's are young, with a mean age, weighted by survivor bytes, of 2.6 to 4 flushes on the tiger, 5 to 11 on the coat of arms, 21 to 40 on the world map, and 1.2 to 2.6 on the cut tigers.
-In the base and small layouts, 74 to 91 % of the survivor bytes of allocations of 4 KiB and more are hot or warm, and 22 to 52 % hot, which is the case the bit is for: one allocation whose writes reach some of its chunks and not others.
+**Most survivors are cold once the edits keep to one part of the drawing.**
+At $\lambda = 1$, hot survivors are 20 to 36 % of the survivor bytes, warm ones 7 to 24 %, and cold ones 40 to 69 %; at $\lambda = 0.25$, 15 to 22, 9 to 28, and 50 to 74 %.
+Young victims give the most cold survivors: at $\lambda = 1$, 57 to 90 % of what victims under 4 flushes old hold is cold, and 26 to 48 % of what victims 64 flushes and older hold, which only the world map and the coat of arms have.
+Weighted by survivor bytes, victims are 4 to 6 flushes old on the tiger, 8 to 13 on the coat of arms, and 34 to 51 on the world map at $\lambda = 1$, and about half that at $\lambda = 0.25$.
 
-**Survivors fill one to three and a half pages per flush, so class pages are often short, and the fallback decides the cost.**
+**The classes sort content by how soon it dies, but cold content is not static.**
+Followed from the move until its page was cleaned again or the run ended, the bytes moved in each class died at these shares, against what the flushes wrote fresh:
+
+| churn floor | hot | warm | cold | fresh |
+| --- | --- | --- | --- | --- |
+| $\lambda = 1$ | 60 to 73 % | 38 to 69 % | 35 to 49 % | 46 to 61 % |
+| $\lambda = 0.25$ | 38 to 52 % | 24 to 44 % | 16 to 23 % | 26 to 42 % |
+
+In each run, hot bytes died 1.2 to 2.0 times as often as cold ones at $\lambda = 1$, and 1.7 to 3.2 times as often at $\lambda = 0.25$, so the classes predict what they should.
+But a fifth of the cold bytes died even at $\lambda = 0.25$, where cleaning moved most bytes on within a few flushes, and a page that has lost a fifth of its content is what $\lambda = 0.25$ cleans.
+A cold page would therefore drain more slowly than a mixed one and be cleaned less often, but it would not stay full.
+
+**The direct gain is bounded by the cold survivors that had been moved before: 3 to 6 % of what kladde writes at $\lambda = 1$, and 16 to 21 % at $\lambda = 0.25$.**
+Such a survivor sat untouched since its last move, in a page that mixed it with content that died, and is moved again for that; on a cold page that stayed full, it would have stayed put.
+Of the bytes moved as cold, 44 to 61 % were moved again at $\lambda = 1$, and 74 to 81 % at $\lambda = 0.25$.
+The bound assumes that their cold page never became a victim, which the deaths above make unlikely at $\lambda = 0.25$: there the proposal would save part of the 16 to 21 %, and only an implementation can tell how much.
+At $\lambda = 1$, where a page is cleaned only once half of it has died, a cold page would mostly stay, but there are only 3 to 6 % of the writes to save.
+Evacuation as a whole, which bounds anything placement can save, is 14 to 21 % of the writes at $\lambda = 1$ and 30 to 45 % at $\lambda = 0.25$.
+
+**Survivors fill 1.3 to 9 pages per flush, so the classes stay apart, and the fallback makes that nearly free.**
 Counting the pages a flush opens for survivors, a partial page as a whole one, but hot survivors by their bytes, since they fill the flush's own pages:
 
-| drawings | survivors per evacuating flush | pages, all classes together | the draft without its fallback | the draft with it | warm and cold bytes on pages of their own class |
-| --- | --- | --- | --- | --- | --- |
-| full | 1.35 to 3.36 pages | 1.76 to 3.85 | 0.50 to 0.93 more | 0.06 fewer to 0.21 more | 57 to 82 % |
-| cut tigers | 0.36 to 1.30 pages | 1.00 to 1.74 | 0.46 to 0.87 more | 0.04 fewer to 0.23 more | 18 to 68 % |
+| churn floor | survivors per evacuating flush | the draft without its fallback | the draft with it | warm and cold bytes on pages of their own class |
+| --- | --- | --- | --- | --- |
+| $\lambda = 1$ | 1.3 to 2.7 pages | 0.54 to 0.81 pages more | 0.02 to 0.11 more | 63 to 82 % |
+| $\lambda = 0.25$ | 3.4 to 9.0 pages | 0.38 to 0.64 more | 0.06 fewer to 0.05 more | 85 to 95 % |
 
-Without the fallback, the short pages cost 4 to 10 bytes per edit, 3 to 12 % of what kladde writes, more than the proposal can save.
-With it, they cost at most 2.3 bytes per edit, under 3 % of the writes, and under 1 % on the coat of arms and the world map.
+Without the fallback, the short pages cost 2 to 9 % of what kladde writes; with it, at most 1.3 %.
 The fallback is the rule of [the budget loop](#where-each-class-goes) that lets a class page with room take the other class's last page; the survey shares warm and cold remainders whenever they fit together, which is that rule with $\theta = 0$.
-A class that splits an allocation costs a statement per extra piece: 2.3 to 14 pieces per evacuating flush, under half a byte per edit.
+A class that splits an allocation costs a statement per extra piece, 1 to 5 pieces per evacuating flush at $\lambda = 1$ and 4 to 11 at $\lambda = 0.25$, under half a byte per edit.
 
-**The direct gain is bounded by the cold survivors that had been moved before.**
-Such a survivor sat untouched since its last move, in a page that mixed it with content that died, and is moved again for that; on a cold page that stayed full, it would have stayed put.
-On the full drawings, these bytes are 8 to 18 % of the survivor bytes, 1.2 to 5.2 bytes per edit, 1.4 to 3.1 % of what kladde writes; on the cut tigers, 1.0 to 2.6 bytes per edit, 1.4 to 5.3 %.
-That is an upper bound, since it assumes that their earlier move had sorted them cold as well and that their cold page never became a victim.
-It does not bound what separating warm from cold saves besides, by letting warm pages die more completely; only evacuation as a whole, 14 to 24 % of the writes on the full drawings and 7 to 17 % on the cut tigers, bounds that.
+**What the proposal could save in space is bounded by how full the data pages already are: at most 21 to 28 % of them at $\lambda = 1$, and 7 to 13 % at $\lambda = 0.25$.**
+Placement cannot shrink what survives; it can only let cleaning keep data pages fuller for the same writes, so at best they end exactly full.
+At $\lambda = 1$, data pages end 72 to 79 % full, and packing them exactly would save 11 to 23 % of the live pages; at $\lambda = 0.25$, they end 87 to 93 % full, and it would save 4 to 8 %.
+The rest of the live pages are address-table pages, which the proposal does not touch: 7 to 54 % of them.
+$\lambda = 0.25$ itself saves 15 to 21 % of the data pages over $\lambda = 1$, at 30 to 51 % more writes.
 
-**At the file sizes kladde is for, a flush has too few survivors to keep the classes apart.**
-On the tiger cut to 20 paths, 9 KB live, a flush moves 0.36 to 0.44 pages of survivors, 69 to 76 % of them cold, and the fallback puts most warm and cold bytes on shared pages, so only 18 to 41 % of them stay apart; at 17 and 38 KB, 52 to 68 % do.
-There, the proposal comes close to today's placement, at a cost of at most 0.23 pages per flush.
-What the 9 KB tiger shows instead is a cleaner that takes the pages it has just written: its victims are 1.2 to 1.8 flushes old, 53 to 65 % of its survivor bytes had been moved before, and 78 to 95 % of those were cold.
-That is for victim choice to fix, as ripeness proposes, not for placement.
-
-**Young victims make "cold" weak, which ripeness's older victims may change.**
-"Not written since $E_v$" says little when $v$ is a flush or two old: on the world map, survivors of victims under 4 flushes old are 70 to 94 % cold, and those of victims 64 flushes and older 5 to 8 %.
-With 250 to 300 edits per flush over 2528 elements, most elements go unwritten for two flushes at a time, so a young victim calls most of its survivors cold, whether they stay so or not.
+**Young victims make "cold" weak.**
+"Not written since $E_v$" says little when $v$ is a flush or two old, and on the tiger and the coat of arms, 67 to 99 % of the survivor bytes come from victims under 16 flushes old.
 That argues for a floor under the age that makes a survivor cold: cold only if its allocation has not been written since $\min(E_v, \text{now} - T')$, which keeps the relative test for old victims and borrows [the absolute threshold](#alternatives) for young ones.
 Under ripeness, victims are pages whose content has stopped dying, so they should be older and their cold survivors more telling.
 
 - **TODO:** try first if ripeness solves this issue, but if not, consider introducing a floor under the age that makes a survivor cold.
 
-**So the run worth making next is this survey on the ripeness branches, before anything is implemented.**
-On main's victims, the proposal has at most 1 to 3 % of the writes to save, and at the target sizes little room to act.
-If ripeness's older victims raise the share of cold bytes that are moved again, the bound rises with it, and the survey shows that without the proposal; the implementation would then start with allocation age alone and the fallback.
+**So the run worth making next is this survey on the ripeness branches.**
+Their victims should be older, which would make their cold survivors more telling and their cold pages fuller for longer.
 
 ## Alternatives
 
