@@ -14,7 +14,7 @@ Consolidation fights **three independent debts**, and the counters that measure 
 **Description fragmentation** is a property of an *allocation*: how many statements it takes to say what its bytes are.
 It is measured by [`fragment_count` and `statement_bytes`](in-memory-state.md#3-the-allocation-map) against `size`; it costs memory in the fragment map, bytes in the address table, and time at load; and no page-level counter can see it, because an allocation described by two hundred statements packed densely into one full page makes that page look perfect.
 
-**Page fragmentation** is a property of a *page*, `Data` and `AddressTable` alike: how much of it current state still relies on.
+**Page fragmentation** is a property of a *page*, `Data` and `Table` alike: how much of it current state still relies on.
 It is measured by [`coverage[p]`](liveness.md#coverage) against capacity; it costs file size and nothing else; and no per-id counter can see it, because an allocation described by one `Ref` per flush has ideal `fragment_count` however thinly its bytes end up spread.
 
 **Outer fragmentation** is a property of the *file*: reusable pages below its last live page.
@@ -36,7 +36,7 @@ Outer fragmentation is not a debt at all while the file grows, because growth fi
 | mechanism | pays down | selected by | reads | writes |
 | --- | --- | --- | --- | --- |
 | [Evacuation](#victims-are-pulled-one-at-a-time) | page fragmentation of `Data` pages; outer fragmentation, in [compaction mode](#compaction-mode) | the sparsest data pages, one victim at a time — the highest first, in compaction mode | the victim's survivors, from the file, found through the [reverse index](#finding-the-referrers-of-a-data-page) | the survivors, into data pages |
-| [Page rewrite](#the-page-rewrite) | page fragmentation of `AddressTable` pages; outer fragmentation, in compaction mode | the sparsest table pages, one victim at a time — the highest first, in compaction mode | the victim, decoded | the victim's live content, stated again at the cut |
+| [Page rewrite](#the-page-rewrite) | page fragmentation of `Table` pages; outer fragmentation, in compaction mode | the sparsest table pages, one victim at a time — the highest first, in compaction mode | the victim, decoded | the victim's live content, stated again at the cut |
 | [Rotating window](#the-rotating-window) | delta-encoding density | a cursor that rotates through the fragment map | the fragment map | restatements, into the room the cut leaves over |
 | [Description defragmentation](#description-defragmentation-rides-the-rotating-window) | description fragmentation | the stipples the rotating window's walk finds | the stipple's bytes, from the file | one `Ref` per candidate, at most a page long, among the flush's own chunks — or one `Inline`, below the threshold |
 

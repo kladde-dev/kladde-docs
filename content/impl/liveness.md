@@ -16,7 +16,7 @@ One rule covers both page kinds, and it is the rule data pages already follow.
 
 **Content bytes are charged to the page that physically holds them.**
 Every `Bytes` fragment names a page and an offset, so when a fragment is destroyed, decrement that page's coverage by the fragment's length.
-A `Ref`'s fragments point into a `Data` page; an `Inline`'s fragments point into the `AddressTable` page carrying the payload; a zero fragment points nowhere and costs nothing.
+A `Ref`'s fragments point into a `Data` page; an `Inline`'s fragments point into the `Table` page carrying the payload; a zero fragment points nowhere and costs nothing.
 Splitting a fragment changes nothing, since both halves still cover the same bytes.
 
 An inline payload is therefore just content that happens to live in a table page, and it gets per-byte accounting for free — no per-statement payload counters, no special case, the same line of code.

@@ -60,7 +60,7 @@ Per-range statements remove the need entirely: a large allocation's statements s
 
 ### A separate index
 
-The **index** was a small rooted structure that made scanning unnecessary: a list of `(page_number, epoch)` for every live `AddressTable` page, held in pages of its own kind, whose page numbers were in the header, and rewritten in full every flush.
+The **index** was a small rooted structure that made scanning unnecessary: a list of `(page_number, epoch)` for every live `Table` page, held in pages of its own kind, whose page numbers were in the header, and rewritten in full every flush.
 
 Sizing, to justify "small": at ~8 bytes per entry, a million allocations occupy ≈ 8 MB ≈ 2000 table pages; at ≈ 6 bytes per index entry that is ≈ 12 KB ≈ 3 index pages per flush.
 If the table grew to where the full index rewrite hurt, the index would get a second level and only the changed leaves would be rewritten — a two-level copy-on-write tree.

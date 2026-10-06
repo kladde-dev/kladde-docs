@@ -334,7 +334,7 @@ This exists because two points in the argument are easy to get backwards: most p
 - Header `E − 2` exists and has been fsynced.
 - Header `E − 1` was written but not fsynced yet.
 - Journal segment `E` is partially written, not fsynced.
-- All `Data` and `AddressTable` pages of world `E − 1` have been fsynced and are **live** — this flush must not overwrite them.
+- All `Data` and `Table` pages of world `E − 1` have been fsynced and are **live** — this flush must not overwrite them.
 - Pages of world `E − 2` that are *not also* part of world `E − 1` are **fallback**, and must not be overwritten either.
   This includes journal segment `E − 1`, which header `E − 2` names.
   Pages belonging to both worlds are simply live, which is the common case rather than the exception: typically most pages of world `E − 2` are in both.

@@ -38,7 +38,7 @@ Every page except the pages that make up the current journal concatenates the fo
 | field          | width                        | meaning                                                                                                          |
 | -------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `header`       | 0 unless it is a header page | only present in [[#header pages]]                                                                                |
-| `kind`         | 1 byte                       | one of `AddressTable` (`0x01`) or `Data` (`0x02`). For header pages: always `AddressTable` (`0x01`)              |
+| `kind`         | 1 byte                       | one of `Table` (`0x01`) or `Data` (`0x02`). For header pages: always `Table` (`0x01`)              |
 | `epoch`        | 8 bytes                      | the flush counter at the time the page was written                                                               |
 | `content_size` | 2 bytes                      | the size of `content` in bytes                                                                                   |
 | `content`      | `content_size` bytes         | the payload of the page, encoded depending on `kind`                                                             |
@@ -62,7 +62,7 @@ Liveness is not recorded in a page; it is defined by reachability from a committ
 Less than it looks, and the distinction matters to anyone reasoning about the crash argument.
 
 Only two checksums in the file are load-bearing: the **header** CRCs, because a header is written without a covering `fsync` before it matters, so a torn or missing header write must be detectable; and the **journal**'s per-transaction CRC chain, because journal appends are likewise never fsynced before a power cut can hit them.
-The framing on `Data` and `AddressTable` pages is *not* load-bearing: [invariant I1](durability.md#the-two-invariants) guarantees that any page a valid header can reach was fsynced before that header was written, so recovery never meets a referenced page whose write did not complete.
+The framing on `Data` and `Table` pages is *not* load-bearing: [invariant I1](durability.md#the-two-invariants) guarantees that any page a valid header can reach was fsynced before that header was written, so recovery never meets a referenced page whose write did not complete.
 
 The framing is required on every page anyway, as defence in depth.
 The `crc` turns *later*, silent damage — bit rot, a misdirected write by other software, a bug that writes to a live page — into a detected failure instead of quietly wrong data.

@@ -188,10 +188,10 @@ The counter is 32 bits rather than page-sized, because a page's live bytes excee
 
 Pages are bucketed by live fraction, a handful of buckets suffices, together with an age mark.
 That makes victim selection `O(1)` rather than a priority queue's `O(log P)`, with `O(1)` bucket moves as counters change.
-`Data` and non-header `AddressTable` pages are bucketed [separately](consolidation.md#the-structures-behind-the-ranking), and header pages in neither.
+`Data` and non-header `Table` pages are bucketed [separately](consolidation.md#the-structures-behind-the-ranking), and header pages in neither.
 The header is excluded here since it is rewritten every flush, so it is never a victim, and its content is accounted for by being [taken and stated again by every flush](consolidation.md#one-dirty-set-and-why-statements-are-derived-last) rather than by its coverage.
 
-The in-memory state of an `AddressTable` page carries one more field: its parent's page number, four bytes, updated whenever the parent is replaced.
+The in-memory state of an `Table` page carries one more field: its parent's page number, four bytes, updated whenever the parent is replaced.
 [Unlinking an emptied page](consolidation.md#unlinking-an-emptied-page) needs it, since a page may be named by an interior page rather than by the header.
 
 An ordered set tracks reusable pages under the [two-generation quarantine](../spec/durability.md#the-reuse-rule), handing out the lowest first: a page dropped by commit `E` becomes writable in flush `E + 2`.
