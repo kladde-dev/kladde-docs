@@ -32,6 +32,7 @@ ORDER = [
     "spec/tooling.md",
     "spec/conformance.md",
     # The language-agnostic algorithms: state first, then what acts on it.
+    "impl/implementation-notes.md",
     "impl/index.md",
     "impl/in-memory-state.md",
     "impl/address-table-operations.md",
