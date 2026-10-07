@@ -60,7 +60,7 @@ Both mechanisms copy `Inline` payloads out of table pages, and the page rewrite 
 Nothing depends on it, though: dropping leaves after load, as data pages are dropped, costs one read per victim and one per table page whose inline payload the window restates.
 
 **Runs of small `Inline`s are handled in two stages, and neither needs a mechanism of its own.**
-The cut [merges adjacent inline fragments](#one-dirty-set-and-why-statements-are-derived-last) into one `Inline` — every flush for the header's, and for a leaf's whenever a page rewrite or the window takes them — capping the merged payload at the [`Inline` threshold](flush.md#the-inline-threshold) rather than the format's 251 bytes, since a larger payload is exactly the cold, resident bulk the threshold exists to keep out of the address table.
+The cut [merges adjacent inline fragments](#one-dirty-set-and-why-statements-are-derived-last) into one `Inline` — every flush for the header's, and for a leaf's whenever a page rewrite or the window takes them — capping the merged payload at the [`Inline` threshold](flush.md#the-inline-threshold) rather than the format's 125 bytes, since a larger payload is exactly the cold, resident bulk the threshold exists to keep out of the address table.
 A run that outgrows the threshold — a vector accumulating small elements over many flushes, say — is then a dense stipple, which [description defragmentation](#description-defragmentation-rides-the-rotating-window) finds and hoists into `Ref`s a page at a time; the cut could not do that itself, since it runs after `pack` and places no data.
 
 ### Description defragmentation rides the rotating window
@@ -108,8 +108,7 @@ fn defrag_candidates(id: Id, size: u32, mu: f32) -> SmallVec<DefragCandidate> {
         let share = f.statement().map_or(0.0, |s| framing_len(s) as f32 / pins(s) as f32);
         let net = match f {
             Bytes{..}          => share,                // its bytes move: released, consumed
-            ZeroExplicitly{..} => share - len as f32,   // its zeros become real bytes
-            ZeroByDefault      => -(len as f32),        // likewise, and nothing is released
+            Zero{..}           => share - len as f32,   // its zeros become real bytes
             Pending(p)         => estimate(p, len),     // taken this flush; see below
         };
         net - mu * len as f32
@@ -132,7 +131,6 @@ fn defrag_candidates(id: Id, size: u32, mu: f32) -> SmallVec<DefragCandidate> {
 /// A lower bound on how long the application has left `tile` unwritten; see below.
 fn age_of(id: Id, tile: Range) -> u32 {
     let youngest = fragments.range(tile)
-        .filter(|f| !matches!(f, ZeroByDefault))       // no statement, so no age
         .map(|f| f.statement().map_or(0, flushes_since_placed))   // pending: 0
         .min();
     max(flushes_since(allocations[id].last_written), youngest.unwrap_or(0))
@@ -144,7 +142,7 @@ The real implementation folds Kadane's algorithm into [the rotating walk](#the-r
 A walk that starts or stops inside an id sees only part of it, and Kadane then finds the best subrange of that part; a stipple that a walk boundary cuts in two is judged as two halves, which errs toward doing less.
 
 The weights are what make the answer come out right at both ends.
-A run of `ZeroByDefault` scores `−(1 + μ) · len`, so the envelope stops at the edge of a stipple rather than swallowing the sparse allocation around it.
+A long `Zero` scores nearly `−(1 + μ) · len`, so the envelope stops at the edge of a stipple rather than swallowing the sparse allocation around it.
 A single large `Ref` scores `share − μ · len`, which is negative for any `Ref` longer than `share / μ` — a few hundred bytes at `μ = 0.02` — so an already-contiguous region is excluded, which is correct, since rewriting it merges no statements and only moves bytes.
 And a long allocation carrying a short, dense knot of tiny `Inline` patches is exactly where the run of large positive weights is, so it is what Kadane returns.
 
@@ -175,7 +173,6 @@ Both terms are lower bounds on how long the application has left the tile's cont
   The header re-stamps everything it holds on every flush, so in a small file whose statements all live there, epochs alone would make every allocation look brand new forever.
 - **A fragment's age** — flushes since the statement that owns it was placed, or zero if the flush in progress has taken it — sees through writes elsewhere in a large allocation, which reset the allocation's age but not the tile's.
 
-`ZeroByDefault` fragments have no statement, and are left out of the minimum.
 The allocation's age survives a reopen through the [consolidator state](consolidator-state.md#content-ages); rebuilt from the file alone, it would make every allocation with inline content in the header look young at every open, since the header rewrites what it holds.
 
 The age term is the same *prediction* it is in [data-page scoring](#scoring-a-data-page): a range the application patched recently is likely to be patched again, which would re-stipple it and waste the rewrite.
@@ -334,7 +331,7 @@ Its ranges come from every source:
 2. the fold's, description defragmentation's, and every relocated survivor's;
 3. the page rewrite's table victims', and the rotating window's.
 
-Its records say how each touched id's size and existence changed, and whether a page the flush retires held its anchor or grow witness; the cut turns them into `Shrink`, `Grow`, and `Tombstone` statements by [the rules the mutation functions give](address-table-operations.md#what-the-cut-states-for-a-touched-id).
+Its records say how each touched id's size and existence changed, and whether a page the flush retires held its size statement or tombstone; the cut turns them into `Size` and `Tombstone` statements, or into the sizing bit of a content statement, by [the rules the mutation functions give](address-table-operations.md#what-the-cut-states-for-a-touched-id).
 
 **Deriving is one pass over the merged ranges**, and it merges across sources for free:
 
@@ -348,7 +345,9 @@ fn derive(dirty: &Dirty) -> Vec<Statement> {
         // with zeros, bytes with bytes that sit contiguously in one data page, and
         // inline bytes with inline bytes up to the `Inline` threshold.
         for run in pending_runs(id, dirty.ranges.of(id)) { out.push(run.statement()); }
-        // What the fragment map cannot say, merged in at its own key.
+        // What the fragment map cannot say, merged in at its own key: a `Size` where
+        // no content statement ends at the size, or a `Tombstone`. Which content
+        // statement is sizing is decided once the fillers are known too.
         out.insert_sorted(size_statement(id, &dirty.records[id], &out));
     }
     out
@@ -390,8 +389,8 @@ Three details of the bookkeeping:
 - A child list that no longer fits the header at all is not a case to optimize, but [the depth change](flush.md#the-shape-of-the-tree) the tree already provides: the whole list moves into one fresh interior page, which the header references instead.
 
 **Binding comes last.**
-Only when every statement's page is known does the cut [bind](address-table-operations.md#bindstmt-page-run) each one: a slab slot, its fragments — each pending fragment turning into the `Bytes` or `ZeroExplicitly` fragment that names it — its pins, and its framing, charged to its page with an inline payload per byte.
-A `Shrink` or `Tombstone` becomes the anchor then, and a `Grow` the witness.
+Only when every statement's page is known does the cut [bind](address-table-operations.md#bindstmt-page-run) each one: a slab slot, its fragments — each pending fragment turning into the `Bytes` or `Zero` fragment that names it — its pins, and its framing, charged to its page with an inline payload per byte.
+A statement that states the size becomes its id's size statement then.
 
 #### Each fragment is stated once per epoch
 
@@ -673,7 +672,7 @@ A caveat on the arithmetic rather than on the policy: `coverage` counts [aliased
 
 Victims come from the address-table buckets — sparsest first, `K` sampled and scored as [data pages are](#scoring-a-data-page), or the tail first [in compaction mode](#compaction-mode) — and a victim is taken only where all of its restatements fit: in the room of the cut's last page, which costs nothing, or on a budgeted leaf.
 Compaction mode's tail is the exception: it is taken whatever its size, and restatements that do not fit one leaf spill into the cut's next.
-Executing one is [`rewrite_page`](address-table-operations.md#rewrite_pagevictim-dirty): decode the victim, take the fragments its live statements still own so that the cut states them again, and record any anchor or grow witness that lived there for the cut to replace.
+Executing one is [`rewrite_page`](address-table-operations.md#rewrite_pagevictim-dirty): decode the victim, take the fragments its live statements still own so that the cut states them again, and record any size statement or tombstone that lived there for the cut to state again.
 
 Its cost is those restatements' encoded bytes, estimated from the victim's coverage while it is only being offered, and known exactly once the cut has derived them — possibly less, since they merge with whatever else the flush states nearby; its benefit is the whole victim.
 So it is priced exactly as evacuation is, `(C − written) / written`, and the two compete in [the budget loop](#the-budget-loop) on equal terms.
@@ -696,8 +695,8 @@ fn rotating_window(room: u32, dirty: &mut Dirty) -> Vec<DefragCandidate> {
         defrag.push(key, fragment);                // weights as in `defrag_candidates`
         cursor = key.next();
         if stop.is_some() { continue; }
-        // `ZeroByDefault` has nothing to state, and a pending fragment is stated
-        // already: neither adds to what the window costs.
+        // A pending fragment is stated already: it adds nothing to what the
+        // window costs.
         if fragment.statement().is_none() { continue; }
         encoded += re_encoded_size(fragment);      // against the previous restatement
         if encoded > room { stop = Some(key); }
@@ -712,7 +711,7 @@ The walk meets fragments the flush has already taken, whose statements the cut h
 
 **The cursor is a fragment-map key**, `(Id, AllocationOffset)`, so a window is a plain range of the structure it walks, with no special case at either end.
 An allocation whose live statements alone outgrow the room is simply resumed mid-allocation by the next window, where a cursor keyed by id alone would never get past it.
-Anchors need no position in the window: [`rewrite_key_range`](address-table-operations.md#rewrite_key_rangelo-hi-dirty) transfers an anchor only when the anchor's page is one the window restates from, which is a question about pages rather than about how much of the id the window covered.
+Size statements need no position in the window: [`rewrite_key_range`](address-table-operations.md#rewrite_key_rangelo-hi-dirty) states an id's size again only when its size statement's page is one the window restates from, which is a question about pages rather than about how much of the id the window covered.
 
 **A new session resumes the rotation where the last one left it, or else somewhere new.**
 The cursor lives in memory, so the [consolidator state](consolidator-state.md#the-rotating-windows-position) carries it from one session to the next.
@@ -741,7 +740,7 @@ So:
 
 Data pages need none of this, having no parent.
 
-The one correctness obligation on any rewrite is [transferring the anchor](address-table-operations.md#replacement_anchorid--the-one-correctness-obligation).
+The one correctness obligation on any rewrite is [stating the size again](address-table-operations.md#stating-the-size-again--the-one-correctness-obligation).
 
 ## Finding the referrers of a data page
 

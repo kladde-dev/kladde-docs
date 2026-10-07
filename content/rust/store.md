@@ -50,9 +50,9 @@ The language-agnostic shape is a slab of `{ page_or_next, pins }` plus framing l
 Rust realises it as **two parallel arrays**, `Vec<StatementRecord>` of eight-byte records and `Vec<u8>` of framing lengths, rather than one packed record.
 A nine-byte packed record would need `#[repr(packed)]`, where taking a reference to `pins` — the field touched on every fragment gained or lost — is undefined behaviour; splitting gets the same nine bytes per slot with natural alignment, and reads `framing_len` only when a statement dies.
 
-`StatementRef` is a `NonZeroU32`, and slot 0 is never handed out, so `Option<StatementRef>` is four bytes rather than eight: that saves twelve bytes per allocation across the allocation map's `anchor` and `grow_witness` and the recyclable set's `tombstone`.
+`StatementRef` is a `NonZeroU32`, and slot 0 is never handed out, so `Option<StatementRef>` is four bytes rather than eight: that saves four bytes per allocation in the allocation map's `size_statement`, and four per recyclable id in the recyclable set's `tombstone`.
 
-`pins` is `u32` rather than `u16`, because a `Shrink` or `Tombstone` wins the gaps *between* newer statements anywhere in `[n, size)`, so its fragment pins are bounded by the allocation's fragment count and nothing smaller.
+`pins` is `u32` rather than `u16`, because a long content statement wins the gaps *between* newer statements anywhere in its range, so its fragment pins are bounded by the allocation's fragment count and nothing smaller.
 
 ### Maps keyed by id or page
 

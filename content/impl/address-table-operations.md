@@ -69,7 +69,7 @@ fn read(id: Id, offset: AllocationOffset) -> Result<impl Iterator<Item = Chunk> 
 	    let (next_fragment_offset, next_fragment) = match iterator.next() {
 		    Some((key, fgmt)) if key.id == id => (key.offset, fgmt),
 		    // `next_fragment` can be any `Fragment`; the loop exits before reading it.
-		    _ => (size, Fragment::ZeroByDefault),
+		    _ => (size, fragment),
 	    };
 	    // Assumes a constructor `Chunk::from_fragment(fragment, start, end)`
 	    // where `start` and `end` are relative to `fragment`.
@@ -176,43 +176,38 @@ Putting it before loading the header would also work but would incur the cost of
 Because each run is sorted by `(id, offset)`, the output is globally sorted by `(id, offset)`, so an id's statements arrive contiguously and `resolve_id` can consume them straight from the merge, one peek ahead, with nothing buffered.
 `O(m log P)`, and the only structures alive at any moment are the `P` decode cursors and a heap bounded by the number of distinct live epochs — so the working set is `O(P)` rather than `O(m_i)` for the widest id.
 
-**A tombstone carries no offset, and nonetheless sorts exactly where its match starts.**
-[The delta encoding](../spec/address-table.md#delta-encoding) leaves `offset_cursor` untouched for a `Tombstone`, which looks at first like a statement whose position says nothing about its match range of `[0, size)`.
-It is not, and the reason is the no-conflicts rule: a tombstone denies its id's existence, every other statement kind asserts it, and a page is a single epoch — so **a tombstone is the only statement naming its id anywhere in its page**.
-Its `id_delta` is therefore nonzero, which resets `offset_cursor` to 0, and nothing increments it again.
-A tombstone therefore decodes at `offset_cursor == 0`, which *is* its match start.
-So the merge needs no special case, and `resolve_id` needs no pre-pass: every statement's sort key is its match start, by three different routes — `offset` for content, `n` for a `Shrink`, and a forced cursor reset for a `Tombstone`.
+**Statements that match nothing sort where they do without consequence.**
+A content statement sorts at its `offset`, which is where its match range starts, so the merge hands the sweep every content statement exactly when the sweep reaches it.
+A `Size(id, n)` sorts at `n`, and a `Tombstone`, which carries no offset, at `0`: by the no-conflicts rule it is the only statement naming its id in its page, so its `id_delta` is nonzero and resets `offset_cursor`.
+Neither matches a probe, so the sweep only notes them as they pass, and `resolve_id` needs no pre-pass.
 
 ### Resolving one id
 
-One pass over the buffered group, and no sorting.
-The size is not computed separately and then fed to the sweep: it comes *out* of the sweep, along with the fragments, the anchor, and everything else `AllocationMeta` holds.
+One pass over the group, and no sorting.
+The fragments come *out* of the sweep, along with the size statement, the existence, and everything else `AllocationMeta` holds.
 
-Each statement matches an interval, and nothing is clipped:
+Only content statements match anything:
 
-| statement               | match range                                  |
-| ----------------------- | -------------------------------------------- |
-| `Ref`, `Inline`, `Zero` | `[offset, offset + stmt_size)`               |
-| `Shrink(n)`             | `[n, u32::MAX)` — unbounded                  |
-| `Tombstone`             | `[0, u32::MAX)` — unbounded                  |
-| `Grow(n)`               | `[n, n)` — empty, so it never wins anything  |
+| statement                                    | match range                    |
+| -------------------------------------------- | ------------------------------ |
+| `Ref`, `Inline`, `Zero`, in either variant   | `[offset, offset + stmt_size)` |
+| `Size`, `Tombstone`                          | none                           |
 
-`Grow` is the odd one, and giving it an empty interval *at its bound* is what lets it take part at all: it is rejected by `if s.end() > pos`, so it can never shadow anything, while [the delta encoding](../spec/address-table.md#delta-encoding) already sorts it at `n`, which is exactly where the sweep needs to meet it.
-
-The fragment covering a stretch is the matching statement with the highest epoch, so what the sweep computes is the **upper envelope by epoch** of these intervals.
+The fragment covering a stretch is the matching statement with the highest epoch, so what the sweep computes is the **upper envelope by epoch** of these intervals, which it then clips at the size.
 
 ```rust
 fn resolve_id(state: &mut State, id: Id, stmts: &mut Peekable<Merge>,
-              emitted_fragments: &mut Vec<Fragment>) {
-    // `stmts` yields this id's statements in match-start order, tombstones included,
-    // and then the next id's; see the merge, above.
+              emitted_fragments: &mut Vec<Fragment>) -> Result<()> {
+    // `stmts` yields this id's statements in sort order, and then the next id's;
+    // see the merge, above.
     // `open` is a max-heap by epoch. Entries are (epoch, end, statement). By fact 3 it holds
     // at most one entry per distinct epoch at any point in the iteration below, so its size
     // is bounded by the number of live epochs — in practice a handful, never more than P.
     let mut open = MaxHeap::new();
     let mut newest = None;             // highest epoch seen; decides existence
-    let mut grow = None;               // largest admitted `Grow`; see below
+    let mut sizing = None;             // newest statement that states the size
     let mut mentions = 0;              // physically present statements naming this id
+    let mut runs = Vec::new();         // the envelope: (start, winner), in offset order
     let mut pos = 0;
     let mut current: Option<Decoded> = None;    // winner of the run starting at `run_start`
     let mut run_start = 0;
@@ -223,88 +218,61 @@ fn resolve_id(state: &mut State, id: Id, stmts: &mut Peekable<Merge>,
             let s = stmts.next().unwrap();
             mentions += 1;             // one per statement consumed, and none is consumed twice
             newest = newest_of(newest, s);
-            if s.end() > pos {
-                open.push(s.epoch, s.end(), s);
-            } else if s.is_grow() && beats(s, open.peek()) {
-                grow = Some(s);        // `Grow`s arrive in increasing bound order, so
-            }                          // the last admitted one is the largest
+            if s.states_size() {
+                sizing = newest_sizing(sizing, s)?;  // two of one epoch: an invalid file
+            }
+            if s.is_content() { open.push(s.epoch, s.end(), s); }
         }                              // expired statements fall out here too
 
-        let winner = open.peek();      // None => this stretch resolves to zero by default
+        let winner = open.peek();      // None => nothing matches this stretch
         if winner != current {
-            if pos > run_start { emit(state, id, run_start..pos, current, emitted_fragments); }
+            if pos > run_start { runs.push((run_start, current)); }
             (current, run_start) = (winner.copied(), pos);
         }
-        // Stop once nothing is left to open and the winner can no longer change. An
-        // unbounded winner is a `Shrink` or `Tombstone`, and it is then the anchor.
+        // Stop once nothing is left to open and nothing is open.
         let next_start = stmts.peek().filter(|s| s.id == id).map(|s| s.start());
-        if next_start.is_none() && winner.map_or(true, |w| w.is_unbounded()) { break; }
+        if next_start.is_none() && winner.is_none() { break; }
         // The winner can only change where a statement starts or where it ends.
         // Statements that end while shadowed change nothing and are skipped over.
         pos = min(next_start.unwrap_or(u32::MAX),
                   winner.map_or(u32::MAX, |w| w.end));
     }
+    runs.push((run_start, None));      // the envelope ends here
 
-    let size = max(run_start, grow.map_or(0, |g| g.n()));
-    if run_start < size {              // the tail an admitted `Grow` opened up
-        emit(state, id, run_start..size, current, emitted_fragments);
+    let size = sizing.map_or(0, |s| s.size());
+    // The clip: runs at or past `size` go, and a run below it must have a winner.
+    for (i, &(start, winner)) in runs.iter().enumerate() {
+        if start >= size { break; }
+        let end = runs.get(i + 1).map_or(size, |r| r.0).min(size);
+        emit(state, id, start..end, winner.ok_or(UnmatchedProbe)?, emitted_fragments);
     }
-    finish(state, id, mentions, size, newest, current, grow);
+    finish(state, id, mentions, size, newest, sizing)
 }
 ```
 
 ### What the sweep leaves behind
 
-- **`size = max(run_start, the admitted Grow's bound)`.**
-  Nothing accumulates content claims; the next subsection is why.
-- **The anchor is the winner at termination.**
-  The unbounded statements are exactly the `Shrink`s and `Tombstone`s, and the heap orders by epoch, so whichever is on top when the sweep stops is the newest of them — the anchor, by definition, tracked for free.
-- **Existence is the one fact the envelope cannot supply.**
-  `newest` is therefore maintained in the consumption loop, at one comparison per statement and no extra pass, and `exists` is `!newest.is_tombstone()`.
-  The shortcut "the winner at termination is a tombstone and the size is zero" looks equivalent and is not: `Tombstone`@3 followed by `Grow(0)`@5 re-allocates the id at size zero and satisfies it.
+- **The size is what the newest size-stating statement states**, `0` if there is none, and that statement is the size statement.
+  `sizing` is maintained in the consumption loop at one comparison per statement; two statements of one epoch that both state the size violate [the rules of one epoch](../spec/address-table.md#no-conflicts-within-each-epoch), and the comparison is where that shows.
+- **Existence is the other fact the envelope cannot supply.**
+  `newest` is therefore maintained in the same loop, and `exists` is `!newest.is_tombstone()`.
 - **A non-existent id takes the other exit.**
-  No allocation-map entry; a recyclable-id entry carrying `mentions` and the tombstone; and exactly one slab slot, for the tombstone, holding its `A` pin.
-  Every other statement of the group was outranked at every probe and gets none.
+  Its newest statement is a tombstone, which states the size 0, so the clip leaves no fragment.
+  No allocation-map entry; a recyclable-id entry carrying `mentions` and the tombstone; and one slab slot, for the tombstone, holding its `S` pin while `mentions > 1`, by [the last-tombstone rule](liveness.md#the-last-tombstone).
 - **`mentions` is counted in the consumption loop**, one per statement, since every statement the sweep consumes under this id names it and the id's run in the merge is exactly its physically present statements.
   Counting there rather than measuring a buffer afterwards is what lets the group stay unbuffered.
-- **The grow witness is the admitted `Grow` exactly when it *determined* the size**, that is when its bound exceeds `run_start`.
-  Where the size came from `run_start` instead, it is witnessed by a content statement or by the anchor, both of which are pinned already.
+- **A probe below the size that nothing matches is an error**, which the clip finds as a run without a winner, or as an envelope that ends short of the size.
 
-### Why `run_start` is the size
+### Why the sweep clips at the end
 
-At termination the winner is unbounded or absent, and `run_start` is where that final run began.
-**That position is the spec's `max(anchor.n, max{claim : epoch > anchor_epoch})` restricted to statements that match something — and the heap has done the epoch filtering for free:**
+**The size is known only once the group is done**, because the merge hands over an id's statements in offset order, not in epoch order, and the newest size statement can sort after an older one.
+With `Size(7, 10)`@5, which sorts at 10, and `Zero(7, 10, 10)`@9 and `Zero*(7, 20, 30)`@9 after it, the size is 50; a sweep that stopped at 10 on meeting the `Size` would lose `[10, 50)`.
 
-- a content statement *older* than the anchor cannot win at or above `n`, because the anchor outranks it there, so it can never push the takeover point past `n`;
-- a content statement *newer* than the anchor either wins up to its own end, or is shadowed there by something newer whose claim is at least as large.
+**And the envelope runs past the size**, since a statement that a shrink truncated still matches its whole range.
+Over `Ref*(7, 0, 1000, P1)`@3, `Size(7, 10)`@5, and `Zero(7, 10, 90)`@7 with `Ref*(7, 100, 20, P2)`@7, the envelope gives `[0, 10)` to `Ref*`@3, `[10, 100)` to the `Zero`, `[100, 120)` to `Ref*`@7, and `[120, 1000)` to `Ref*`@3 again; the size is 120, stated by `Ref*`@7, and the clip drops the last run.
+Nothing else denies a truncated statement: its winner below the size is exactly right, since `[0, 10)` still resolves through `Ref*`@3, and above the size nothing is read.
 
-With no anchor at all, the winner at termination is `None` and `run_start` is where the envelope ended — the unfiltered maximum, which is correct, because with no anchor nothing is filtered.
-
-Two things follow.
-No accumulator over content claims is needed, which is what makes the single pass cheaper than computing the size separately rather than dearer.
-And nothing has to be clipped, because a bounded statement can never win above `size`: newer than the anchor, and `size` would already cover its claim; older, and the anchor outranks it there.
-
-### Why `Grow` needs its own rule
-
-The above algorithm has a dedicated branch `else if s.is_grow() && beats(s, open.peek())` because `Grow` would otherwise not be observable: it is never the `winner` because it is (correctly) never even pushed on the heap (`open.push` is gated by `s.start() <= pos` and `s.end() > pos`, which can't both be true for a `Grow` with `start == end`).
-Therefore, a `Grow` that is buried inside a sequence of statements and not the `newest` is unobservable after exiting the loop.
-For example, consider the following two sequences of statements, which only differ in the bold epoch number:
-
-- `Shrink(10)`@7, `Ref(20, 5)`@11, `Grow(50)`@**3**, `Ref(100, 10)`@5 (correct size: 25) and
-- `Shrink(10)`@7, `Ref(20, 5)`@11, `Grow(50)`@**9**, `Ref(100, 10)`@5 (correct size: 50)
-
-Both exit the loop with the same state because `newest` is the same for both (`Ref`@11), the last read statement is the same (`Ref`@5) and thus `pos` and `run_start` exit the loop with the same value, and the only statement that differs between the two sequences (`Grow`@3 vs `Grow`@9) never came up as `winner`.
-Thus, a sweep that doesn't explicitly keep track of the leading candidate for the grow witness could not distinguish these two sequences, and it would incorrectly assign the same size to both.
-
-The pair rules out the two lesser repairs as well, which is worth noticing because each looks like it might avoid the branch.
-Admitting every `Grow` without the `beats` test would take `Grow(50)`@3 in the first sequence and report 50 where the truth is 25 — the `Shrink`@7 above it is exactly what denies it.
-Taking the sweep's final `pos` instead of `run_start` would report 100 for both, since `pos` is dragged out to the last statement's start whatever its epoch.
-Only the epoch comparison against what is open at the `Grow`'s own position separates the three answers.
-
-Since the root of the issue is that `Grow` never comes up as `winner` due to its empty range, it might be tempting to assign `Grow` an unbounded range `[n, u32::MAX)` (like `Shrink`) instead.
-This would indeed make `Grow` observable in the sweep but wrongly assign fragments to it:
-consider `Ref(0, 500)`@3, `Shrink(10)`@5, `Grow(100)`@9, `Ref(150, 50)`@11, which, with an unbounded range for `Grow` would result in a split `Zero` fragment: `[10, 100)` assigned correctly to `Shrink`@5 and `[100, 150)` assigned incorrectly to `Grow`@9.
-This would be a shortcoming of the algorithm, not of the spec: the invariant that `Grow` never owns a fragment, which allows it to be consolidated earlier than `Shrink`, is the whole reason why the format distinguishes between `Grow` and `Shrink` instead of defining only a single `Size` statement.
+The runs are held per group until the clip, which costs no copy, since they are emitted in order either way, and no slot is given out before it, so a statement that wins only past the size never gets one.
 
 ### Four details that carry the correctness
 
@@ -319,11 +287,7 @@ Each is easy to get wrong:
   Advancing `pos` to a start that loses, or to an end that was shadowed, must not cut a fragment — which is exactly what makes the output **minimal**, with neighbours already joined, rather than something a coalescing pass has to clean up afterwards.
 - **The loop runs past the end of the group.**
   Exhausting the statements is not a stopping condition on its own, because bounded winners are still expiring and expiry is what uncovers what lies beneath them.
-  Over `Ref(0, 1000)`@3, `Shrink(500)`@5 and `Ref(0, 600)`@7, the `Shrink` is opened at 500 and shadowed there; only when `Ref`@7 expires at 600 does it surface, which is also where the size turns out to be.
-
-**Nothing denies a truncated statement except the sweep itself**, which is worth stating because the instinct is to look for a clipping rule.
-Over `Ref(0, 1000)`@3, `Shrink(10)`@5 and `Ref(100, 20)`@7 the old `Ref`'s interval is left running to 1000; the `Shrink` simply outranks it from 10 upward, so the sweep emits `[0, 10)` to `Ref`@3, `[10, 100)` to the `Shrink`, and `[100, 120)` to `Ref`@7, and stops with the size at 120.
-Clipping intervals at the anchor instead would be a bug, because `[0, n)` is precisely where an older statement still wins.
+  Over `Ref(0, 1000)`@3 and `Ref(0, 600)`@7, `Ref`@3 is shadowed until `Ref`@7 expires at 600, and only then wins `[600, 1000)`.
 
 ### Why a sweep, and not an intermediate tree
 
@@ -347,10 +311,11 @@ The sweep is what fits the data the format actually hands us: already sorted by 
 `emit` is where every other index is filled, and the reason the load is a single pass rather than four:
 
 - **Slab slots are allocated on first ownership.**
-  A statement gets a `StatementRef` the first time it wins a stretch, and a statement that never wins one — and is neither the anchor nor the grow witness — is **never given a slot at all**.
+  A statement gets a `StatementRef` the first time it wins a stretch below the size, and a statement that never wins one — and is not the size statement — is **never given a slot at all**.
   That is what makes the slab hold exactly the live statements, and it is why dead statements cost memory only as the bytes they occupy in their page.
 - **Pins are counted, not computed.**
-  Each emitted fragment adds one `F` pin to its owner; the anchor and the grow witness each add their `A` pin once, at the end of the group.
+  Each emitted fragment adds one `F` pin to its owner; the size statement adds its `S` pin once, at the end of the group, whether it owns fragments or not.
+  A sizing `Ref` that owns none points at data no fragment reads, so it keeps no data page alive, which is right, since nothing reads those bytes.
 - **Coverage is accumulated twice per statement, for different reasons.**
   A live statement charges its framing to the address-table page holding it; each `Bytes` fragment charges its length to the page holding the data, which for an `Inline` is that same table page.
 - **The set of data pages to mirror is the set of pages named by emitted `Bytes` fragments**, and it is also the set of data pages the page table marks live.
@@ -428,7 +393,7 @@ The only non-trivial primitive: split at both boundaries, drop what is strictly 
 ### `coalesce_around(id, range)`
 
 Merge each new boundary with its neighbour when both fragments resolve identically **and** name the same statement.
-Two `ZeroByDefault` ranges merge; a `Shrink`-owned zero range and a `ZeroByDefault` one must not.
+Two `Zero` fragments merge only when the same `Zero` owns both.
 Two `Bytes` fragments merge only when they are contiguous in the same page *and* owned by the same statement.
 Pending fragments are left alone: they have no statement to compare yet, and the cut merges them when it derives one.
 
@@ -484,38 +449,35 @@ fn bind(stmt: Statement, page: PageNumber, run: &[Key]) {
     *mentions_of(id) += 1;                             // the recyclable set's, for a `Tombstone`
     *statement_bytes_of(id) += framing;
     coverage[page] += framing;
-    for &key in run {                                  // Pending → Bytes or ZeroExplicitly
+    for &key in run {                                  // Pending → Bytes or Zero
         fragments[key] = fragments[key].stated_by(s, page);
         pin(s);
         if stmt.is_inline() { coverage[page] += length_of(key); }   // payload, per byte
     }
     match stmt {
-        Grow { n }                => set_grow_witness(id, s, n),
-        Shrink { .. } | Tombstone => set_anchor(id, s),
-        _                         => {}
+        Tombstone                    => set_tombstone(id, s),
+        _ if stmt.states_size()      => set_size_statement(id, s),
+        _                            => {}
     }
 }
 ```
 
 Everything else a statement implies has already happened by then: the take released the old owners, and the size changes happened when the flush [made them](#mutation-at-flush-time).
-What `bind` adds is ownership, framing, and the anchor — the three things that need the statement to exist.
+What `bind` adds is ownership, framing, and the size statement — the three things that need the statement to exist.
 
 ### `grow_size_to(id, n)` and `shrink_size_to(id, n)`
 
 ```rust
-fn grow_size_to(id: Id, n: u32) {
+fn grow_size_to(id: Id, n: u32, dirty: &mut Dirty) {
     let meta = &mut allocations[id];
     if n <= meta.size { return; }
     let exposed = meta.size .. n;
     meta.size = n;
-    // The exposed range is owned by the anchor if there is one, else by nobody.
-    let f = match meta.anchor {
-        Some(a) => { pin(a); ZeroExplicitly { statement: a } }
-        None    => ZeroByDefault,
-    };
-    // Extends the last fragment if it already resolves that way; else one entry.
-    insert_or_extend(id, exposed, f);
-    retire_dead_grows(id);                             // size > n kills them
+    // Past the old end there is nothing to release, so this take only appends:
+    // one pending entry, zeros unless the flush writes over them.
+    fragments.insert((id, exposed.start), Pending(pending.push(Pending::zeros())));
+    meta.fragment_count += 1;
+    dirty.ranges.insert(id, exposed);
 }
 
 fn shrink_size_to(id: Id, n: u32) {
@@ -530,18 +492,25 @@ fn shrink_size_to(id: Id, n: u32) {
 }
 ```
 
-`grow_size_to` is where the anchor earns its `F` pins, and `retire_dead_grows` is the three `O(1)` death tests from [Liveness](liveness.md#grow-is-locally-decidable-and-shrink-is-not).
+`grow_size_to` is where the flush keeps [the coverage rule](../spec/address-table.md#the-coverage-rule): whatever it writes into the exposed range replaces the pending zeros, and the cut states the rest as a `Zero`.
 
-### `set_anchor(id, new)`
+### `set_size_statement(id, new)` and `set_tombstone(id, new)`
 
 ```rust
-fn set_anchor(id: Id, new: StatementRef) {
-    if let Some(old) = allocations[id].anchor { unpin(old); }  // may die here
-    allocations[id].anchor = Some(new);
-    pin(new);
-    retire_dead_grows(id);                              // now below anchor_epoch
+fn set_size_statement(id: Id, new: StatementRef) {
+    pin(new);                                           // `S`
+    if let Some(old) = allocations[id].size_statement.replace(new) {
+        unpin(old);                                     // may die here
+    }
+}
+
+fn set_tombstone(id: Id, new: StatementRef) {
+    pin(new);                                           // `S`, until `mentions` falls to 1
+    if let Some(old) = ids.recyclable[id].tombstone.replace(new) { unpin(old); }
 }
 ```
+
+For an id allocated again, the old `size_statement` is the tombstone it carried over from the recyclable set, which the new incarnation's size statement releases here.
 
 ## Mutation, at flush time
 
@@ -552,39 +521,41 @@ What the flush calls for each id its fold touched, once per flush and with the f
 ```rust
 fn write_bytes(id: Id, offset: AllocationOffset, len: u32, origin: Origin, dirty: &mut Dirty) {
     touch(id, dirty);                                 // records the id; sets `last_written`
-    grow_size_to(id, offset + len);                   // a write past the end
+    grow_size_to(id, offset + len, dirty);            // a write past the end
     take(id, offset..offset + len, Pending::bytes(origin), dirty);
 }
 ```
 
 No page is chosen here: `pack` places the bytes later — unless they are short enough to be stated [`Inline`](flush.md#the-inline-threshold) — and the cut states them.
-A write past the current end produces **two** fragments — the gap `[size, offset)` and the written range — which is the only way one write adds two.
+A write past the current end produces **two** fragments — the gap `[size, offset)`, pending as zeros, and the written range — which is the only way one write adds two.
 
 ### `resize(id, n)`, `allocate(id, n)`, and `free(id)`
 
 ```rust
 fn resize(id: Id, n: u32, dirty: &mut Dirty) {
     touch(id, dirty);                                 // records the size before the change
-    if n > size(id) { grow_size_to(id, n); } else { shrink_size_to(id, n); }
+    if n > size(id) { grow_size_to(id, n, dirty); } else { shrink_size_to(id, n); }
 }
 
 fn allocate(id: Id, n: u32, dirty: &mut Dirty) {
     touch(id, dirty);                                 // records that it did not exist
-    allocations.insert(id, AllocationMeta::empty());
-    grow_size_to(id, n);
+    let tombstone = ids.recyclable.remove(id).and_then(|r| r.tombstone);
+    allocations.insert(id, AllocationMeta { size_statement: tombstone, ..empty() });
+    grow_size_to(id, n, dirty);                       // every byte is stated
 }
 
 fn free(id: Id, dirty: &mut Dirty) {
     touch(id, dirty);
     shrink_size_to(id, 0);                            // every fragment goes, and with it `F`
     let meta = allocations.remove(id);
-    release_anchor_and_witness(&meta);               // the cut states the tombstone
+    if let Some(s) = meta.size_statement { unpin(s); } // the cut states the tombstone
     ids.recyclable.insert(id, RecyclableId { mentions: meta.mentions, tombstone: None });
 }
 ```
 
 None of them states anything: `touch` records, the first time the flush meets an id, the size and existence it had, and the cut reads that record back.
 The allocation-map entry goes away at the free; only `mentions` and, once the cut binds it, the tombstone reference survive, in the recyclable set.
+An id allocated again carries its tombstone, and the tombstone's `S` pin, over as its size statement, until the cut binds the new incarnation's own.
 
 ### What the cut states for a touched id
 
@@ -592,13 +563,18 @@ The fragment map says what an id's bytes are, but not how its size and existence
 
 | how the id changed during the flush | the cut states |
 | --- | --- |
-| it existed and was freed | `Tombstone(id)` |
-| it existed, was freed, and was allocated again | no tombstone, which would contradict the new incarnation in the same epoch; the fold takes the whole new extent instead, so that `Zero` covers what it did not write, plus `Shrink(id, size)` if the new allocation is smaller than the old one |
-| it shrank | `Shrink(id, size)` — always, for the reason [Liveness](liveness.md#emission-when-a-resize-must-write-a-statement) gives |
-| it grew, or is new | `Grow(id, size)` unless a statement the cut states for the id reaches `size` — so an allocation of size 0, which nothing reaches, always gets its `Grow(id, 0)`, the only evidence it exists |
-| a page this flush retires held its anchor or grow witness | [`replacement_anchor(id)`](#replacement_anchorid--the-one-correctness-obligation), or a fresh `Grow`, unless a row above already states one |
+| it existed and was freed | `Tombstone(id)`, while a statement still names the id |
+| it existed, was freed, and was allocated again | no tombstone, which would contradict the new incarnation in the same epoch; the fold takes the whole new extent instead, so the new incarnation is stated like a new one |
+| it is new, or was resized | a size statement |
+| a page this flush retires held its size statement | a size statement |
+| it does not exist, and a page this flush retires held its tombstone | `Tombstone(id)`, while a statement still names the id |
 
-At most one of these per id, so they cannot contradict one another in one epoch, and because the cut evaluates them last, "a statement the cut states reaches `size`" is exact.
+**A size statement is the content statement the cut states that ends at the id's size, made sizing, or `Size(id, size)` if there is none.**
+So an allocation of size 0, which no content statement reaches, gets `Size(id, 0)`, and a shrink that writes nothing at the new end gets a `Size` too; an append, a growth, whose exposed zeros the cut states, and a deleting splice, whose restated tail ends at the new size, get theirs for free.
+
+**Every content statement the cut states that ends at its id's size is sizing**, whether a row of the table asks for a size statement or not, [since it costs nothing](liveness.md#emission-when-a-resize-writes-a-statement) — unless the cut states a `Size` for the id, which then states the size.
+This is decided last, once every statement of the flush is known, the fillers' included: only one content statement of an epoch can end at the size, since their ranges are disjoint, and the sizing bit changes no statement's encoded length, so deciding it after the layout costs nothing.
+A `Size` is the only statement here that takes room, and the cut adds one for an id only where no content statement it states ends at the size, which for the fillers' ids is checked again once they are known.
 
 ### `drop_physically(stmt)`
 
@@ -614,7 +590,7 @@ fn drop_physically(stmt: Statement) {
     *m -= 1;
     if *m == 1 {
         if let Some(t) = ids.recyclable[id].tombstone {
-            unpin(t);                                     // releases A; may die
+            unpin(t);                                     // releases S; may die
             ids.recyclable[id].tombstone = None;          // clear NOW, not at sweep
         }
     }
@@ -638,7 +614,7 @@ fn rewrite_page(victim: PageNumber, dirty: &mut Dirty) {
             for (key, len) in owned_fragments(stmt) {
                 take(stmt.id(), key..key + len, Pending::in_place(key), dirty);
             }
-            if is_anchor(stmt) || is_grow_witness(stmt) { dirty.record(stmt.id()).replace = true; }
+            if holds_s_pin(stmt) { dirty.record(stmt.id()).replace = true; }
         }
         drop_physically(stmt);
     }
@@ -662,15 +638,15 @@ fn rewrite_key_range(lo: Key, hi: Key, dirty: &mut Dirty) {
     let mut touched = SmallSet::new();                   // pages it restates from
     // The fragment map is resolved truth, so it is the source.
     for (key, fragment) in fragments.range(lo..hi) {
-        // `ZeroByDefault` has nothing to state, and a pending fragment is taken already.
+        // A pending fragment is taken already.
         let Some(s) = fragment.statement() else { continue };
         touched.insert(slab.page_of(s));
         take(key.id, key.offset..end_of(key), Pending::in_place(key), dirty);
     }
-    // Anchors are invisible in the fragment map, so their replacement is recorded by
-    // hand — but only where it pays, since a fresh anchor costs bytes.
+    // Size statements are invisible in the fragment map, so their restatement is
+    // recorded by hand — but only where it pays, since a fresh `Size` costs bytes.
     for id in ids_in(lo..hi) {
-        if anchor(id).is_some_and(|a| touched.contains(slab.page_of(a))) {
+        if size_statement(id).is_some_and(|s| touched.contains(slab.page_of(s))) {
             dirty.record(id).replace = true;
         }
     }
@@ -680,19 +656,16 @@ fn rewrite_key_range(lo: Key, hi: Key, dirty: &mut Dirty) {
 **No statement is dropped physically here**, and that is deliberate: the old statements stay in their pages, `mentions` does not move, and what changes is that they lose their fragments and therefore their pins.
 `unpin` releases their framing from their pages' coverage at the `1 → 0` transition, which is how pages that were never touched become reusable.
 
-`ZeroByDefault` fragments are left as they are, because they are the *absence* of a statement rather than a statement about zero — taking them would make the cut state them as `Zero`, correct on content and wrong on cost, turning free gaps into bytes.
-
 ### `owned_fragments(stmt)`
 
 The consolidator finds a statement's fragments by range-scanning the fragment map and keeping those whose owner matches:
 
 | statement kind | scan range |
 | --- | --- |
-| `Ref`, `Inline`, `Zero` | `(id, offset) .. (id, offset + size)` |
-| `Shrink(id, n)`, `Tombstone` | `(id, n) .. (id, size)` — the only probes it can win |
-| `Grow` | none; it wins nothing |
+| `Ref`, `Inline`, `Zero`, in either variant | `(id, offset) .. (id, offset + size)` |
+| `Size`, `Tombstone` | none; they win nothing |
 
-It can stop early, because `pins` already says how many to expect: for a content statement `F == pins` exactly, and for a `Shrink` or `Tombstone`, `F == pins − 1` when it is the id's anchor and `== pins` otherwise.
+It can stop early, because `pins` already says how many to expect: `F == pins` exactly, or `pins − 1` for the id's size statement.
 
 This is not an implementation tax — it *is* the consolidation algorithm.
 A page is rewritten as resolved truth, and one cannot emit resolved truth without first determining which parts of it this page is responsible for.
@@ -701,32 +674,19 @@ Its cost is predictable in advance from `fragment_count`, which lets the ranking
 A page rewrite decodes exactly **one** page: its victim.
 It never needs an id's physically present statements across the table, because it only rewrites what the victim holds — and a [key-range rewrite](#rewrite_key_rangelo-hi-dirty) decodes none at all, since it reads the fragment map instead.
 
-### `replacement_anchor(id)` — the one correctness obligation
+### Stating the size again — the one correctness obligation
 
-A fragment-map-driven consolidator will faithfully re-emit the content a statement owns and **silently corrupt the file** if that statement was also the anchor, because being the anchor is not a fragment and is therefore invisible in the fragment map.
+A fragment-map-driven consolidator will faithfully re-emit the content a statement owns and **silently corrupt the file** if that statement was also the size statement, because being the size statement is not a fragment and is therefore invisible in the fragment map.
 
-Concretely: with `Ref(7,0,1000,P1)`@3 in another page and `Shrink(7,10)`@5 in the victim, re-emitting only `Zero(7,10,40)` drops the sole `Shrink`, `anchor_epoch` falls back to `-1`, and the size becomes `max(1000, 50, 60) = 1000` — re-exposing stale bytes across `[10, 1000)`.
+Concretely: with `Ref*(7,0,1000,P1)`@3 in another page and `Size(7,10)`@5 in the victim, dropping the victim makes `Ref*`@3 the newest statement of the size, which becomes 1000 again — re-exposing stale bytes across `[10, 1000)`.
 
-> **A page holding a statement with an `A` pin cannot be rewritten without transferring the anchor.**
+> **A page holding a statement with an `S` pin cannot be rewritten without stating the size, or the tombstone, again.**
 
-The replacement depends on what the anchor is doing, and the cut decides it for every id whose record asks for one:
+That is what an id's record asks the cut for, by [the rules for a touched id](#what-the-cut-states-for-a-touched-id), evaluated after every drop the flush makes, so that the statement being replaced no longer counts among the id's `mentions`:
 
-```rust
-/// Evaluated at the cut, after every drop this flush makes — so the anchor being
-/// replaced is no longer among the id's `mentions`.
-fn replacement_anchor(id: Id) -> Option<Statement> {
-    match anchor_kind(id) {
-        Shrink                        => Some(Shrink { id, n: size(id) }),
-        Tombstone if exists(id)       => Some(Shrink { id, n: size(id) }),  // re-allocated
-        Tombstone if mentions(id) > 0 => Some(Tombstone { id }),            // still needed
-        Tombstone                     => None,                              // nothing left to deny
-    }
-}
-```
-
-A `Shrink` there would resurrect a non-existent id, and stating nothing while some older statement still names the id would let that statement decide existence again.
-
-A `Grow` carries no such obligation, since it anchors nothing — but the grow witness must still be stated again if the victim held it and it is still the sole witness of the size.
+- **an existing id gets a size statement**, which is free when the cut restates the content at the id's end, as it does whenever the victim's statement was a sizing one that still owned its tail;
+- **a non-existent id gets `Tombstone(id)` while any statement still names it**, since stating nothing would let that statement decide existence again;
+- **a non-existent id that nothing names any more gets nothing**: its tombstone leaves with its page, having nothing left to deny.
 
 ### The header
 
@@ -738,7 +698,7 @@ fn take_header(dirty: &mut Dirty) {
         for (key, len) in owned_fragments(stmt) {
             take(stmt.id(), key..key + len, Pending::in_place(key).with_heat(clock[key]), dirty);
         }
-        if is_anchor(stmt) || is_grow_witness(stmt) { dirty.record(stmt.id()).replace = true; }
+        if holds_s_pin(stmt) { dirty.record(stmt.id()).replace = true; }
         drop_physically(stmt);        // the new header replaces it in the governing world
     }
 }
@@ -746,8 +706,8 @@ fn take_header(dirty: &mut Dirty) {
 
 It is `rewrite_page` for the one page every flush retires, with one addition: the [eviction clock](flush.md#the-header-as-write-buffer)'s entries ride along as the pending fragments' heat, so that the cut can keep the hottest statements in the header and send the rest to leaves.
 
-Because the header is rewritten unconditionally, a `Shrink` or `Grow` carried in it becomes a *new* statement record at the new epoch each flush, so the anchor re-points and the `A` pin moves every flush.
-That is routine rather than churn — header pages are exempt from coverage-driven victim selection — but it is why the anchor must be a movable pin rather than a flag baked into the statement.
+Because the header is rewritten unconditionally, a size statement carried in it becomes a *new* statement record at the new epoch each flush, so `size_statement` re-points and the `S` pin moves every flush.
+That is routine rather than churn — header pages are exempt from coverage-driven victim selection — but it is why the size statement must be a movable pin rather than a flag baked into the statement.
 
 ### Consolidating a data page
 
@@ -762,35 +722,32 @@ Pages: `H` is the header, `L1`/`L2` leaves, `P1`/`PB` data pages.
 
 | flush | operation | resulting state |
 | --- | --- | --- |
-| 3 | allocate id 7, write 1000 bytes | `Ref(7,0,1000,P1)`@3, evicted to `L1`. Fragment `(7,0) → P1+0`. `size` 1000, `anchor` none, `mentions` 1 |
-| 5 | truncate to 10 | `Shrink(7,10)`@5 in `L2`. `Ref@3`'s fragment narrows to `[0,10)`; the `Shrink` owns nothing yet (`[10,10)` is empty) and holds `A` alone. `size` 10, `coverage[P1]` −990 |
-| 9 | grow to 60, write `[50,60)` | `Ref(7,50,10,PB)`@9 in `H`; the grow emits nothing, since that `Ref` reaches 60. `[10,50)` comes into existence and resolves *through* `Shrink@5`, which therefore **gains** a fragment pin: pins 1 → 2 (`A` + `F`). `size` 60, `fragment_count` 3 |
-| 10 | resize to 55 | The header carries `Ref(7,50,10,PB)` forward, but at epoch 10 its extent would exceed the new size, so resolved truth narrows it to `Ref(7,50,5,PB)`@10. The shrink **always** emits, so `Shrink(7,55)`@10 is physically present and becomes the anchor; `Shrink@5` loses `A`, keeps `F` over `[10,50)`, drops to pins 1. `coverage[PB]` −5 |
+| 3 | allocate id 7, write 1000 bytes | `Ref*(7,0,1000,P1)`@3, evicted to `L1`. Fragment `(7,0) → P1+0`. `size` 1000, `size_statement` `Ref*@3`, which holds `F` + `S`, `mentions` 1 |
+| 5 | truncate to 10 | `Size(7,10)`@5 in `L2`, since nothing the flush states ends at 10; it becomes the size statement and holds `S` alone. `Ref*@3`'s fragment narrows to `[0,10)`, and it loses `S`: pins 1. `size` 10, `coverage[P1]` −990 |
+| 9 | grow to 60, write `[50,60)` | The growth takes `[10,60)` as pending zeros, and the write takes `[50,60)` over them, so the cut states `Zero(7,10,40)`@9 and `Ref*(7,50,10,PB)`@9 in `H`, the `Ref*` as the size statement. `Size@5` loses `S`, owns nothing, and dies, which releases its framing from `L2`. `size` 60, `fragment_count` 3 |
+| 10 | resize to 55 | The header states what it holds again as resolved truth: `Zero(7,10,40)`@10 and, narrowed to the new size, `Ref*(7,50,5,PB)`@10, which ends at 55 and so states the size. `coverage[PB]` −5 |
 
 Two things this trace is chosen to show.
 
-**`Shrink(7,55)` is semantically unnecessary and emitted anyway.**
-Without it, `anchor_epoch` stays 5 and the size is `max(10, 50+5) = 55` — the target, reached with no new statement, because the narrowing forced on the tail created a statement ending exactly at the new size.
-Semantic necessity and physical presence are different questions, and a state table must answer the second.
+**The size costs a statement of its own only at flush 5**, the one resize that writes nothing at the new end.
+At flushes 9 and 10 the content statement at the end states it, and the cut can tell from its own output alone, since the size depends on nothing else.
 
-**The superfluous statement then has a short life**: it holds `A` alone and dies at the next shrink, which takes `A` from it.
+**No statement outlives its use.**
+`Size@5` dies the moment flush 9 states the size again, and the zeros `[10,50)` are owned by a statement of the flush that exposed them.
 
-If instead flush 10 had resized to **30**, `Ref(7,50,10,PB)`@9 would fall entirely outside the new size and be dropped rather than narrowed, leaving nothing above epoch 5 and a size of `max(10) = 10`.
-There the `Shrink(7,30)` is genuinely required — and the two cases are indistinguishable from inside the flush without the bit that [Liveness](liveness.md#emission-when-a-resize-must-write-a-statement) declines to maintain.
+If instead flush 10 had resized to **30**, `Ref*(7,50,10,PB)` would fall entirely outside the new size and be dropped, while the header's zeros narrow to `Zero*(7,10,20)`@10, which ends at 30 and states the size — again without a statement of its own.
 
 ### Re-allocation
 
 A separate sequence, since id 7 above is never re-allocated.
-`Ref(12,0,100,P1)`@3, then `Tombstone(12)`@5, then id 12 recycled at flush 7 to 100 bytes with only `[0,10)` written — as `Ref(12,0,10,PX)`@7 **and** `Grow(12,100)`@7, the grow being required since the flush's own output reaches 10, not 100 — then a truncation to 50 at flush 9.
+`Ref*(12,0,100,P1)`@3, then `Tombstone(12)`@5, then id 12 recycled at flush 7 to 100 bytes with only `[0,10)` written — as `Ref(12,0,10,PX)`@7 **and** `Zero*(12,10,90)`@7, since the new incarnation states every byte below its size — then, with flush 7's statements evicted to a leaf, a truncation to 50 at flush 9, which states `Size(12,50)`@9.
 
 | statement | after flush 7 | after flush 9 |
 | --- | --- | --- |
-| `Ref(12,0,100,P1)`@3 | pins **0** — every probe it matches is won by the tombstone or by `Ref@7` | pins **0** |
-| `Tombstone(12)`@5 | pins **2** = `A` + `F`: still the newest `Shrink`-or-`Tombstone`, and it wins `[10,100)` | loses `A` to `Shrink@9`; keeps `F` over `[10,50)` → pins **1** |
-| `Ref(12,0,10,PX)`@7 | pins **1** | pins **1** |
-| `Grow(12,100)`@7 | pins **1** = grow witness | **dead** |
-| `Shrink(12,50)`@9 | — | pins **1** = `A` |
+| `Ref*(12,0,100,P1)`@3 | pins **0** — every probe below the size is won by a statement of flush 7, and the size is stated above it | pins **0** |
+| `Tombstone(12)`@5 | pins **0** — it carried `S` over as the id's size statement until flush 7 bound `Zero*@7` | pins **0** |
+| `Ref(12,0,10,PX)`@7 | pins **1** = `F` | pins **1** = `F` |
+| `Zero*(12,10,90)`@7 | pins **2** = `F` + `S` | pins **1** = `F`, over `[10,50)` |
+| `Size(12,50)`@9 | — | pins **1** = `S` |
 
-The tombstone's `F` pin is doing real work: drop it and `[10,50)` would resolve through `Ref(12,0,100,P1)`@3, serving the *first* incarnation's bytes as the second incarnation's content.
-
-`Grow(12,100)`@7 dies by the **third** of its death tests, which nothing else exercises: `size > n` is false (50 < 100) and `n <= anchor.n` is false (100 > 50); what kills it is `Shrink(12,50)`@9 anchoring above its epoch.
+Nothing of the first incarnation stays alive: the second states its size and every byte below it in epochs above the tombstone, so the tombstone dies with the flush that recycles its id, and the first incarnation's statements decide nothing from then on.

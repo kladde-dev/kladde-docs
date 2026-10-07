@@ -57,58 +57,31 @@ But kladde-rs takes a filler only if the flush touched none of the ids the leaf 
 The check reads a leaf's ids by decoding every statement still encoded in it, dead ones included.
 So a leaf with 4 to 25 bytes of live statements still names 74 to 251 ids, while each flush of the tiger touches 43 to 48 of its roughly 120 ids, and some named id is always among them.
 
-The check guards against a real conflict, but too broadly in two ways: the conflict is an artifact of the order in which the cut decides things, and the dead statements could never be part of it.
-The next two sections show both, each with an example.
+The check guarded against stating an id's size twice in one epoch, and it is not needed for that; nor could the dead statements it reads ever be part of a conflict.
+The next two sections show both.
 
-### The conflict the check guards against
+### What the check guarded against
 
-**Taking a leaf as a filler can require a `Shrink` for an id for which the cut has already decided to state a `Grow`, and [one epoch may not hold both](../spec/address-table.md#no-conflicts-within-each-epoch).**
-`implementation-notes.md` gives it as the reason for the check, and an example shows it:
-
-- At epoch 3, allocation 7 holds 1000 bytes, stated by `Ref(7, 0, 1000, a)` in leaf `L1`.
-- At epoch 5, the application shrank it to 10 bytes: `Shrink(7, 10)` is its anchor, in leaf `L2`, where the header later evicted it.
-- In the flush in progress, at epoch 9, the application grows it to 50 bytes and writes bytes 10 to 30.
-
-After the fold, 7's fragment map holds `[0, 10)` through `Ref@3`, `[10, 30)` as fresh bytes, and `[30, 50)` as zero owned by `Shrink@5`, which denies `Ref@3` there.
-By [what the cut states for a touched id](../impl/address-table-operations.md#what-the-cut-states-for-a-touched-id), the cut writes `Ref(7, 10, 20, b)` and, since the id grew and nothing it states reaches 50, `Grow(7, 50)`.
-Resolved with `L1` and `L2`, that is right: the anchor is `Shrink@5`, so the size is `max(10, 50, 30) = 50`, `Ref@3`'s extent of 1000 lying below the anchor, and `[30, 50)` resolves to zero through the `Shrink`.
-
-Now let `L2` be nearly empty, and the cut take it as a filler.
-Dropping it drops 7's anchor, and with no replacement the size becomes `max(1000, 50, 30) = 1000`, and `[30, 1000)` reads `Ref@3`'s stale bytes: [the one correctness obligation](../impl/address-table-operations.md#replacement_anchorid--the-one-correctness-obligation) of a page rewrite.
-Its replacement is `Shrink(7, 50)` at epoch 9, with the zeros the old anchor owned taken in place and stated as `Zero(7, 30, 20)`; but epoch 9 already holds `Grow(7, 50)`, and a `Shrink` beside it is illegal.
-
-**The resolved state is expressible all the same: state the `Shrink` instead of the `Grow`.**
-Epoch 9 then holds `Ref(7, 10, 20, b)`, `Zero(7, 30, 20)`, and `Shrink(7, 50)`, which break no rule of one epoch: one size statement, and content statements on disjoint ranges below 50.
-They resolve to the same allocation: the anchor is now `Shrink@9`, so the size is its own 50, every extent at or below epoch 9 dropping out; `[0, 10)` still resolves through `Ref@3`, since `Shrink(7, 50)` matches only probes at or past 50; `[10, 30)` through `Ref@9`, and `[30, 50)` through `Zero@9`.
-`Shrink(7, 50)` asserts everything `Grow(7, 50)` asserts, a size of at least 50, and anchors besides, so wherever an anchor must be replaced, a `Shrink` alone takes the `Grow`'s place.
-
-**So the conflict comes from the order of the cut, not from the vocabulary of statements.**
-The cut decides each touched id's size statement before it chooses its fillers, since the fillers are chosen to fit the room that its layout leaves, and it does not revisit a decision once the statement is laid out.
-The same holds for a tombstone anchor: a filler that holds `Tombstone(8)` of an id the flush allocated again needs `Shrink(8, size)` as its replacement, where the cut may already have stated `Grow(8, size)`, and again the `Shrink` alone states both.
-
-The possible fixes, within the current design:
-
-- **Narrow the check to what can conflict**: ids whose anchor, grow witness, or tombstone the victim holds.
-  Content restatements cannot conflict, since a filler restates only fragments its victim still owns, which the flush has not taken; `implementation-notes.md` already relies on this for the rotating window.
-  A nearly empty leaf holds few live statements, and so few anchors, but how many leaves would then qualify is untested.
-- **Revise the size statement instead of refusing**: when a filler holds the anchor of an id the cut stated a `Grow` for, replace the `Grow` with the `Shrink`, whose encoding takes the same bytes, and add the zeros the anchor owned to the last page's room.
-- **Decide the statements after the victims**, which is what [the redesign below](#possible-solutions-from-the-statements-up) does, and which removes the question.
+**A filler's victim can hold the size statement of an id the cut has already laid out statements for, and the cut must then state that id's size again, while [one epoch holds at most one size statement per id](../spec/address-table.md#no-conflicts-within-each-epoch).**
+Content restatements cannot conflict, since a filler restates only fragments its victim still owns, which the flush has not taken.
+And the size statement need not: the cut decides which of its statements states each id's size only once the fillers are known, since [the sizing bit](../impl/address-table-operations.md#what-the-cut-states-for-a-touched-id) changes no statement's encoded length, and adds a `Size` to the last page only for an id none of whose content statements ends at its size.
+So the cut can take any leaf as a filler, and kladde-rs drops the check together with its move to these rules; what that does to the pile-up is not measured yet.
 
 ### Dead statements cannot block a rewrite
 
 **Dropping a dead statement never changes what the file resolves to; it only releases pins that newer statements hold on its account.**
-A statement is dead when no fragment resolves through it and it is neither its id's anchor nor the size's sole witness, [`pins == 0`](../impl/liveness.md#the-droppability-rule), and the droppability rule is exactly that dropping such a statement leaves the resolution unchanged.
+A statement is dead when no fragment resolves through it and it is not its id's size statement, [`pins == 0`](../impl/liveness.md#the-droppability-rule), and the droppability rule is exactly that dropping such a statement leaves the resolution unchanged.
 What a dead statement can still do is keep a newer statement alive, as an example shows:
 
-- At epoch 4, allocation 8 holds 40 bytes, stated by `Ref(8, 0, 40, c)` in leaf `L3`.
+- At epoch 4, allocation 8 holds 40 bytes, stated by `Ref*(8, 0, 40, c)` in leaf `L3`.
 - At epoch 6, the application freed it: `Tombstone(8)`, in leaf `L4`.
 
-`Ref@4` is now dead, but physically present, and so it holds the tombstone: `mentions(8)` counts both statements, and [a tombstone anchor keeps its pin](../impl/liveness.md#the-last-tombstone) until `mentions` falls to 1, since without it `Ref@4` would be 8's newest statement, and 8 would exist again with its old 40 bytes.
-Dropping `L3` drops `Ref@4`, `mentions(8)` falls to 1, and the tombstone may retire: nothing resurfaces, which is the order the pins enforce, the denied statement first and its denier after.
+`Ref*@4` is now dead, but physically present, and so it holds the tombstone: `mentions(8)` counts both statements, and [a tombstone keeps its pin](../impl/liveness.md#the-last-tombstone) until `mentions` falls to 1, since without it `Ref*@4` would be 8's newest statement, and 8 would exist again with its old 40 bytes.
+Dropping `L3` drops `Ref*@4`, `mentions(8)` falls to 1, and the tombstone may retire: nothing resurfaces, which is the order the pins enforce, the denied statement first and its denier after.
 
 **Where the flush touched the id, a dead statement can at most make one of the flush's own statements unnecessary.**
 If the flush frees an id and states its `Tombstone`, and a filler drops the last older statement naming the id, the new tombstone has nothing left to deny: a redundant statement of a few bytes, which the next rewrite of its page drops, never a wrong one.
-If the flush allocates 8 anew, the new incarnation's statements keep `mentions` above 1, and dropping `Ref@4` changes nothing the cut has decided.
+If the flush allocates 8 anew, the new incarnation states its size and every byte below it, and dropping `Ref*@4` changes nothing the cut has decided.
 
 So the dead statements a leaf still encodes are no reason to keep it.
 The check reads them because it learns a leaf's ids by decoding the page, which lists dead statements beside live ones, rather than by asking which of the leaf's statements are live.
@@ -191,31 +164,22 @@ For each id:
 
 - **Existence.**
   If `M` says the id does not exist, `N` needs `Tombstone(id)` exactly when some statement in `S_keep` still names the id; otherwise nothing.
-  If `M` says it exists, `N` needs at least one statement for it whenever `S_keep`'s newest statement naming it is a tombstone, or none names it; the size rule below provides one as `Grow(id, size)` when nothing else does.
+  If `M` says it exists, `N` needs at least one statement for it whenever `S_keep`'s newest statement naming it is a tombstone, or none names it; the size rule below provides one.
 - **Content.**
   For every byte below the id's size in `M`, the winner among `S_keep`'s statements, the newest that matches, either already gives `M`'s content, or `N` must cover the byte with a `Ref`, `Inline`, or `Zero`.
   A byte whose winner sat in a retired page has no winner left among those that won it before, so it is covered again unless an older surviving statement happens to give the same content.
 - **Size.**
-  With `N`'s content statements added, compute the size `S_keep ∪ N` resolves to.
-  If it is `M`'s size, nothing more is needed; if it is smaller, `N` needs `Grow(id, size)`; if it is larger, because a surviving statement above the surviving anchor reaches further, or the anchor's own bound is larger, `N` needs `Shrink(id, size)`.
-  A `Shrink` at epoch `e` anchors there, so every older extent drops out of the size, and it denies only probes at or past the size, so it changes no byte below it; it states the size the `Grow` would have stated, so at most one of the two is ever needed.
+  The size is what the id's newest size statement states, so `N` needs one exactly when `M`'s size differs from what `S_keep`'s newest size statement states — because the id was resized, or that statement went with a victim, or the id is new.
+  It is the content statement in `N` that ends at the size, made sizing, or `Size(id, size)` if there is none.
 
 **Such an `N` always exists, and never breaks the rules of one epoch.**
-The plain solution states, for every id whose resolution under `S_keep` differs from `M` at all, `Tombstone(id)` if it no longer exists, and otherwise `Shrink(id, size)` with content statements covering all of `[0, size)`: the `Shrink` makes `e` the anchor, so older extents cannot raise the size, and the content statements win every probe below it.
+The plain solution states, for every id whose resolution under `S_keep` differs from `M` at all, `Tombstone(id)` if it no longer exists, and otherwise content statements covering all of `[0, size)`, the last one sizing: it states the size, and the content statements win every probe below it.
 Those are one size statement per id and content statements on disjoint ranges below the size, which is all that [one epoch's rules](../spec/address-table.md#no-conflicts-within-each-epoch) ask.
 The inference above only leaves out of that solution what `S_keep` already says, so it obeys the rules too, and no choice of victims can make the vocabulary fall short.
 
-**Inferring the smallest `N` needs, per id, a summary of what the surviving pages state about its size.**
+**Inferring the smallest `N` needs nothing beyond the fragment map and each id's size statement.**
 The content half is local: the fragment map already records which statement each byte resolves through, and so which page, and a byte needs a statement in `N` only when that page is retired or the byte changed.
-The size half is not: it needs the newest surviving anchor, and the largest extent and `Grow` bound above it, among every statement physically present in the surviving pages, dead ones included, because a reader resolves those too.
-[Liveness](../impl/liveness.md#emission-when-a-resize-must-write-a-statement) calls this the predicate no structure reaches, and declines to pay for the one bit that would decide it for shrinks.
-Three ways to settle it:
-
-- **State a `Shrink` whenever in doubt**: whenever any of an id's statements went with the victims, or the id shrank, state `Shrink(id, size)`, which fixes the size at `size` whatever else survives.
-  A grow alone keeps the exact rule Liveness gives, a `Grow` when nothing the flush states reaches the new size, since everything that survives is bounded by the old size.
-  It is always sound, costs about three bytes, and a redundant `Shrink` dies at the id's next shrink, as [the residual](../impl/liveness.md#the-residual) describes.
-- **Keep the bit**: per id, whether any statement naming it above its anchor lies in a table page other than the header, which makes the shrink test exact, as Liveness sketches.
-- **Keep the summary**: per id, its newest anchor among the live pages, and the largest extent and `Grow` bound above it, maintained as pages are written and retired; open already decodes every statement, so it can build the summary for free.
+The size half is local too: each id has one size statement, and it needs stating again only when the size changed or its page is retired.
 
 **Laying `N` out is then a packing problem alone.**
 `N` is final when layout starts, so the header can take the hottest statements, as [it does now](../impl/flush.md#the-header-as-write-buffer), and the leaves the rest, in key order or sorted by temperature, every page full but the last, with nothing to revisit.
@@ -225,12 +189,12 @@ The room the last page has left is not filled by choosing more victims after the
 
 **Let each statement carry its own epoch, so that consolidation can move a statement to a new page without changing what it means.**
 Today a statement's epoch is [its page's](../spec/address-table.md#the-idea), so a statement moved to a new page is re-stamped as newest: it now outranks everything it used to lie beneath, and the writer must work out what else to state so that the rest still resolves the same way.
-That re-stamping is the whole of what makes retiring a table page hard: the replacement anchor, the `Shrink` in place of a `Grow`, and the size summary task 3 needs for victims all exist because a restated statement changes its rank.
+That re-stamping is why retiring a table page means deriving its restatements rather than copying them: a restated statement changes its rank, so the cut must state content as resolved truth, merged with whatever else the flush states, and state the size and the tombstone again where the victim held them.
 
 With an epoch per statement, retiring a table page is copying its live statements, unchanged, into the flush's pages.
 They resolve exactly as before, since no two statements change their order, and the dead ones are left behind, which by [the droppability rule](../impl/liveness.md#the-droppability-rule) changes nothing either.
 Evacuating a data page copies its referrers the same way, each with its new address and its old epoch, since the bytes it points to are the same.
-Only the flush's own changes are stated at its epoch, so task 3's inference is needed only for the ids the application touched, against a state the writer knows in full, and the anchors in the header stop moving every flush.
+Only the flush's own changes are stated at its epoch, so task 3's inference is needed only for the ids the application touched, against a state the writer knows in full, and the size statements in the header stop moving every flush.
 
 What it would cost and change:
 
@@ -241,19 +205,17 @@ What it would cost and change:
 - **Validation** would add that no statement's epoch exceeds its page's.
 - **What estimates read from a page's epoch**, the age of its content, would come from its statements instead, which is finer than today.
 
-No rule of one epoch needs relaxing for consolidation's sake, with or without this change: the `Grow` and `Shrink` that may not share an epoch were never both needed, as [the example above](#the-conflict-the-check-guards-against) shows.
+No rule of one epoch needs relaxing for consolidation's sake, with or without this change.
 
 ### What this would remove
 
 - **The fill floor on table offers**, since retiring a table page opens no page; its cost is the bytes task 3 infers.
-- **The cut's fillers, and their eligibility check**, since the statements are inferred once the victims are known, and nothing laid out is ever contradicted.
+- **The cut's fillers**, since the statements are inferred once the victims are known, and nothing laid out is ever revisited.
 - **The distinction between free filling, budgeted pages, and compaction mode as ways to choose victims**: one ranking chooses every victim, and the room left in pages is a packing matter.
-- **The [replacement-anchor obligation](../impl/address-table-operations.md#replacement_anchorid--the-one-correctness-obligation) as a separate rule**, since inferring the size statement covers it: an id whose anchor went with a victim either resolves to the same size without it, and needs no size statement, or to a larger one, and `N` states a `Shrink`; the zeros the anchor owned are bytes whose winner went, which the content rule covers.
 
 ### Open questions
 
-- **What the size summary costs**, against stating a `Shrink` whenever in doubt, on files where many ids' anchors sit in leaves; with statements that keep their epoch, the question shrinks to the ids the application touched.
-- **Whether an epoch per run pays for itself**: its bytes against the restatements, replacement anchors, and re-stamped header statements it saves, which svg-bench's drawings could measure.
+- **Whether an epoch per run pays for itself**: its bytes against the restatements and re-stamped header statements it saves, which svg-bench's drawings could measure.
 - **How victims are ranked once packing no longer constrains them**, and how much a flush may retire, which bounds both its work and how far the file can fall behind; this is where ripeness, survivor classes, and the churn floor's price of space come back in.
 - **Whether the rotating window survives**: it restates a key range for description density, which in this frame is a victim too, a range rather than a page, ranked by what its restatement saves.
-- **Why leaves stay 42 to 46 % full even on the large drawings**, where the budget loop does rewrite them; the fill floor and the fillers' check are the likely causes, but this draft has not traced it.
+- **Why leaves stay 42 to 46 % full even on the large drawings**, where the budget loop does rewrite them; the fill floor and, at `795b3b9`, the fillers' check are the likely causes, but this draft has not traced it.

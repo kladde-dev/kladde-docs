@@ -73,6 +73,7 @@ ORDER = [
     "superseded/incremental-compaction.md",
     "superseded/in-place-flush.md",
     "superseded/whole-entry-address-table.md",
+    "superseded/sizes-from-extents.md",
     # Work in progress; last, because nothing else may depend on it.
     "drafts/index.md",
     "drafts/open-issues.md",
@@ -83,7 +84,6 @@ ORDER = [
     "drafts/survivor-classes.md",
     "drafts/variable-size.md",
     "drafts/consolidation-from-statements.md",
-    "drafts/newest-size-wins.md",
 ]
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)

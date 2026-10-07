@@ -37,6 +37,7 @@ Placement, compaction, and fold timing are all free, so two implementations will
 - **Transaction atomicity.** Replay every transaction completely or not at all.
 - **Valid transaction boundaries.** Order records so that every transaction takes a valid state to a valid state ([ordering](journal.md#ordering)).
 - **Bounds.** Support the [stated bounds](address-table.md#bounds), and fail cleanly rather than wrap when an application exceeds them.
+- **Statements.** Keep [the rules of one epoch](address-table.md#no-conflicts-within-each-epoch) and [the coverage rule](address-table.md#the-coverage-rule) when writing, and fail cleanly on a file in which a byte below an allocation's size is matched by no content statement.
 - **Descriptor encoding.** Produce byte-identical output to the [canonical encoding](schema/canonical-encoding.md) for the same type graph.
 - **Fingerprints.** Produce bit-identical output to [the fingerprint computation](schema/fingerprints.md), including on recursive types.
 - **Crash consistency.** Ensure that a crash at any instant leaves a file that opens.

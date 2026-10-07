@@ -85,7 +85,7 @@ Over the mirror, such a cursor costs no syscalls at all.
 
 1. **The fragment map** — the resolved content view, keyed by `(id, offset)`. Everything else hangs off it.
 2. **The statement slab** — one record per *live* statement: where its encoding lives, and how many reasons it has to stay.
-3. **The allocation map** — per-id metadata: size, anchor, when the application last wrote it, and two counters that no per-page number could replace: how much description this allocation costs, and how many statements still name its id.
+3. **The allocation map** — per-id metadata: size, size statement, when the application last wrote it, and two counters that no per-page number could replace: how much description this allocation costs, and how many statements still name its id.
 4. **The page table** — per-page kind, epoch, and live-byte counter, bucketed for `O(1)` victim selection.
 
 Plus two derived structures rebuilt at open and never persisted: the **id allocator** and the **eviction clock**.

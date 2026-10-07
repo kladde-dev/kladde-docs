@@ -9,7 +9,7 @@ The order still matters, for a reason that is not the obvious one.
 
 ## The policy
 
-> **Recycle lowest-id-first, taking ids whose tombstone is already dead first, and never hold a recyclable id back in favour of a fresh one.**
+> **Recycle lowest-id-first, and never hold a recyclable id back in favour of a fresh one.**
 
 What decides this is **delta encoding**, not tombstones.
 Statements are sorted by `(id, offset)` and `id_delta` is a varint, so what matters is how tightly the *live* id set is packed: `id_delta` costs a byte more for every factor of 128 by which the set is spread out, and it costs that once per id per page — which in the many-small-allocations regime this design targets is once per statement.
@@ -19,18 +19,13 @@ Lowest-free-first keeps the live set packed, and needs only a min-heap over the 
 
 ## The refinements
 
-**Prefer ids whose tombstone is already dead.**
-That is exactly the `mentions == 1` case, and it is free to identify because the recyclable-set entry's tombstone reference is then already absent.
-Recycling one of those costs nothing at all: no anchor is carried into the new incarnation, nothing older is left to deny, and no tombstone is frozen.
-
-**`mentions` is a weak signal pointing the opposite way from the intuition.**
-Recycling an id freezes the `mentions == 1` path permanently, since the new incarnation's own statements hold the count above 1 from then on.
-So recycling an id at `mentions == 2` discards progress that was one page-clean from completing, while recycling one at `mentions == 50` discards almost nothing — an argument for taking *high*-`mentions` ids first.
-At two bytes apiece this is a tiebreak at most, and it should lose to density wherever the two disagree.
+**No recyclable id costs more to take than another.**
+Recycling an id ends its tombstone's life with the flush that allocates the id again, whether or not older statements still name it, since [the new incarnation states everything the tombstone stood for](liveness.md#the-last-tombstone).
+What stays behind is dead statements in either case, which consolidation drops as it drops any others.
 
 **Do not hand out fresh ids while recyclable ones wait.**
 It consumes the 32-bit id space at the rate of allocations *ever made* rather than concurrently live, and it sparsifies the live set — paying per statement to save per id.
-The [tombstone sweep](liveness.md#a-possible-extension-not-adopted) is the better answer to the same worry, and reaches tombstones this one cannot.
+Recycling is also what ends a lingering tombstone soonest.
 
 ## What an earlier draft got wrong
 

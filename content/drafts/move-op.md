@@ -26,7 +26,7 @@ One ordering caution: **add before subtracting**, or net the two, so coverage ne
 ## What it buys
 
 Rope- and B-tree-like structures shuffle ranges between neighbouring nodes constantly, and without `Move` every one of those is a byte copy.
-With it, a split or merge that donates a suffix costs one `Ref` and one `Shrink`.
+With it, a split or merge that donates a suffix costs one `Ref` and one `Size`.
 
 This is what lets the address table decline copy-on-write clones: cloning would then be needed only for genuine simultaneous sharing — snapshots and deduplication — and not for moving data between neighbours.
 
@@ -35,7 +35,7 @@ This is what lets the address table decline copy-on-write clones: cloning would 
 - **Which moves to allow: any.**
   The record moves any range, and the cost difference between a tail move and a head or interior move is the caller's: closing the gap is a separate `Splice`, and it is that splice, not the move, that shifts every later offset in the source.
 - **What becomes of the source range: it reads as zero, and the source keeps its size.**
-  So the flush states it as `Zero(src_id, src_offset, len)`, or, when a `Resize` shrinking the source to `src_offset` follows, the two fold into one `Shrink(src_id, src_offset)` — the cheapest case, and the one a suffix donation produces.
+  So the flush states it as `Zero(src_id, src_offset, len)`, or, when a `Resize` shrinking the source to `src_offset` follows, the two fold into one `Size(src_id, src_offset)` — the cheapest case, and the one a suffix donation produces.
 - **Overlapping self-moves zero only `source \ destination`.**
   That is also what the address table needs: the new `Ref` and the denial cannot both name the overlap in one epoch, per [no conflicts within each epoch](../spec/address-table.md#no-conflicts-within-each-epoch).
 

@@ -16,14 +16,11 @@ enum Fragment {
     /// at the *data*, never at the *framing* of the statement.
     Bytes { page: u32, offset: PageOffset, statement: StatementRef },
 
-    /// Resolves to zero through a `Zero`, `Shrink`, or `Tombstone`.
-    ZeroExplicitly { statement: StatementRef },
-
-    /// Resolves to zero because no statement matches these probes.
-    ZeroByDefault,
+    /// Resolves to zero through a `Zero`.
+    Zero { statement: StatementRef },
 
     /// Taken by the flush in progress, and not stated yet; see "During a flush".
-    /// The cut turns it into `Bytes` or `ZeroExplicitly`, so no other code path
+    /// The cut turns it into `Bytes` or `Zero`, so no other code path
     /// outside a flush ever meets it.
     Pending(PendingRef),
 }
@@ -33,8 +30,8 @@ struct AllocationOffset(u32);    // offset into an allocation; the map's key
 struct StatementRef(NonZeroU32); // See below why non-zero.
 ```
 
-The three permanent variants answer two questions at once — what the bytes *are*, and who is *responsible* for them — and the third is where those answers come apart: a range that resolves by default has a definite answer to the first and none at all to the second.
-The fourth answers the second with "the flush in progress", and exists only between a flush taking a range and [stating it](#during-a-flush).
+The two permanent variants answer two questions at once — what the bytes *are*, and which statement is *responsible* for them.
+The third answers the second with "the flush in progress", and exists only between a flush taking a range and [stating it](#during-a-flush).
 
 **An ordered map, because the query is a predecessor search.**
 Reading offset `p` of allocation `i` means finding the greatest key `≤ (i, p)` — `O(log F)` for `F` live fragments — and a sequential read iterates from there.
@@ -47,41 +44,18 @@ That keeps a fragment small and a split cheap, and it makes the next rule mandat
 ### The fragments of an existing id exactly partition `[0, size)`
 
 A hole is not representable: omitting an entry does not describe a gap, it extends the preceding fragment, and the predecessor lookup then answers with a neighbour's bytes.
-That is a wrong-bytes bug rather than a missing-data bug — the worst kind to leave representable — so a range that resolves to zero *by default* sits in the map like any other.
+That is a wrong-bytes bug rather than a missing-data bug — the worst kind to leave representable — and the file format rules it out at the source: [every byte below an allocation's size is stated](../spec/address-table.md#the-coverage-rule), so every fragment outside a flush has an owner, a range of zeros included.
 
-The only allocation with no fragments at all is a zero-sized one, where `[0, 0)` is empty and `Grow(id, 0)` is the allocation's only trace, in memory as on disk.
-
-### Where `ZeroByDefault` comes from
-
-A range resolves by default when no statement matches its probes.
-Two sources, the first of which needs a name: call `[previous_size, new_size)` the **exposed range** of a growth — the offsets that were outside the allocation before it and are inside it after.
-
-- a bare `Grow`, which matches no probe and therefore leaves its exposed range unowned;
-- a `Ref` or `Inline` written at `offset > previous_size`, whose exposed range `[previous_size, offset)` it leaves uncovered;
-- and, away from any resize, a range that was simply never written: write `[0, 10)` and then `[20, 35)`, and `[10, 20)` is matched by nothing.
-
-In the first two cases the range is `ZeroByDefault` **exactly when the id has no anchor with `n <= probe`**, and the condition is decisive rather than merely necessary: an anchor `Shrink(id, n)` or `Tombstone` matches every probe from `n` upward (with `n = 0` for `Tombstone`), hence every probe in an exposed range, and it outranks everything with older `epoch`; nothing above it reaches there, since content above the anchor is bounded by the size the allocation had before this flush.
-And an id with no anchor has never decreased in size, so every content statement it has is bounded by `previous_size` and none reaches into the gap either.
-
-What an anchor does in general is put a floor under where an unowned hole can survive: `Shrink(id, n)` matches every probe from `n` up, so holes live only in `[0, n)`, and a `Tombstone`, anchoring at `n = 0`, leaves none at all.
-That is why a tombstoned id's fragments are always owned, and why a re-allocated id's tombstone holds genuine pins.
+The only allocation with no fragments at all is a zero-sized one, where `[0, 0)` is empty and its size statement, such as `Size(id, 0)`, is the allocation's only trace, in memory as on disk.
 
 ### Consequences the implementation must honour
 
 - **Coalescing compares the whole variant.**
-  Adjacent fragments merge only when they resolve identically *and* name the same statement, so two `ZeroByDefault` ranges merge but a `Shrink`-owned zero range and a `ZeroByDefault` one must not — they differ in exactly the thing that carries a pin.
-- **A size increase adds at most one fragment; a write past the end at most two.**
-  Raising the size either extends the last fragment, when the exposed range resolves the way that fragment already does, or adds one entry for it.
-  A `Ref` or `Inline` at `offset > size` adds that entry *and* its own, which is the only way a single statement adds two.
-- **The blow-up is bounded.**
-  `ZeroByDefault` fragments are separated by owned ones, so they at most double an id's entry count.
-- **Every code path that reaches for a fragment's owner must handle the variant that has none.**
-  `ZeroByDefault` carries no `statement` field at all, so this is a match arm rather than a null check — and it is the arm that is easy to forget, because the other two variants both have one.
-  The concrete case is pin accounting: overwriting a range releases the previous owner's pin, and a `ZeroByDefault` fragment has no owner and no pin to release, so a blind release there would decrement some unrelated statement or panic.
-  The same applies to a consolidator asking "does this fragment belong to the statement I am rewriting?", where the answer for this variant is always no.
-  During a flush `Pending` joins it: it has no owner either, and a source that takes a range already pending simply discards the older entry, with no pin to release.
-- **Growth into default territory is free.**
-  If the last fragment is already `ZeroByDefault`, raising the size extends it with no new entry at all, since its end is implied by the size.
+  Adjacent fragments merge only when they resolve identically *and* name the same statement, so two zero ranges owned by different `Zero` statements must not merge — they differ in exactly the thing that carries a pin.
+- **A growth adds one fragment, and a write past the end two.**
+  A flush that grows an allocation takes the range the growth exposes, `[previous_size, new_size)`, as pending zeros, since the cut must state it; a write past the end takes the written range on top of that, leaving the gap below it pending as zeros.
+- **During a flush, every code path that reaches for a fragment's owner must handle `Pending`**, which has none.
+  The concrete case is pin accounting: overwriting a range releases the previous owner's pin, and a source that takes a range already pending simply discards the older entry, with no pin to release.
 
 ## 2. The statement slab
 
@@ -112,7 +86,7 @@ This makes every lookup an array index rather than a hash.
 Dead slots thread into a free list through `page_or_next`, which is unambiguous because a slot is free exactly when `pins == 0`.
 
 **Slot 0 is never handed out.**
-That costs one slot once and buys niche optimization for `AllocationMeta::anchor`, `AllocationMeta::grow_witness`, and `RecyclableId::tombstone`.
+That costs one slot once and buys niche optimization for `AllocationMeta::size_statement` and `RecyclableId::tombstone`.
 These optimizations are the motivation why the specification bounds the number of statements to at most `2^32 - 1` rather than `2^32`.
 Reserving slot 0 also makes for a simple free-list terminator (`page_or_next == 0`), although this argument is not load bearing since the end of the free-list could also be indicated by a self-reference instead.
 
@@ -125,7 +99,7 @@ The fragment map indexes only live fragments, the slab holds only live statement
 
 **Ordering obligation.** On the `1 → 0` transition, read the page number and release its coverage *before* overwriting `page_or_next` with the free-list link.
 
-**Stale references cannot arise**, which is what lets the slab recycle slots freely: every holder of a `StatementRef` — a fragment, an anchor, a grow witness, or a recyclable id's tombstone — gives it up as part of the same event that removes the statement's last pin.
+**Stale references cannot arise**, which is what lets the slab recycle slots freely: every holder of a `StatementRef` — a fragment, an allocation's size statement, or a recyclable id's tombstone — gives it up as part of the same event that removes the statement's last pin.
 That argument rests on every release site being correct, so a debug-only parallel array of generation counters is worth keeping in mind: it turns a violation into an assertion rather than silent corruption, at no cost in release builds.
 
 ## 3. The allocation map
@@ -138,9 +112,8 @@ struct AllocationMeta {
     fragment_count: u32,
     statement_bytes: u32,
     mentions: u32,
-    last_written: u32,                  // the flush that last wrote the id; see below
-    anchor: Option<StatementRef>,       // newest Shrink or Tombstone
-    grow_witness: Option<StatementRef>, // Grow with n == size, if any
+    last_written: u32,                    // the flush that last wrote the id; see below
+    size_statement: Option<StatementRef>, // newest statement that states the size
 }
 ```
 
@@ -150,13 +123,13 @@ Nothing ever iterates the allocation map in id order at run time; consolidation'
 | field | updated when | read for |
 | --- | --- | --- |
 | `size` | any flush that resizes the id, writes past its end, frees it, or re-allocates it | answering `size()` in `O(1)`; bounding reads; supplying the extent of an id's last fragment |
-| `fragment_count` | on every fragment created or destroyed for this id | [pricing description defragmentation](consolidation.md#description-defragmentation-rides-the-rotating-window) — description overhead relative to `size`. Counts `ZeroByDefault` fragments, which are real entries with real memory cost |
+| `fragment_count` | on every fragment created or destroyed for this id | [pricing description defragmentation](consolidation.md#description-defragmentation-rides-the-rotating-window) — description overhead relative to `size` |
 | `statement_bytes` | when a statement for this id is created, or when one's pins reach zero | pricing defragmentation, paired with `fragment_count` |
-| `mentions` | `+1` per statement naming the id written or read at open; `−1` when one is physically dropped | one thing only: releasing a tombstone anchor's pin when the count falls to 1 |
+| `mentions` | `+1` per statement naming the id written or read at open; `−1` when one is physically dropped | one thing only: releasing a tombstone's pin when the count falls to 1 |
 | `last_written` | whenever the application's writes reach the id — a flush that writes, resizes, or allocates it | the age of [description defragmentation's candidates](consolidation.md#where-it-is-called-and-how-it-is-executed) |
-| `anchor`, `grow_witness` | `anchor`: when a `Shrink` or `Tombstone` is written. `grow_witness`: when a `Grow` is written, and when `size` moves past its bound | moving the anchor pin; telling a consolidator that a victim page holds an anchor it must replace |
+| `size_statement` | when a statement that states the size is written: a `Size`, a sizing `Ref*`, `Zero*`, or `Inline*`, or, for an id re-allocated, the tombstone it carries over until the new incarnation states its size | holding the [size pin](liveness.md#pins); telling a consolidator that a victim page holds a size statement it must state again |
 
-`size` is maintained **incrementally**, never recomputed: it is `max(anchor's n, Grow bounds and content extents above anchor_epoch)`, and every operation that could change it knows which term it changed.
+`size` is maintained **incrementally**, never recomputed: every operation that resizes the id sets it, and once the flush that resized it has cut, it is what `size_statement` states.
 
 **`last_written` measures content age, where an epoch measures location age.**
 A statement's epoch [is its page's](#cost), so every restatement re-stamps it — the header re-stamps everything it holds on every flush — whereas `last_written` moves only when the application writes the id.
@@ -174,10 +147,10 @@ struct RecyclableId {
 }
 ```
 
-Everything else is either constant for a non-existent id — `size` 0, `fragment_count` 0, `grow_witness` absent — or already recorded in the tombstone's own slab entry.
+Everything else is either constant for a non-existent id — `size` 0, `fragment_count` 0 — or already recorded in the tombstone's own slab entry.
 
 So a page rewrite that decodes a statement looks its id up in the allocation map first, and in the recyclable set if it is not there.
-The tombstone reference is what the pin release must reach, what a consolidator consults before re-emitting a tombstone it has decoded, and what becomes the `anchor` if the id is allocated again.
+The tombstone reference is what the pin release must reach, what a consolidator consults before re-emitting a tombstone it has decoded, and what becomes the `size_statement` if the id is allocated again — until the flush that allocates it binds the new incarnation's own size statement, which releases the tombstone.
 Within the recyclable set `mentions` only falls, since nothing writes a statement naming a non-existent id; at 0 both fields are spent and the entry is a bare recyclable id.
 
 ## 4. The page table
@@ -236,7 +209,7 @@ A pending fragment has no owner and so holds no pin; pins are handed out when th
 Its coverage follows its place: a fragment in `Data` is charged to that page exactly as a `Bytes` fragment is, an `Unplaced` one is charged when `pack` places it, and an `Inline` payload when the cut decides which table page carries it.
 
 **The dirty set.**
-Every key range the flush has taken, kept merged and sorted, and per touched id a record of what the fragment map cannot say: the size and existence the id had when the flush began, whether it was freed, and whether a page the flush retires held its anchor or grow witness.
+Every key range the flush has taken, kept merged and sorted, and per touched id a record of what the fragment map cannot say: the size and existence the id had when the flush began, whether it was freed, and whether a page the flush retires held its size statement or tombstone.
 The cut [derives every statement](consolidation.md#one-dirty-set-and-why-statements-are-derived-last) from these two.
 
 **Heat** rides on the pending entries rather than on statements, since statements are derived afresh every flush: a statement derived from several fragments takes the hottest of them.

@@ -61,7 +61,7 @@ That keeps the state within about twice its compacted size, and costs at most tw
 Between snapshots, each appended record is described by a statement of its own, until [description defragmentation](consolidation.md#description-defragmentation-rides-the-rotating-window) merges them, as it would for any allocation written piecemeal.
 
 **A snapshot may leave allocations out, and an allocation without a record falls back to the youngest page that holds one of its fragments.**
-That is the data page for bytes a `Ref` states, and the table page for an `Inline`'s payload or a `Zero`; `ZeroByDefault` fragments are in no page and are left out, and an allocation with no other fragment falls back to the youngest page that holds one of its statements.
+That is the data page for bytes a `Ref` states, and the table page for an `Inline`'s payload or a `Zero`; an allocation with no fragment, which is a zero-sized one, falls back to the page that holds its size statement.
 Content is never younger than the page that holds it, so the fallback can only understate an age, which errs toward treating an allocation as recently written.
 It is exact for content that was written once and never moved.
 So a snapshot leaves out every allocation for which the fallback gives its `last_written` exactly, and keeps mainly two kinds: allocations whose bytes consolidation has moved since they were written, and those with inline content, which moves whenever its table page is rewritten — every flush, in the header.

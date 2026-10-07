@@ -47,15 +47,15 @@ The [tutorial](../rust/tutorial/durability.md#what-a-crash-costs) frames **recor
 A format-level disagreement, and the two imply different recovery code.
 The tutorial's version also predates the chaining, so it describes recovery as truncating a torn record rather than as keeping the longest valid prefix.
 
-### 5. `mentions` is claimed to have one reader and has at least three
+### 5. `mentions` is claimed to have one reader and has at least two
 
-[Liveness](../impl/liveness.md#the-last-tombstone) states flatly: "This is the only reader of `mentions`", meaning the release of a tombstone anchor's pin at `mentions == 1`.
+[Liveness](../impl/liveness.md#the-last-tombstone) states flatly: "This is the only reader of `mentions`", meaning the release of a tombstone's pin at `mentions == 1`.
 [In-memory state](../impl/in-memory-state.md) repeats it as "one thing only".
 
-But [Id recycling](../impl/id-recycling.md#the-refinements) reads it twice — to prefer ids whose tombstone is already dead, and as the tiebreak that argues for taking high-`mentions` ids first — and [Liveness](../impl/liveness.md#ranking)'s own ranking section reads it again, to score "dead statements whose removal would let a tombstone retire".
+But [Liveness](../impl/liveness.md#ranking)'s own ranking section reads it again, to score "dead statements whose removal would let a tombstone retire".
 
 The claim matters because it is the argument for how cheap `mentions` is.
-With three readers the field is harder to remove than the text suggests, and anyone auditing whether it can be dropped will reach the wrong conclusion.
+With a second reader the field is harder to remove than the text suggests, and anyone auditing whether it can be dropped will reach the wrong conclusion.
 
 ### 6. Reclamation is optional and also required
 
@@ -144,7 +144,7 @@ The reference implementation's choice — 32-bit, zero reserved for null — is 
 
 The largest body of new code, and the only large item that is purely implementation: [Address-table operations](../impl/address-table-operations.md) already gives pseudocode for load, resolve, read, the fragment-map primitives, apply-a-statement, resize, free, page rewrite and eviction.
 
-Risk is concentrated in two places — the [partition invariant](../impl/in-memory-state.md#the-fragments-of-an-existing-id-exactly-partition-0-size) of the fragment map, where a bug returns a neighbour's bytes rather than failing, and the [anchor replacement](../impl/address-table-operations.md) obligation on page rewrites, where a bug silently resurrects truncated data.
+Risk is concentrated in two places — the [partition invariant](../impl/in-memory-state.md#the-fragments-of-an-existing-id-exactly-partition-0-size) of the fragment map, where a bug returns a neighbour's bytes rather than failing, and the [size restatement](../impl/address-table-operations.md#stating-the-size-again--the-one-correctness-obligation) obligation on page rewrites, where a bug silently resurrects truncated data.
 Both deserve assertions from the first commit rather than tests added later.
 
 ### 8. The fold, plus its differential oracle

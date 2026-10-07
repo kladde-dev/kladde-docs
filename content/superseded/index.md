@@ -18,6 +18,7 @@ Where a document says "kladde does X", read "kladde did X".
 | [Incremental compaction](incremental-compaction.md) — a potential function over byte addresses, frontier slides, and an augmented B+ tree to find the best move in `O(log n)` | [Consolidation](../impl/consolidation.md) | same cause: there is no address ordering left to descend, so victim selection becomes the log-structured live-fraction rule instead |
 | [The in-place flush](in-place-flush.md) — conflict detection, write-ahead copies, read hoisting for restartability | [The copy-on-write protocol](../spec/durability.md) | a flush no longer overwrites anything a recoverable state depends on, so there is nothing to protect against and nothing to restart from |
 | [Whole-allocation table entries](whole-entry-address-table.md) — one statement per allocation, chunk lists, extents, spilling, and a separate index of table pages | [Statements](../spec/address-table.md#statement-types) | keying by byte offset instead of by allocation made per-range statements viable, which removed the need for every mechanism in the left column |
+| [Sizes from extents](sizes-from-extents.md) — an allocation's size inferred from the extents of its statements, resizes as a bound or a fence, and zeros by default | [The newest size wins](../spec/address-table.md#conflict-resolution-across-epochs) | nothing in the constraints: a writer always knew the size, so the inference bought nothing, and its machinery hid failure modes that a realistic workload exposed |
 
 ## A note on measurement
 

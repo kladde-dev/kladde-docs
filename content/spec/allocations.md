@@ -17,14 +17,14 @@ Nothing else.
 An allocation is an untyped byte range; what its bytes mean is a question for the [schema](schema/) layer, and the storage layer never asks it.
 
 An allocation is **not necessarily contiguous on file**.
-Its content is described by whatever `Ref`, `Inline` and `Zero` statements currently win its offsets, and those may point into any number of data pages, in any order, with gaps that resolve to zero and occupy no data pages at all.
+Its content is described by whatever `Ref`, `Inline` and `Zero` statements currently win its offsets, and those may point into any number of data pages, in any order, with zero ranges that occupy no data pages at all.
 
 *Why not contiguous.*
 Contiguity would have to be maintained against every write, which under copy-on-write means relocating an allocation whenever a byte in its middle changes.
 Giving it up costs a lookup per read — served in memory, and paid only while loading or when a flush relocates bytes, since application reads go to the loaded values rather than to the file — and buys a flush that writes only what changed.
 
-A **zero-sized allocation** is the natural endpoint of the rules rather than a special case: no content statements at all, and an on-file existence consisting of a single statement such as `Grow(id, 0)`.
-Nothing may assume "at least one content statement": even a large allocation can have none, if it is entirely left to its default content of all-zero bytes.
+A **zero-sized allocation** is the natural endpoint of the rules rather than a special case: no content statements at all, and an on-file existence consisting of a single statement such as `Size(id, 0)`.
+Every other allocation has at least one content statement, since [every byte below its size is stated](address-table.md#the-coverage-rule) — an allocation of all-zero bytes by a single `Zero*`.
 
 There is no distinction between resizable and fixed-size allocations.
 *Why not:* it existed in a [superseded design](../superseded/relocatable-heap.md) so that neighbours of a fixed-size allocation could rely on it not moving, and in this design nothing is adjacent to anything — every reshape is a statement edit.
@@ -49,11 +49,11 @@ It is *not* required to assign them in any particular way, or to reuse them in a
 An id becomes reusable as soon as a `Tombstone` for it is committed.
 It does **not** have to wait for the tombstone to die or for the old incarnation's statements to be physically removed.
 
-This is safe because the tombstone matches every probe and outranks every statement below it: the new incarnation's statements are written above it, so the old incarnation can never win a probe, no matter how much of it survives physically.
+This is safe because the new incarnation states its size and, by [the coverage rule](address-table.md#the-coverage-rule), every byte below it, all in epochs above the tombstone: the old incarnation can never win a probe or decide the size, no matter how much of it survives physically.
 
 One case needs no tombstone at all: freeing and re-allocating an id **within a single flush**.
 A tombstone and the new incarnation's statements would make contradicting existence claims in one epoch, which the [no-conflicts rule](address-table.md#no-conflicts-within-each-epoch) forbids.
-The flush must instead emit statements that fully cover the new extent, which denies the old incarnation on its own — for example a bare `Zero(id, 0, n)` plus a `Shrink(id, n)` if the new allocation is smaller than the old one.
+The flush states the new incarnation as it would a fresh one — every byte of the new extent and its size, for example a bare `Zero*(id, 0, n)` — which leaves nothing of the old incarnation to decide anything.
 
 ### Pointer encoding
 
@@ -88,12 +88,11 @@ Concretely: after an allocation is created, its bytes are zero.
 After a resize, the first `min(old_size, new_size)` bytes are preserved and everything beyond reads as zero.
 Two conforming implementations therefore return the same bytes for the same allocation of the same file.
 
-Zeroing uninitialized bytes of allocations costs nothing to store — a range that resolves to zero by default occupies no data bytes — so this is a constraint on what a *reader* returns rather than on what a writer must write.
-What it does constrain is the flush: a shrink immediately followed by a growth may not be elided outright, because the re-grown region must read as zero rather than as whatever survived.
-In practice the shrink is [emitted regardless](../impl/liveness.md#emission-when-a-resize-must-write-a-statement) and the re-grown range then resolves through it, so the statements on disk are unchanged.
+Zeroing uninitialized bytes of allocations costs no data bytes: the flush states them with a [`Zero`](address-table.md#statement-types), a few bytes of address table however long the range.
+What it does constrain is the flush: a shrink immediately followed by a growth may not be elided outright, because the re-grown region must read as zero rather than as whatever survived, so the flush states it as zeros.
 
 A consequence worth naming for data-type authors: a type whose zero bit-pattern is its natural default — an empty string, a null pointer, a `false` flag, a zero integer — needs no initialisation write at all.
-A vector of a thousand empty strings is one `Grow`.
+A vector of a thousand empty strings is one `Zero*`.
 
 ## Free space
 

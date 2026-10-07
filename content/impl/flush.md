@@ -167,7 +167,7 @@ It guarantees that every page a flush writes, except its last, is at least `1 âˆ
 
 ### The `Inline` threshold
 
-The [format](../spec/address-table.md#statement-types) fixes the ceiling at 251 bytes; the policy threshold belongs far below it.
+The [format](../spec/address-table.md#statement-types) fixes the ceiling at 125 bytes; the policy threshold belongs far below it.
 
 Below roughly the encoded size of a `Ref` (~10 bytes), inlining is strictly better â€” the pointer would be as large as the data.
 A starting policy: inline everything up to ~64 bytes, plus anything whose eviction would leave a data page holding only scraps; then measure.
@@ -270,7 +270,7 @@ Consequences:
 
 - The common small flush writes **no** address-table page beyond the header.
 - The header always holds **resolved truth** at the current epoch, which is why a statement evicted from it needs no re-resolution, and why multi-epoch disagreement can exist only between the header and leaves, or between two leaves.
-- A statement carried in the header becomes a *new* record at the new epoch each flush, so an anchor re-points and its pin moves every flush.
+- A statement carried in the header becomes a *new* record at the new epoch each flush, so a size statement re-points and its pin moves every flush.
   Header pages are exempt from coverage-driven victim selection, since they are rewritten unconditionally.
 
 When the header overflows, the coldest statements go to a fresh leaf instead, ranked by an **eviction clock** recording how many flushes each has gone untouched.

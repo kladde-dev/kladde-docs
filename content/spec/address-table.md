@@ -22,39 +22,47 @@ The [superseded whole-entry design](../superseded/whole-entry-address-table.md) 
 
 | Statement | Existence of `id` | Size of `id` | Content of `id` | Usage note |
 | --- | --- | --- | --- | --- |
-| `Ref(id, offset, size, address)` | exists | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` equals `file[address, address + size)`. | `[address, address + size)` must be within a single `Data` page. As a *writer invariant* (readers never depend on it), every byte in a `Data` page is referenced by at most one live `Ref`; this is not needed for correctness but keeps data-page coverage a plain counter instead of a refcount. See [Design directions](#design-directions). |
-| `Zero(id, offset, size)` | exists | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` is zero. | Costs no data bytes, so it is how a range that currently holds data is set back to zero without writing zeros anywhere. Consolidation may rewrite a `[data] [zeros] [data] …` stipple as one `Ref` or `Inline` over a range it fills with actual zeros — useful for data types with unbalanced variant payloads. |
-| `Shrink(id, n)` | exists | `>= n`, and **anchors** the size: extents below this statement's epoch drop out | Anything at or beyond `n` is zero. | The size-reducing half of a resize. Its content claim is dormant while the allocation stays at `n`, and activates if the allocation later grows past `n` — which is exactly what stops a truncated tail from resurfacing. |
-| `Grow(id, n)` | exists | `>= n` | **Nothing.** Matches no probe. | The size-increasing half, carrying no content claim. Growing never needs to deny anything: every statement that could cover a probe at or past the old size has an epoch below the anchor and is therefore already denied by it. `Grow(id, 0)` is how an existent zero-sized allocation is stated. |
-| `Tombstone(id)` | does not exist | `0` | All bytes are zero. | Like `Shrink(id, 0)` except that it also asserts non-existence. If a later epoch asserts existence again, the tombstone's effect on content remains: ranges the new incarnation leaves uncovered still resolve through it. |
-| `Inline(id, offset, size, payload)` | exists | `>= offset + size`, smallest compatible with all live statements | Content in range `[offset, offset + size)` equals `payload`. | Small-size optimization. Requires `1 <= size <= 251`, since the payload length is encoded as an offset past the last statement tag. Zero-sized payloads stay unrepresentable, and nothing needs them: `Grow(id, 0)` states an existent zero-sized allocation. |
+| `Ref(id, offset, size, address)` | exists | — | Content in range `[offset, offset + size)` equals `file[address, address + size)`. | `[address, address + size)` must be within a single `Data` page. As a *writer invariant* (readers never depend on it), every byte in a `Data` page is referenced by at most one live `Ref`; this is not needed for correctness but keeps data-page coverage a plain counter instead of a refcount. See [Design directions](#design-directions). |
+| `Zero(id, offset, size)` | exists | — | Content in range `[offset, offset + size)` is zero. | Costs no data bytes, so it is how a writer states zeros: the bytes a growth exposes, and a range that held data and is set back to zero. Consolidation may rewrite a `[data] [zeros] [data] …` stipple as one `Ref` or `Inline` over a range it fills with actual zeros — useful for data types with unbalanced variant payloads. |
+| `Inline(id, offset, size, payload)` | exists | — | Content in range `[offset, offset + size)` equals `payload`. | Small-size optimization. Requires `1 <= size <= 125`, since the payload length and the sizing bit share the statement's tag byte. Zero-sized payloads are unrepresentable, and nothing needs them. |
+| `Ref*`, `Zero*`, `Inline*`, with the fields of their plain variants | exists | `offset + size` | As their plain variants. | The **sizing** variants: each states, besides its content, that the allocation ends where that content ends — whether this grows the allocation, shrinks it, or leaves its size as it was. |
+| `Size(id, n)` | exists | `n` | **Nothing.** Matches no probe. | States a size where no content statement ends at it: a shrink that writes nothing at the new end, a zero-sized allocation, or a size stated again. |
+| `Tombstone(id)` | does not exist | `0` | **Nothing.** Matches no probe. | If a later epoch asserts existence again, the new incarnation states its size and [every byte of its content](#the-coverage-rule), so nothing of the old one carries over. |
 
-*Why the resize is split in two.*
-A single `Size(id, n)` statement would do two jobs — anchoring the size, and claiming that everything at or past `n` is zero — and those two are needed in opposite directions.
-A shrink needs both; a grow needs only the size, because the territory it exposes is already denied by the last shrink.
-A grow-emitted `Size` would therefore carry a *dormant* content claim that activates later, when the allocation grows past its bound, which is a durable source of statements that survive without doing anything.
+`Ref`, `Zero`, and `Inline`, in either variant, are the **content statements**.
+`Size`, `Tombstone`, and the sizing variants are the statements that **state a size**.
 
-*Why unwritten content is zero rather than unspecified.*
-An earlier design left it undefined — a reader "must not assume anything", and an implementation could hand out whatever was physically there.
-Specifying zero costs nothing in storage, since a range that resolves to zero by default occupies no bytes either way, and it buys three things.
-It makes two conforming implementations return **identical bytes** for the same file, which the rest of the format already insists on for canonical encodings and fingerprints, and which lets a conformance corpus state an expected value for every byte rather than masking holes out.
-It stops deleted data from **reappearing**: a consolidator filling a hole with "arbitrary data" fills it in practice with whatever is adjacent in the buffer it is packing, which is other allocations' content.
-And it gives [schema evolution](schema/evolution.md) its default for free — a field added to a struct reads as zeros from every file written before it existed.
+*Why the newest size wins.*
+A writer knows the size of every allocation it writes, so it states the size whenever it changes, and a reader takes the [newest statement of it](#conflict-resolution-across-epochs).
+The size then depends on exactly one statement per id: a reader tracks it with one comparison per statement, an implementation keeps it alive with one reference per allocation, and dropping any other statement can never change a size.
+The sizing variants make stating the size free wherever a resize writes content that ends at the new size, which covers the common cases: an append ends at the new end, and so does the tail a deleting splice restates.
 
-What it gives up is narrow: a fold may no longer elide a shrink immediately followed by a growth, because the re-grown region must now read as zeros rather than as whatever survived.
+*Why zeros are stated rather than implied.*
+The size has no memory of the sizes before it, so a byte below the size resolves through whatever statement matches it, however old.
+A byte that a shrink cut off and a later growth brought back would resolve through the statement that held it before the shrink; so a writer states every byte an allocation gains, zeros included, by [the coverage rule](#the-coverage-rule).
+In return, every byte below the size is stated: two conforming implementations return identical bytes for the same file without agreeing on any default, deleted data cannot reappear, and a byte that no statement matches is a detectable error rather than a silent zero.
+Stating zeros costs a `Zero` of a few bytes for each range the application leaves unwritten, however long the range.
 
 ### No conflicts within each epoch
 
 Statements in the same `epoch` must not conflict with each other:
 
 - no two statements in the same `epoch` may make contradicting statements about the existence of an `id`;
-- no two statements in the same `epoch` may name any byte of content twice, not even if the two statements assign the same value to that byte.
-  This includes zeroing: an assignment of zero to a given byte — whether by a `Zero`, `Shrink`, or `Tombstone` statement — conflicts with any other assignment to the same byte, including a second zero assignment.
-- At most one `Shrink` and at most one `Grow` statement per `id` is allowed per epoch, and never both: a flush knows whether it is growing or shrinking.
-- Multiple `Ref`, `Zero`, and `Inline` statements for pairwise disjoint ranges within the same allocation are allowed.
-  They don't conflict in regard to the size of the allocation because they all merely bound the size from below.
-- However, a `Ref`, `Zero`, or `Inline` statement conflicts with a `Shrink(n)` statement in the same `epoch` if its upper bound `offset + size` is larger than `n`.
-  A `Grow` never conflicts with anything, since it claims no content and only bounds the size from below.
+- no two content statements in the same `epoch` may name any byte of content twice, not even if the two statements assign the same value to that byte;
+- at most one statement per `id` and `epoch` states the size: a `Size`, a sizing variant, or the `Tombstone` — even two that agree conflict;
+- multiple content statements for pairwise disjoint ranges within the same allocation are allowed;
+- a content statement conflicts with a statement in the same `epoch` that states the size `n` of its `id` if its upper bound `offset + size` is larger than `n`.
+
+### The coverage rule
+
+> **In the epoch in which a byte becomes part of an allocation, a content statement of that epoch states it.**
+
+A byte becomes part of an allocation when the allocation comes into existence with a size above the byte's offset, or grows past it.
+An id freed and allocated again within one epoch comes into existence in that epoch.
+
+This is a rule for writers, and readers cannot check it: checking it would need the size each epoch started from.
+It is what keeps truncated content out.
+With `Ref*(7, 0, 1000, a)`@3 and `Size(7, 10)`@5, the allocation holds 10 bytes; if epoch 9 grows it to 50 and writes bytes 10 to 30, it states `Ref(7, 10, 20, b)` and `Zero*(7, 30, 20)`, and without the `Zero*` the bytes 30 to 50 would resolve through `Ref*`@3 again.
 
 ### Conflict resolution across epochs
 
@@ -63,41 +71,29 @@ The newer statement takes precedence, but only as far as it contradicts the olde
 This is resolved at the granularity of the allocation's existence, its size, and the value of each of its content bytes.
 
 **Existence.**
-Allocation `id` exists if the statement with highest `epoch` that mentions `id` is `Ref`, `Zero`, `Shrink`, `Grow`, or `Inline`.
+Allocation `id` exists if the statement with highest `epoch` that mentions `id` is anything but a `Tombstone`.
 It does not exist if that statement is `Tombstone(id)`, or if no statement mentions `id`.
 
 **Size.**
-Let `anchor_epoch` be the largest `epoch` of any `Shrink(id, n)` **or** `Tombstone(id)` statement (or `anchor_epoch = -1` if the id has neither), and call the statement at that epoch the *anchor*, whose `n` is `0` when it is a `Tombstone`.
-The size of allocation `id` is the maximum over:
+The size of allocation `id` is the size stated by its newest statement that states one: `n` for `Size(id, n)`, `offset + size` for a sizing variant, and `0` for `Tombstone(id)`.
+If no statement states its size, the size is `0`.
+The newest such statement is unique, since an epoch holds at most one per id.
 
-- the anchor's `n`, if the id has an anchor;
-- the `n` field of every `Grow(id, n)` statement with `epoch > anchor_epoch`; and
-- all values `offset + size` of all `Ref(id, offset, size, ...)`, `Zero(id, offset, size)` and `Inline(id, offset, size, ...)` statements with `epoch > anchor_epoch`.
-
-The maximum is over a non-empty set whenever the allocation exists, since existence requires at least one statement mentioning `id` and forbids the newest of them from being a `Tombstone`.
-A **non-existent** allocation falls out of the same rule with size `0` and needs no separate case: its newest statement, if any, is a `Tombstone`, which is therefore its anchor with nothing above it; and if no statement mentions the `id` at all, the maximum is over the empty set, which is `0` by convention.
+A non-existent allocation has size `0` by the same rule, since its newest statement is a `Tombstone`.
 (Existent zero-sized allocations are still distinguished from non-existent ones — by the **Existence** rule above, not by this one.)
 
-Only `Shrink` and `Tombstone` anchor the epoch; a `Grow` contributes a lower bound and nothing else, which is why dropping one can never readmit older extents.
-A `Tombstone` anchors at `n = 0` and denies every probe, so a re-allocated id is described entirely by the statements above its tombstone.
-
-Note that, under the no-conflicts rule, the predicates `epoch > anchor_epoch` above could be relaxed to `epoch >= anchor_epoch` without changing semantics.
-The stricter formulation is chosen to be more robust to a buggy writer that violates that rule: the strict form then yields a bounded allocation with an illegal statement out of range, where the relaxed form would yield a probe with two same-epoch matchers.
-
-**Content at a given offset `probe`.**
-Defined by the statement with highest `epoch` that matches any of these patterns:
-
-- `Tombstone(id)`;
-- `Shrink(id, n)` where `n <= probe`; or
-- `Ref(id, offset, size, ...)`, `Zero(id, offset, size)`, or `Inline(id, offset, size, ...)` where `offset <= probe < offset + size`.
-
-A `Grow` statement never matches, which is the whole of the difference between the two halves of a resize.
+**Content at a given offset `probe < size`.**
+Defined by the content statement with highest `epoch` whose range `[offset, offset + size)` contains `probe`, of either variant.
+`Size` and `Tombstone` statements match no probe.
 There is at most one winner, because at most one matching statement per epoch is allowed.
 Given the winning statement:
 
-- no matching statement, or a winner of type `Tombstone`, `Shrink`, or `Zero`: the content is zero;
+- `Zero`: the content is zero;
 - `Inline(id, offset, size, payload)`: the content is `payload[probe - offset]`;
 - `Ref(id, offset, size, address)`: the content is `file[address + (probe - offset)]`.
+
+**A probe below the size that no content statement matches makes the file invalid**, and a reader must fail cleanly on it rather than return a value.
+A writer that keeps [the coverage rule](#the-coverage-rule) never produces one.
 
 ## Physical format
 
@@ -111,25 +107,27 @@ References between `AddressTable` pages form a tree rooted at the header page: e
 ; `content` field of an address table page:
 address_table_page := child_ref* 0:byte statements:statement*
 child_ref          := page_number_delta:varint  ; see "Delta encoding" below
-statement          := id_delta (tagged_ref | tagged_zero | tagged_shrink
-                                | tagged_tombstone | tagged_grow | inline)
+statement          := id_delta (tagged_ref | tagged_zero | tagged_tombstone
+                                | tagged_size | inline)
 id_delta           := varint                    ; see "Delta encoding" below
-tagged_ref         := 0:byte offset_delta:varint size:varint address:varint
-tagged_zero        := 1:byte offset_delta:varint size:varint
-tagged_shrink      := 2:byte offset_delta:varint
-tagged_grow        := 3:byte offset_delta:varint
+tagged_ref         := (0 | 1):byte offset_delta:varint size:varint address:varint  ; 1: Ref*
+tagged_zero        := (2 | 3):byte offset_delta:varint size:varint                 ; 3: Zero*
 tagged_tombstone   := 4:byte
+tagged_size        := 5:byte offset_delta:varint                                  ; n
 offset_delta       := varint                    ; see "Delta encoding" below
 
-; Inline is optimized for lots of small payloads. Max size is 255 - 4 = 251.
-; size >= 1: zero-sized Inline payloads are deliberately unrepresentable.
-; size_tag = size + 4 >= 5, so it can't clash with any of the above tagged_*.
-inline             := size_tag:byte offset_delta:varint payload:byte{size_tag - 4}
+; Inline is optimized for lots of small payloads. Max size is 125.
+; tag = 4 + 2 * size + sizing, where sizing is 1 for Inline* and 0 for Inline.
+; size >= 1: zero-sized Inline payloads are deliberately unrepresentable,
+; so tag >= 6, and it can't clash with any of the above tagged_*.
+inline             := tag:byte offset_delta:varint payload:byte{(tag - 4) >> 1}
 ```
+
+For every content statement, bit 0 of the tag is the sizing bit.
 
 ### Delta encoding
 
-Child refs within a page are sorted by their page number, and statements within a page are sorted lexicographically by `(id, offset)`.
+Child refs within a page are sorted by their page number, and statements within a page are sorted lexicographically by `(id, offset)`, where the `offset` of a `Size(id, n)` is `n`.
 This order is well defined even for `Tombstone` statements, which carry no `offset`, because no other statement mentioning the same `id` can coexist with a `Tombstone(id)` in one epoch.
 
 To save encoding space by exploiting the compactness of varints, page numbers, ids, and offsets are delta-encoded.
@@ -144,15 +142,12 @@ When starting to decode an address table page, a reader initializes a `page_curs
 	2. Read off the statement's `id` from `id_cursor`.
 	3. If `id_delta != 0`: set `offset_cursor = 0`.
 	4. If the statement isn't a tombstone: increment `offset_cursor` by `offset_delta`.
-	5. If the statement isn't a tombstone: read off `offset` (or `n` for `Shrink` or `Grow`) from `offset_cursor`.
-	6. If the statement is a `Ref`, `Zero`, or `Inline`: increment `offset_cursor` by `size` (where `size = size_tag - 4` for `Inline`).
+	5. If the statement isn't a tombstone: read off `offset` (or `n` for `Size`) from `offset_cursor`.
+	6. If the statement is a content statement: increment `offset_cursor` by `size` (where `size = (tag - 4) >> 1` for `Inline`).
 
 Since `offset_delta` is a varint and therefore non-negative, `offset_cursor` must never need to move backwards.
-This is a **writer invariant** the format depends on for decodability.
-For `Ref`, `Zero` and `Inline` it follows from the no-conflicts rule: their ranges within one epoch are disjoint, so sorting by `offset` already leaves the cursor at or below the next statement's offset.
-For `Shrink(id, n)` it follows too, since a content statement in the same epoch may not reach past `n`.
-For `Grow(id, n)` it does **not** follow, because a `Grow` conflicts with nothing: a writer must simply never put a `Grow(id, n)` in a page whose content for `id` reaches past `n`.
-That costs nothing, since such a `Grow` would be dead on arrival anyway — content reaching past `n` means the size already exceeds `n`.
+This is a **writer invariant** the format depends on for decodability, and it follows from the no-conflicts rule.
+The ranges of content statements within one epoch are disjoint, so sorting by `offset` already leaves the cursor at or below the next statement's offset; and a content statement in the same epoch as a `Size(id, n)` ends at or below `n`, so the `Size` comes after all of them.
 
 **Delta encoding buys more than compactness**.
 It makes non-compliant order of statements *unrepresentable*.
@@ -218,5 +213,5 @@ The price is middle insertion: a splice that shifts content shifts the offsets o
 If splice-heavy containers ever matter, the open path is a per-allocation indirection (a rope of ranges) layered *on top of* offset-keyed statements for exactly the allocations that need it; the format does not block it.
 
 **The `Inline` threshold.**
-The encoding fixes the ceiling at 251 bytes; the policy threshold belongs far below it, and is an implementation choice rather than a format one.
+The encoding fixes the ceiling at 125 bytes; the policy threshold belongs far below it, and is an implementation choice rather than a format one.
 See [the implementation notes](../impl/flush.md#the-inline-threshold).
