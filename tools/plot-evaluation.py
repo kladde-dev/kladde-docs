@@ -653,6 +653,42 @@ def svg_tradeoff(runs, out):
     save(fig, out, "svg-tradeoff", rect=(0, 0, 1, 0.965))
 
 
+def svg_shift(runs, out):
+    """As `svg_tradeoff`, with the curves of the runs labelled
+    `before/policy/knob/value/layout` drawn beside the others, dashed and
+    pale, so that a panel shows how a change moved each policy's curve."""
+    after = svg_policies(runs)
+    before = svg_policies({label[len("before/"):]: run for label, run in runs.items() if label.startswith("before/")})
+    if not after or not before:
+        return
+    fig, axes = plt.subplots(3, 3, figsize=(7.5, 7.2), squeeze=False)
+    for i, layout in enumerate(LAYOUTS):
+        for j, (drawing, name) in enumerate(DRAWINGS.items()):
+            ax = axes[i][j]
+            for policy, (label, color, marker) in POLICIES.items():
+                for series, style in ((before, dict(ls="--", alpha=0.45, mfc="white")), (after, dict(ls="-"))):
+                    settings = sorted((-v if k == "lambda" else v, tables[drawing])
+                                      for (p, k, v, l), tables in series.items()
+                                      if p == policy and l == layout and drawing in tables)
+                    points = [svg_steady(rows) for _, rows in settings]
+                    if not points:
+                        continue
+                    ax.plot([x for x, _ in points], [y for _, y in points], color=color, lw=1.2, marker=marker,
+                            ms=4, mec=color if series is before else "white", mew=0.8,
+                            label=label if series is after else None, **style)
+            ax.set_title(f"{name}, {layout}", fontsize=8.5)
+            if i == len(LAYOUTS) - 1:
+                ax.set_xlabel("bytes written per edit")
+            if j == 0:
+                ax.set_ylabel("live pages / live size")
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    handles.append(plt.Line2D([], [], color="#777777", ls="--", alpha=0.6, lw=1.2))
+    labels.append("before")
+    fig.legend(handles, labels, loc="upper center", ncol=5, fontsize=7.5, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+    save(fig, out, "svg-shift", rect=(0, 0, 1, 0.965))
+
+
 def text_tradeoff(runs, out):
     """As `svg_tradeoff`, for text-bench's typing: a panel per text, from
     the runs labelled `policy/knob/value/text`."""
@@ -761,7 +797,7 @@ def main():
         label, _, directory = spec.partition("=")
         runs[label] = load(directory)
     figures = [space_amplification, mixed, live_fraction, write_breakdown, budget, shrink, description, flush_latency,
-               throughput, tradeoff, defrag_share, kappa, svg, svg_tradeoff, svg_pages, text_tradeoff]
+               throughput, tradeoff, defrag_share, kappa, svg, svg_tradeoff, svg_shift, svg_pages, text_tradeoff]
     only = set(args.only.split(",")) if args.only else None
     for figure in figures:
         if only is None or figure.__name__.replace("_", "-") in only:
