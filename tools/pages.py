@@ -64,6 +64,7 @@ ORDER = [
     "rust/store.md",
     # Measurements of the Rust implementation, on the design's behalf.
     "evaluation/index.md",
+    "evaluation/tools.md",
     "evaluation/consolidation.md",
     "evaluation/ripeness.md",
     "evaluation/ripeness2.md",

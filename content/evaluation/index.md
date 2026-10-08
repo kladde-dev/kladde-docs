@@ -6,6 +6,7 @@ Measurements of [kladde-rs](../rust/) under realistic workloads, and what they s
 
 Each page names the commit it measured and the commands that reproduce it.
 Its figures are drawn by `tools/plot-evaluation.py` from the tables in `data/`, which are kept, gzipped, so that a figure can be redrawn without rerunning the benchmark.
+[Benchmarks and tests](tools.md) describes the programs behind them, and the tests of kladde-rs: what each runs and records, how to run it, and how to read what it writes.
 
 The numbers come from one machine.
 Ratios, such as the file's size over its live size or the bytes written per byte the application wrote, carry over to other machines far better than times do.
