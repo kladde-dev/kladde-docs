@@ -47,7 +47,7 @@ The fix is the same on every branch:
   At λ = 1, that is 40 % of a page, where a data victim passes at up to 50 %.
 
 An offer still gathers leaves only while their restatements fit one leaf and what is left of the budget.
-kladde-rs' `implementation-notes.md` records the change on every branch, and on `main` as well.
+[Consolidation](../impl/consolidation.md#the-budget-loop) and [the ripeness draft](../drafts/ripeness.md#the-budget-and-the-price) state the change since, and kladde-rs' `main` has it too, as `a5698e5`.
 
 | branch | commit before | with the fix | policy |
 | --- | --- | --- | --- |

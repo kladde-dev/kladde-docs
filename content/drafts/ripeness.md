@@ -402,7 +402,7 @@ Its index is $I = h(x) \cdot \mathrm{age} / \ln(1/x)$, proportional to its age, 
 ### The budget, and the price
 
 **A flush cleans ripe pages, highest index first, until its page budget is spent: ripeness takes the churn floor's place.**
-The budget stays what it is, a cap on the work one flush does, and so does the check that an offer fills its page.
+The budget stays what it is, a cap on the pages one flush writes for cleaning, and so does the check that an offer of data pages fills the page it opens; an offer of leaves opens none, since [what it restates joins the leaves the cut lays out anyway](../impl/consolidation.md#the-budget-loop), and costs the budget the pages its restatements take.
 
 **$\kappa$, not the budget, is what moves the file toward its target fill $\tau$.**
 Raising $\kappa$ raises every page's threshold, so a controller that measures the live fraction after each commit and moves $\kappa$ up while it lies below $\tau$, and down while above, converges on $\tau$ wherever the budget allows — the job the current design gives the budget.

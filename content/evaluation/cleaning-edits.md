@@ -161,6 +161,7 @@ The live bytes exceed the live size in the drawings' base and packed layouts, si
 **The leaves fill far less than the data pages, under every policy and setting: 40 to 72 % in the drawings' base and packed layouts, where the data pages come out 71 to 97 % full.**
 Both the churn floor and the ripeness branches hold a budgeted rewrite of leaves to a data page's fill floor: its victims' restatements must fill 95 % of a leaf, which leaves between two fifths and a half full cannot do, alone or in pairs.
 [Sparse leaves](../drafts/consolidation-from-statements.md) traces this on main; the ripeness branches' budget loop applies the same floor.
+[Cleaning edits without the leaves' fill floor](leaf-floor.md) measures every policy without it.
 So in the drawings' base and packed layouts, the leaves are 29 to 43 % of the live pages, the most on the world map in its base layout at λ = 0.1, which fills its data pages most and has 5 % more leaves than at λ = 1.
 Only on the tiger and the coat of arms in their base layouts, and on the coat of arms in its packed one, does λ = 0.1 fill the leaves fuller, to 64 to 70 % from 50 to 53 %.
 

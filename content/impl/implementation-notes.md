@@ -2,7 +2,7 @@
 title: Implementation notes
 ---
 
-What implementing the design in [kladde-rs](../rust/) has shown: where kladde-rs falls short, what needs more thought, where kladde-docs is wrong or could change, and what it leaves open, grouped by what each finding calls for.
+What implementing the design in [kladde-rs](../rust/) has shown: where kladde-rs falls short, where kladde-docs is wrong or could change, and what it leaves open, grouped by what each finding calls for.
 
 kladde-rs records these findings in its `implementation-notes.md` as they come up, and this page is a copy of it.
 Paths like `spec/journal.md` are relative to `content/`, the root of these documents.
@@ -65,15 +65,6 @@ What the code does not do yet, or does less well than kladde-docs or its own goa
   `impl/consolidation.md#compaction-mode` keeps a cached index of the highest live page instead; the scan costs `O(pages)` per flush, which is small next to what a flush writes, but is not the `O(1)` amortised the design promises.
   Interior pages are passed over like journal pages, since every cut that needs them writes them afresh.
 
-## What needs more thought
-
-Findings that question a choice of kladde-docs without settling it.
-
-- **A budgeted page rewrite opens no page of its own.**
-  It takes its victims before the cut, whose layout then needs about one more leaf per offer; the budget counts it as a page all the same, and holds it to the fill floor like a data offer.
-  Since its restatements join leaves the cut packs full anyway, the fill floor could be dropped for table offers, with the budget charged their estimated restatements in fractions of a page.
-  That was tried and not kept: with 64 MiB of uniform overwrites it raised the fill of table pages from 0.59 to 0.70 but shrank the file only from 1.53 to 1.51 times its live size, and made the median flush 38 % slower; at 1 MiB the file came out larger.
-
 ## Corrections to kladde-docs
 
 Where kladde-docs is wrong, or leaves out something it needs, and the implementation does what it should instead; each is a change to propose for the documents.
@@ -115,7 +106,8 @@ Where the implementation departs from what kladde-docs states, in a way the docu
 - **`Kladde::create_in` and `Kladde::open_in` take any `Storage` and `Options`**; `Kladde::new` is `create_in` with a `MemoryStorage`, and cannot fail.
   The root's allocation and the descriptor table's are ordinary allocations, and count in `Kladde::stats`.
 - **A table victim's restatements are estimated at 1.25 times its coverage.**
-  Fragments split by shadowing need a statement each, and restated statements lose the delta encoding of their old neighbours; `impl/consolidation.md#the-page-rewrite` prices the rewrite by coverage alone.
+  Fragments split by shadowing need a statement each, and restated statements lose the delta encoding of their old neighbours; `impl/consolidation.md#the-page-rewrite` prices the rewrite by coverage alone, as `(C − written) / written`.
+  With the estimate as `written`, a victim passes the churn floor at coverage up to `C / (1.25 · (1 + λ))`, and an offer of table victims costs the budget `written / C` pages.
   If the estimate is too low for a filler, what does not fit the last page spills into another leaf.
 - **An age record is current if no *live* statement naming its allocation is newer than `up_to_date`.**
   `impl/consolidator-state.md#checking-it` asks about every statement naming it; statements that are physically present but dead are not in memory after a load.

@@ -2,16 +2,44 @@
 title: Sparse leaves, and consolidation from the statements up
 ---
 
-**Status: a finding, half resolved, and a direction for a redesign; high priority.**
-The consolidation policy of [Consolidation](../impl/consolidation.md), as kladde-rs implements it, keeps address-table leaves far emptier than data pages, so that 2 to 15 % of a file's live pages are leaves it would not need if they were as full as its data pages.
-Until [the newest size won](../spec/address-table.md#conflict-resolution-across-epochs), it was 4 to 33 %, since leaves that held almost nothing stayed in the file for dozens of flushes; the new size rule ended that, by letting the statements that kept them alive die, and by removing the reason the cut refused them.
-The cause of what remains is not a tuning constant but the way the policy interleaves three decisions, which page to retire, which statements to write, and where to put them, so that each constrains the others: the new size rule removed two of those constraints, and the third, a fill floor on retiring leaves, keeps them half empty.
+**Status: a finding, resolved, and a direction for a redesign.**
+The consolidation policy of [Consolidation](../impl/consolidation.md), as kladde-rs implemented it, kept address-table leaves far emptier than data pages, so that 4 to 33 % of a file's live pages were leaves it would not have needed had they been as full as its data pages.
+Three causes did it, and each is gone.
+[The newest size rule](../spec/address-table.md#conflict-resolution-across-epochs) let the statements that kept nearly empty leaves alive die, and removed the reason the cut refused them; that left leaves half empty, so that fuller ones would have saved 2 to 15 % of the live pages.
+A fill floor on retiring leaves kept them so, and [the budget loop](../impl/consolidation.md#the-budget-loop) no longer holds leaves to it, since retiring a leaf opens no page; leaves as full as the data pages would now save 0.4 to 6 % of the live pages.
+The three causes had one root, which is not a tuning constant but the way the policy interleaves three decisions, which page to retire, which statements to write, and where to put them, so that each constrains the others.
 The second half of this draft starts over from [the logical level of the address table](../spec/address-table.md#logical-level) and keeps the three apart.
 
 ## The finding
 
-**Leaves stay far emptier than data pages, and most of them sit between a fifth and a half full: the cut's fillers take the sparsest into the room left in its last page, and the budget loop, which holds the rest to a fill floor, takes few of them.**
-On kladde-svg's drawings, with svg-bench's edits keeping to one part of the drawing at a time, a journal of 4 pages, and main's consolidation at its default churn floor, at kladde-rs `e88fd47` on its branch `defrag-shifts`, the address-table pages average 44 to 60 % full, against 73 to 82 % for the data pages, and 40 to 67 % of them are less than half full at any time:
+**Leaves now come out nearly as full as data pages: on every run but the small tiger, 62 to 69 % full against 72 to 82 %, and at most 38 % of them under half full.**
+On kladde-svg's drawings, with svg-bench's edits keeping to one part of the drawing at a time, a journal of 4 pages, and main's consolidation at its default churn floor, at kladde-rs `714c602` on its branch `defrag-shifts`:
+
+| drawing | layout | table pages | pages needed | fill | leaves under half full | under a tenth full | data pages under half full | share of live pages |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 10.8 | 7.1 | 66 % | 23 % | 0 % | 4.7 % | 29 % |
+| tiger | packed | 5.4 | 3.7 | 69 % | 20 % | 1 % | 6.8 % | 27 % |
+| tiger | small | 0.5 | 0.2 | 34 % | 88 % | 6 % | 6.3 % | 3 % |
+| coat of arms | base | 25.7 | 16.0 | 62 % | 29 % | 0 % | 1.6 % | 28 % |
+| coat of arms | packed | 14.7 | 9.3 | 63 % | 28 % | 0 % | 3.0 % | 29 % |
+| coat of arms | small | 2.4 | 1.6 | 67 % | 38 % | 1 % | 2.4 % | 5 % |
+| world map | base | 131.3 | 81.4 | 62 % | 28 % | 0 % | 0.3 % | 27 % |
+| world map | packed | 80.0 | 50.5 | 63 % | 25 % | 0 % | 0.4 % | 23 % |
+| world map | small | 13.3 | 8.8 | 66 % | 29 % | 0 % | 0.3 % | 4 % |
+
+"Table pages" is their mean count, "pages needed" what their live statements would fill, "fill" the ratio of the two, and the last column the table pages' share of the live pages.
+The means are over the rows svg-bench records every 1000 edits, and the shares over histograms of every live page's fill taken at the same flushes, by scratch instrumentation that did not change what was written.
+Were the table pages as full as each run's own data pages, the files would carry 0.4 to 6 % fewer live pages, the most on the world map in its base and packed layouts.
+The small tiger is the exception to the ranges above: its statements need a fifth of a page, which the header mostly holds, and it has one leaf at a time, or none.
+
+**What keeps leaves a few points emptier than data pages is their price, not a rule that keeps them out.**
+A leaf's restatements are estimated at 1.25 times its coverage, since restated statements lose their neighbours' delta encoding, so at the default churn floor a leaf is a victim only up to 40 % full, where a data page is one up to 50 %.
+[Cleaning edits without the leaves' fill floor](../evaluation/leaf-floor.md) measures every setting of main's churn floor and of the three ripeness branches.
+
+### Before the fill floor went
+
+**At kladde-rs `e88fd47`, the same branch before it stopped holding leaves to a fill floor, leaves stayed far emptier than data pages, and most of them sat between a fifth and a half full: the cut's fillers took the sparsest into the room left in its last page, and the budget loop, which held the rest to a fill floor, took few of them.**
+The address-table pages averaged 44 to 60 % full, against 73 to 82 % for the data pages, and 40 to 67 % of them were less than half full at any time:
 
 | drawing | layout | table pages | pages needed | fill | leaves under half full | under a tenth full | data pages under half full | share of live pages |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -25,21 +53,18 @@ On kladde-svg's drawings, with svg-bench's edits keeping to one part of the draw
 | world map | packed | 103.0 | 50.6 | 49 % | 58 % | 0 % | 0.4 % | 28 % |
 | world map | small | 18.3 | 8.7 | 48 % | 65 % | 0 % | 0.3 % | 6 % |
 
-"Table pages" is their mean count, "pages needed" what their live statements would fill, "fill" the ratio of the two, and the last column the table pages' share of the live pages.
-The means are over the rows svg-bench records every 1000 edits, and the shares over histograms of every live page's fill taken at the same flushes, by scratch instrumentation that did not change what was written.
-Were the table pages as full as each run's own data pages, the files would carry 2 to 15 % fewer live pages, and 8 to 15 % fewer on the coat of arms and the world map in their base and packed layouts.
-The small tiger is the exception to the ranges above: its statements need a fifth of a page, which the header mostly holds, and it has one leaf at a time, or none.
+Were the table pages as full as each run's own data pages, the files would have carried 2 to 15 % fewer live pages, and 8 to 15 % fewer on the coat of arms and the world map in their base and packed layouts.
 
-**Nearly empty leaves no longer stay: on every run but the small tiger, at most 4 % of the leaves are under a tenth full, and in the base and packed layouts at most 3 % are under a fifth.**
-What stays is the band between a fifth and a half full, which holds 38 to 65 % of the leaves in the base and packed layouts.
-The world map in those layouts shows that part alone: its leaves were never nearly empty, and the new size rule raised their fill by 1 and 3 points only.
+**Nearly empty leaves no longer stayed: on every run but the small tiger, at most 4 % of the leaves were under a tenth full, and in the base and packed layouts at most 3 % were under a fifth.**
+What stayed was the band between a fifth and a half full, which held 38 to 65 % of the leaves in the base and packed layouts, and holds 18 to 29 % since the fill floor went.
+The world map in those layouts showed that part alone: its leaves were never nearly empty, and the new size rule raised their fill by 1 and 3 points only, where dropping the fill floor raised it by 18 and 14.
 
 ### Before the newest size won
 
 **At kladde-rs `795b3b9`, the same branch before it moved to the newest size rule, nearly empty leaves piled up: on the tiger and the coat of arms, 5 to 92 % of the leaves were under a tenth full, and leaves as full as the data pages would have saved 4 to 33 % of the live pages.**
-The same runs, then and now:
+The same runs, then and at `e88fd47`:
 
-| drawing | layout | table pages, then | fill, then | under a tenth full, then | live pages since |
+| drawing | layout | table pages, then | fill, then | under a tenth full, then | live pages by `e88fd47` |
 | --- | --- | --- | --- | --- | --- |
 | tiger | base | 15.8 | 48 % | 12 % | −6 % |
 | tiger | packed | 13.1 | 32 % | 40 % | −25 % |
@@ -51,38 +76,37 @@ The same runs, then and now:
 | world map | packed | 122.4 | 46 % | 1 % | −5 % |
 | world map | small | 24.0 | 38 % | 16 % | −2 % |
 
-The data pages were as full then as now, so the live pages saved are the leaves'.
+The data pages were as full then as at `e88fd47`, and as since, so the live pages saved are the leaves'.
 The edited tiger that the variable-size evaluation, on the kladde-docs branch `defrag-shifts`, reports closing with 41 table pages for 2,265 statements likely showed the same effect.
 
 **On the small tiger, the leaves piled up for a dozen flushes and then vanished at once.**
 Its table pages climbed to 11 to 19 at the peaks of the cycle, holding between 100 and 2,800 bytes of live statements in all; almost no table page was rewritten until compaction mode turned on, and that mode then rewrote 11 to 18 of them within one or two flushes, after which the count fell to one or two and started climbing again.
-Now it holds at most two leaves at any flush.
+At `e88fd47`, it held at most two leaves at any flush, and since the fill floor went, one.
 
-## Why leaves stay empty
+## Why leaves stayed empty
 
-Three causes kept leaves nearly empty until the newest size won, and one of them, the fill floor, keeps them half empty still.
+Three causes kept leaves nearly empty until the newest size won, and one of them, the fill floor, kept them half empty until it went too.
 
-### The budget loop holds a table offer to the data pages' fill floor
+### The budget loop held a table offer to the data pages' fill floor
 
-**[The budget loop](../impl/consolidation.md#the-budget-loop) takes a page rewrite only when the restatements of its victims would fill a whole leaf to `1 − θ`, 95 %, as it takes data victims only when their survivors fill a whole data page.**
-kladde-rs' `implementation-notes.md` records it: "a budgeted page rewrite opens no page of its own … the budget counts it as a page all the same, and holds it to the fill floor like a data offer."
+**[The budget loop](../impl/consolidation.md#the-budget-loop) took a page rewrite only when the restatements of its victims would fill a whole leaf to `1 − θ`, 95 %, as it takes data victims only when their survivors fill a whole data page.**
+kladde-rs' `implementation-notes.md` recorded it: "a budgeted page rewrite opens no page of its own … the budget counts it as a page all the same, and holds it to the fill floor like a data offer."
 
 For a data page the floor has a reason: evacuating victims into a page the flush opens for them costs that page, and a page that closes half empty is a page wasted.
 For a table page it has none: a page rewrite opens no page, since what it restates joins the flush's dirty set and [the cut](../impl/consolidation.md#one-dirty-set-and-why-statements-are-derived-last) lays it out among everything else the flush states.
 Its cost is the restatements' bytes, which [the churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) already weighs against the page it frees.
 
-The floor turns the cheapest victims into the hardest to take: an offer is made of whole leaves at most half live, best score first, and needs 95 % of a leaf in restatements.
-A file whose leaves hold less than that in all, such as the small tiger, can never pass it, however empty its leaves are.
-Where the leaves hold more, an offer passes only where whole leaves happen to add up to 95 % of a leaf: a leaf between two-fifths and a half full restates into 50 to 62 % of one, by the estimate of 1.25 times its coverage, so two of them do not fit together, and one alone fails the floor.
+The floor turned the cheapest victims into the hardest to take: an offer was made of whole leaves at most half live, best score first, and needed 95 % of a leaf in restatements.
+A file whose leaves held less than that in all, such as the small tiger, could never pass it, however empty its leaves were.
+Where the leaves held more, an offer passed only where whole leaves happened to add up to 95 % of a leaf: a leaf between two-fifths and a half full restates into 50 to 62 % of one, by the estimate of 1.25 times its coverage, so two of them did not fit together, and one alone failed the floor.
 
-**What the floor refuses waits for the cut's fillers, which take leaves only into the room left in the cut's last page, sparsest first.**
-That room was 1.6 to 2.3 KB on average in these runs, enough for one leaf up to 31 to 45 % full, so the sparsest leaves go soon, and those fuller than the room allows wait for an offer that passes, which is the band the finding shows.
+**What the floor refused waited for the cut's fillers, which take leaves only into the room left in the cut's last page, sparsest first.**
+That room was 1.6 to 2.3 KB on average in these runs, enough for one leaf up to 31 to 45 % full, so the sparsest leaves went soon, and those fuller than the room allowed waited for an offer that passed, which is the band the finding showed at `e88fd47`.
 The fillers rewrote 52 to 96 % of the leaves rewritten in each run, and the budget loop met a table offer that passed the churn floor but not the fill floor 87 to 1,283 times per run.
 
-**Held to the churn floor alone, leaves come out nearly as full as data pages.**
-A diagnostic run, not a proposal, judged table offers by the churn floor alone, on the same drawings, layouts, and edits.
-On every run but the small tiger, leaves came out 65 to 70 % full, with 14 to 26 % of them under half full, and fuller leaves would have saved only 0 to 5 % of the live pages, down from 2 to 15 %.
-The files carried 1 to 11 % fewer live pages, 11 % on the world map in its base layout, and the flushes wrote 3 to 8 % more bytes per edit, restating leaves that the floor had kept waiting.
+**Held to the churn floor alone, leaves come out nearly as full as data pages, and so the floor went.**
+Since kladde-rs `714c602`, and in [Consolidation](../impl/consolidation.md#the-budget-loop), an offer of leaves passes on the churn floor alone, and costs the budget the pages its restatements take rather than a page; a leaf reclaims its page less the room its restatements take, so that at the default churn floor it is a victim up to 40 % full.
+The finding above shows the result: in the base and packed layouts, the leaves are 62 to 69 % full where they were 44 to 60 %, the files carry 4 to 10 % fewer live pages, and the flushes write 3 to 8 % more bytes per edit, restating leaves that the floor had kept waiting.
 
 ### Leaves were kept alive for the size alone
 
@@ -141,12 +165,12 @@ The check read them because it learned a leaf's ids by decoding the page, which 
 
 **[Compaction mode](../impl/consolidation.md#compaction-mode) offers the highest live page ahead of every victim, whatever its fill, and an offer holding it passes both floors.**
 Once free pages below the tail pass a quarter of the file, the mode works down the file's tail, page by page; the nearly empty leaves that the other paths left behind went with it, and once the mode switched off, they piled up again.
-That was the sawtooth on the small tiger, and why its file held 8.8 table pages on average for 0.2 pages' worth of statements; with no nearly empty leaves left for the mode to collect, it holds 0.8.
+That was the sawtooth on the small tiger, and why its file held 8.8 table pages on average for 0.2 pages' worth of statements; with no nearly empty leaves left for the mode to collect, it held 0.8 at `e88fd47`, and holds 0.5 since the fill floor went.
 
 ### Data pages are not hit the same way
 
-**Data pages almost never fall below half full: 0.3 to 7.1 % of them, against 40 to 88 % of the leaves.**
-They escape the fill floor: a data offer that whole victims leave short takes one more victim and [cuts its survivors at the page boundary](../impl/consolidation.md#the-budget-loop), carrying the rest into the next page, where a table offer can take whole leaves only.
+**Data pages almost never fall below half full: 0.3 to 7.1 % of them, against 40 to 88 % of the leaves at `e88fd47`.**
+They escape the fill floor: a data offer that whole victims leave short takes one more victim and [cuts its survivors at the page boundary](../impl/consolidation.md#the-budget-loop), carrying the rest into the next page, where a table offer held to the floor could take whole leaves only.
 And [free filling](../impl/consolidation.md#victims-are-pulled-one-at-a-time) takes any whole data victim that fits the room of any data page the flush writes, where the fillers have the room of one leaf.
 Their histogram's one feature, 14 to 25 % of them between 50 and 60 % full, is the default churn floor's own threshold, which takes victims at most half live.
 
@@ -157,15 +181,15 @@ Nothing measured here shows that doing harm on data pages; the redesign below re
 
 **The policy makes three decisions in one interleaved pass, which page to retire, which statements to write, and where to put them, and lets each constrain the others.**
 
-- Whether a leaf is retired depends on whether its restatements fill a page, which is a question about where they go.
-  This is the fill floor, and it remains.
+- Whether a leaf was retired depended on whether its restatements filled a page, which is a question about where they go.
+  That was the fill floor, which no longer holds leaves.
 - Which leaves the cut could retire depended on the statements it had already laid out.
   The fillers' check, which enforced it, is gone.
 - The statements for an id were decided before the set of retired pages was final, so a later victim could contradict them.
   Since the newest size wins, the cut settles which of its statements states each id's size once the fillers are known, and content restatements never could conflict.
 
 Each of these was locally sensible, and the later ones were added to keep the interleaving correct, but together they made the cheapest victims unreachable.
-The new size rule removed the two that guarded correctness, and the one left is a matter of policy alone: it no longer keeps the cheapest victims out, but it still makes the next cheapest wait.
+The new size rule removed the two that guarded correctness, and the third, a matter of policy alone, went once it was clear that it protected no page.
 The same pattern makes the policy hard to reason about at all: the [budget loop](../impl/consolidation.md#the-budget-loop), free filling, the cut's fillers, the rotating window, and compaction mode each choose victims under different constraints, and each constraint comes from a decision made elsewhere.
 
 ## Possible solutions, from the statements up
@@ -265,7 +289,6 @@ No rule of one epoch needs relaxing for consolidation's sake, with or without th
 
 ### What this would remove
 
-- **The fill floor on table offers**, since retiring a table page opens no page; its cost is the bytes task 3 infers.
 - **The cut's fillers**, since the statements are inferred once the victims are known, and nothing laid out is ever revisited.
 - **The distinction between free filling, budgeted pages, and compaction mode as ways to choose victims**: one ranking chooses every victim, and the room left in pages is a packing matter.
 
@@ -273,5 +296,5 @@ No rule of one epoch needs relaxing for consolidation's sake, with or without th
 
 - **Whether an epoch per run pays for itself**: its bytes against the restatements and re-stamped header statements it saves, which svg-bench's drawings could measure.
 - **How victims are ranked once packing no longer constrains them**, and how much a flush may retire, which bounds both its work and how far the file can fall behind; this is where ripeness, survivor classes, and the churn floor's price of space come back in.
-  The diagnostic run without the fill floor on table offers traded 3 to 8 % more bytes per edit for 1 to 11 % fewer live pages.
+  Without the fill floor on table offers, main's churn floor fills the drawings' live pages to about nine tenths at λ = 0.25, where it needed λ = 0.1 before, with 13 to 31 % fewer writes ([the evaluation](../evaluation/leaf-floor.md)).
 - **Whether the rotating window survives**: it restates a key range for description density, which in this frame is a victim too, a range rather than a page, ranked by what its restatement saves.

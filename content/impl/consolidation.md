@@ -422,7 +422,7 @@ And the fragment map now changes before the commit, so a flush that fails must u
 
 ## The budget
 
-The design has one throttle — a per-flush **maintenance budget** in pages beyond the flush's own content — and one queue of offers competing for it, ranked by `bytes reclaimed / bytes written`.
+The design has one throttle — a per-flush **maintenance budget** in pages written beyond the flush's own content — and one queue of offers competing for it, ranked by `bytes reclaimed / bytes written`.
 One further parameter, [the churn floor `λ`](#the-churn-floor-is-a-parameter-not-an-identity), says when an offer is not worth taking at all.
 
 Two sources compete for that budget, and they are one mechanism applied to two kinds of page:
@@ -484,17 +484,22 @@ fn flush(journal: Journal, budget: Budget) {
     //    wherever a page has room its own content cannot use. See `pack`.
     let mut data = pack(merge_by_key(fold.chunks, rewrites), &mut elastic);
 
-    // 3. Budgeted pages, one at a time, to whichever page kind reclaims more per
-    //    byte — and only a page the offer fills, since a page opened for a sliver
-    //    would cost a whole page write for next to nothing.
-    for _ in 0..budget.pages {
-        let Some(offer) = [evacuation.offer_page(), page_rewrite.offer_page()]
+    // 3. The budget, in pages written, offer by offer to whichever page kind reclaims
+    //    more per byte. An offer of data victims opens a page, and only one it fills,
+    //    since a page opened for a sliver would cost a whole page write for next to
+    //    nothing; an offer of table victims opens none, since what it restates joins
+    //    the leaves step 4 lays out, and costs the budget the pages those take.
+    let mut spent = 0.0;
+    while spent < budget.pages {
+        let left = budget.pages - spent;
+        let Some(offer) = [evacuation.offer_page(left), page_rewrite.offer(left)]
                               .into_iter().flatten()
                               .max_by_key(|o| o.reclaimed / o.written) else { break };
         if !offer.holds_tail() {        // compaction mode's tail passes both floors
             if offer.reclaimed < budget.lambda * offer.written { break; }   // the churn floor
-            if offer.fill() < 1.0 - THETA { break; }
+            if offer.opens_page() && offer.fill() < 1.0 - THETA { break; }  // the fill floor
         }
+        spent += if offer.opens_page() { 1.0 } else { offer.written / C };
         offer.take(&mut data, &mut dirty);
     }
 
@@ -512,14 +517,22 @@ fn flush(journal: Journal, budget: Budget) {
 ```
 
 **The two page kinds are combined, not traded off — but they do compete.**
-Their victims fill one plan, and what they compete for is the one budget, a page at a time; each source's offers decline as it takes more, so one greedy pass over the two is the right amount of machinery.
+Their victims fill one plan, and what they compete for is the one budget, counted in the pages they write; each source's offers decline as it takes more, so one greedy pass over the two is the right amount of machinery.
 
 **Free filling happens inside steps 2 and 4, and step 3 is the only place a page is opened for consolidation's sake.**
-It opens one only when the offer fills it to `1 − θ`, which is what keeps a victim too many from costing a nearly empty page; only an offer holding [compaction mode's tail](#compaction-mode) is exempt.
-An offer is what the page would hold: whole victims first, by best fit, and then — if that leaves more than `θ` empty — one more victim with a survivor cut at the page boundary, exactly as `pack` cuts the flush's own chunk.
+It opens one only for an offer of data victims, and only when the offer fills it to `1 − θ`, which is what keeps a victim too many from costing a nearly empty page; only an offer holding [compaction mode's tail](#compaction-mode) is exempt.
+An offer of data victims is what the page would hold: whole victims first, by best fit, and then — if that leaves more than `θ` empty — one more victim with a survivor cut at the page boundary, exactly as `pack` cuts the flush's own chunk.
 A cut's tail leads the next page, which is therefore opened whatever its own offer, so the loop cuts nothing on its last page, and every chain of cuts it starts ends within the budget.
 The flush's data pages form one such chain: the last page `pack` returns may cut a victim's survivor too whenever the loop goes on to open another, so only the flush's very last data page can close short.
 Description defragmentation's reserved share is spent in step 1, before anything is packed, so its rewrites are packed in step 2 exactly as the flush's own chunks are — on a flush whose only data they are, too.
+
+**An offer of table victims opens no page, so no fill floor holds it, and it costs the budget the pages its restatements take.**
+[The page rewrite](#the-page-rewrite) takes the fragments its victims' live statements own, and the cut states them among everything else the flush states, in leaves it packs full but for the last.
+So the restatements of a sparse leaf take a fraction of a leaf, and there is no page a floor could keep from closing short: the cost of a table victim is its restatements' bytes, which the churn floor already weighs against the page it frees.
+An offer gathers table victims while their estimated restatements fit one leaf and what is left of the budget, so that an offer is at most a page's worth of work, and the budget counts `written / C` for it, where an offer of data victims counts the page it opens.
+Held to the fill floor as well, an offer of table victims would have to restate `1 − θ` of a leaf, which leaves less than half full could do only three or more at a time, and leaves would stay half empty: [measured on kladde-svg's drawings](../evaluation/leaf-floor.md), they came out 40 to 72 % full where the data pages were 71 to 97 %, and without the floor they come out 60 to 88 % full, for up to 22 % fewer live pages.
+What that costs is the leaves it rewrites: at the same churn floor, the drawings write up to 30 % more, and their flushes take a tenth longer at the median.
+Where the leaves were fuller to begin with, the floor cost less and dropping it gains less: on 64 MiB of kladde-bench's uniform overwrites, the leaves' fill rises from 0.60 to 0.68 and the file shrinks from 1.53 to 1.51 times its live size, while the median flush takes a fifth longer.
 
 **Debug builds observe how full the pages come out.**
 
@@ -588,7 +601,7 @@ Consolidation runs inside every flush in two forms, which differ in [the price o
 
 - **Free filling.** Victims, description defragmentation's remaining candidates, and parts of victims too big to take whole ride in the room of pages that are being written anyway — the flush's own data pages, and the header or the last leaf — so they cost no page write and compete with nothing.
   It happens inside [packing](#packing-in-id-order-with-look-ahead) and inside [the cut](#one-dirty-set-and-why-statements-are-derived-last), and it runs to exhaustion.
-- **Budgeted pages.** Beyond that, pages that exist only to reclaim, offered one at a time and opened only when the offer fills them.
+- **Budgeted cleaning.** Beyond that, data pages that exist only to reclaim, offered one at a time and opened only when the offer fills them, and table victims whose restatements take leaves of their own.
   These compete, under [the budget and the churn floor](#the-budget-loop).
 
 ## Victim selection for data pages
@@ -653,12 +666,12 @@ impl Evacuation {
         Some(self.evacuate(v))       // its survivors taken; see "Each fragment is stated once"
     }
 
-    /// What one budgeted page would hold and reclaim, without taking anything: whole
-    /// victims by best fit — the tail first, in compaction mode, whatever its fill — the
-    /// churn floor applied to each but the tail, then, unless this is the budget's last
-    /// page, one more victim cut at the boundary if the page would otherwise close more
-    /// than θ empty.
-    fn offer_page(&self) -> Option<Offer> { … }
+    /// What one budgeted page would hold and reclaim, without taking anything, or None if
+    /// `left`, the budget left in pages, holds no whole page: whole victims by best fit —
+    /// the tail first, in compaction mode, whatever its fill — the churn floor applied to
+    /// each but the tail, then, unless this is the budget's last page, one more victim cut
+    /// at the boundary if the page would otherwise close more than θ empty.
+    fn offer_page(&self, left: f64) -> Option<Offer> { … }
 }
 ```
 
@@ -670,12 +683,12 @@ A caveat on the arithmetic rather than on the policy: `coverage` counts [aliased
 
 ### The page rewrite
 
-Victims come from the address-table buckets — sparsest first, `K` sampled and scored as [data pages are](#scoring-a-data-page), or the tail first [in compaction mode](#compaction-mode) — and a victim is taken only where all of its restatements fit: in the room of the cut's last page, which costs nothing, or on a budgeted leaf.
+Victims come from the address-table buckets — sparsest first, `K` sampled and scored as [data pages are](#scoring-a-data-page), or the tail first [in compaction mode](#compaction-mode) — and a victim is taken in one of two ways: into the room of the cut's last page, if all of its restatements fit there, which costs nothing, or under the budget, whose offers gather victims while their restatements fit one leaf.
 Compaction mode's tail is the exception: it is taken whatever its size, and restatements that do not fit one leaf spill into the cut's next.
 Executing one is [`rewrite_page`](address-table-operations.md#rewrite_pagevictim-dirty): decode the victim, take the fragments its live statements still own so that the cut states them again, and record any size statement or tombstone that lived there for the cut to state again.
 
 Its cost is those restatements' encoded bytes, estimated from the victim's coverage while it is only being offered, and known exactly once the cut has derived them — possibly less, since they merge with whatever else the flush states nearby; its benefit is the whole victim.
-So it is priced exactly as evacuation is, `(C − written) / written`, and the two compete in [the budget loop](#the-budget-loop) on equal terms.
+So it is priced exactly as evacuation is, `(C − written) / written`, and the two compete in [the budget loop](#the-budget-loop) on equal terms, but for the fill floor, which holds evacuation's page alone, since the page rewrite opens none.
 [Coverage charges an inline payload per byte to the table page that carries it](liveness.md#coverage), so the estimate includes payloads without special care — which matters, since a page of 64-byte inlines is ~90 % payload and would look ten times sparser than it is if only framing counted.
 
 A victim with children — an interior page — is rewritten the same way, and its `child_ref`s move with it; see [unlinking](#unlinking-an-emptied-page).
@@ -820,10 +833,10 @@ So while **holes** — pages below the highest live one that are reusable now, n
 **The mode needs no hysteresis**, because switching in and out of it costs nothing.
 A tail page once moved stays moved, so leaving the mode loses no progress; and near `h`, where compaction lowers the share of holes and ordinary cleaning raises it again — every sparse page it frees below the tail is a new hole — a mode that alternates flush by flush merely splits the budget between the two debts.
 
-**An offer holding the tail passes the churn floor and the fill floor whatever else it holds, and a table tail is taken even when its restatements need more than one leaf, so it is the budget alone that paces the mode.**
+**An offer holding the tail passes the churn floor, and the fill floor if it opens a data page, whatever else it holds, and a table tail is taken even when its restatements need more than one leaf, so it is the budget alone that paces the mode.**
 The floors weigh what a page returns to the pool, and a tail victim returns more: a whole page to the file system.
 For a data page the exemption waives nothing the churn floor would catch, since moving it at fill `u` writes `u · C`, a ratio of `1 / u` that passes a floor near 1 even for a full page; the fill floor it can fail, when nothing else fills the page it moves into.
-A table page's restatements can take more than its coverage, since fragments that shadowing split need a statement each and restated statements lose their neighbours' delta encoding, so a nearly full table page fails the churn floor as well, and may not fit one budgeted leaf.
+A table page's restatements can take more than its coverage, since fragments that shadowing split need a statement each and restated statements lose their neighbours' delta encoding, so a nearly full table page fails the churn floor as well, and may not fit the one leaf an offer gathers victims for.
 A mass free makes one the tail as a matter of course: the flush that states the frees, and the one after it, cannot reuse the pages the frees release yet, so their leaves — the tombstones, and whatever they state `Inline` — extend the file.
 Were the tail held to the floors, the mode would stop at the first such page, and the budget loop with it, until the rotating window had drained the page a few statements a flush.
 
