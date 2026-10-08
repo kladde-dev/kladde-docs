@@ -3,8 +3,9 @@
 
 Every argument after the options names a run, `label=directory`, where the
 directory holds the CSV tables `kladde-bench` wrote (`uniform.csv`, ...),
-plain or gzipped (`uniform.csv.gz`), or those of kladde-svg's `svg-bench`
-(`svg-<drawing>.csv`), which the figure `svg` draws.
+plain or gzipped (`uniform.csv.gz`), those of kladde-svg's `svg-bench`
+(`svg-<drawing>.csv`), which the figure `svg` draws, or those of
+`text-bench` (`text-<size>.csv`).
 With one run, the figures show that run; with several, the figures that
 compare policies overlay them, labelled.
 `--only` draws only the figures it names, such as `--only tradeoff,kappa`.
@@ -592,17 +593,19 @@ LAYOUTS = ["base", "packed", "small"]
 DRAWINGS = {"tiger": "tiger", "coat-of-arms-spain": "coat of arms", "world-map": "world map"}
 
 
-def svg_policies(runs):
-    """{(policy, knob, value, layout): {drawing: rows}} for the runs labelled
-    `policy/knob/value/layout` whose tables are svg-bench's."""
+def svg_policies(runs, prefix="svg-", layouts=LAYOUTS):
+    """{(policy, knob, value, layout): {name: rows}} for the runs labelled
+    `policy/knob/value/layout` whose tables are svg-bench's, named by their
+    drawing; or, with `prefix="text-"` and `layouts=["text"]`, text-bench's,
+    named by their size."""
     out = {}
     for label, run in runs.items():
         parts = label.split("/")
-        if len(parts) != 4 or parts[0] not in POLICIES or parts[3] not in LAYOUTS:
+        if len(parts) != 4 or parts[0] not in POLICIES or parts[3] not in layouts:
             continue
         policy, knob, value, layout = parts
-        tables = {name[len("svg-"):]: next(iter(table.values()))
-                  for name, table in run.items() if name.startswith("svg-")}
+        tables = {name[len(prefix):]: next(iter(table.values()))
+                  for name, table in run.items() if name.startswith(prefix)}
         if tables:
             out[(policy, knob, float(value), layout)] = tables
     return out
@@ -648,6 +651,34 @@ def svg_tradeoff(runs, out):
     fig.legend(handles, labels, loc="upper center", ncol=4, fontsize=7.5, frameon=False,
                bbox_to_anchor=(0.5, 1.0))
     save(fig, out, "svg-tradeoff", rect=(0, 0, 1, 0.965))
+
+
+def text_tradeoff(runs, out):
+    """As `svg_tradeoff`, for text-bench's typing: a panel per text, from
+    the runs labelled `policy/knob/value/text`."""
+    series = svg_policies(runs, prefix="text-", layouts=["text"])
+    if not series:
+        return
+    texts = sorted({t for tables in series.values() for t in tables}, key=lambda t: int(t.rstrip("k")))
+    fig, axes = plt.subplots(1, len(texts), figsize=(7.5, 3.0), squeeze=False)
+    for ax, text in zip(axes[0], texts):
+        for policy, (label, color, marker) in POLICIES.items():
+            settings = sorted((-v if k == "lambda" else v, tables[text])
+                              for (p, k, v, _), tables in series.items()
+                              if p == policy and text in tables)
+            points = [svg_steady(rows) for _, rows in settings]
+            if not points:
+                continue
+            ax.plot([x for x, _ in points], [y for _, y in points], "-", color=color, lw=1.2,
+                    marker=marker, ms=4.5, mec="white", mew=0.8, label=label)
+            ax.plot(*points[0], marker=marker, ms=4.5, color=color, mfc="white", mew=1.0)
+        ax.set_title(f"a text of {text[:-1]} KiB at the start", fontsize=8.5)
+        ax.set_xlabel("bytes written per keystroke")
+    axes[0][0].set_ylabel("live pages / live size")
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=4, fontsize=7.5, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+    save(fig, out, "text-tradeoff", rect=(0, 0, 1, 0.9))
 
 
 def svg_pages(runs, out):
@@ -730,7 +761,7 @@ def main():
         label, _, directory = spec.partition("=")
         runs[label] = load(directory)
     figures = [space_amplification, mixed, live_fraction, write_breakdown, budget, shrink, description, flush_latency,
-               throughput, tradeoff, defrag_share, kappa, svg, svg_tradeoff, svg_pages]
+               throughput, tradeoff, defrag_share, kappa, svg, svg_tradeoff, svg_pages, text_tradeoff]
     only = set(args.only.split(",")) if args.only else None
     for figure in figures:
         if only is None or figure.__name__.replace("_", "-") in only:

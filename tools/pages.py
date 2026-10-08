@@ -69,7 +69,7 @@ ORDER = [
     "evaluation/ripeness.md",
     "evaluation/ripeness2.md",
     "evaluation/bayesian-ripeness.md",
-    "evaluation/svg-cleaning.md",
+    "evaluation/cleaning-edits.md",
     # Kept for the reasoning, not the result.
     "superseded/index.md",
     "superseded/relocatable-heap.md",
