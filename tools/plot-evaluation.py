@@ -119,11 +119,12 @@ def round_coordinates(svg):
     return ATTRIBUTE.sub(attribute, svg)
 
 
-def save(fig, out, name):
+def save(fig, out, name, rect=(0, 0, 1, 1)):
     """Writes `<name>.svg`, byte for byte the same whenever the data is -- no
-    date in it, and every coordinate rounded."""
+    date in it, and every coordinate rounded.  The axes are laid out within
+    `rect`, so that a figure-wide legend can take the rest."""
     out.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
+    fig.tight_layout(rect=rect)
     svg = io.BytesIO()
     fig.savefig(svg, format="svg", metadata={"Date": None})
     plt.close(fig)
@@ -577,6 +578,127 @@ def svg(runs, out):
     save(fig, out, "svg")
 
 
+# Cleaning policies on kladde-svg's drawings: a run is labelled
+# `policy/knob/value/layout`, such as `ripeness/tau/0.9/packed`.  Each policy
+# keeps its colour and marker in every figure; the four colours pass the
+# colour-vision checks for every pair, and the markers tell them apart too.
+POLICIES = {
+    "main": ("churn floor (main)", "#2a78d6", "o"),
+    "ripeness": ("ripeness", "#eb6834", "s"),
+    "ripeness2": ("static share", "#1baf7a", "^"),
+    "bayesian": ("Bayesian ripeness", "#4a3aa7", "D"),
+}
+LAYOUTS = ["base", "packed", "small"]
+DRAWINGS = {"tiger": "tiger", "coat-of-arms-spain": "coat of arms", "world-map": "world map"}
+
+
+def svg_policies(runs):
+    """{(policy, knob, value, layout): {drawing: rows}} for the runs labelled
+    `policy/knob/value/layout` whose tables are svg-bench's."""
+    out = {}
+    for label, run in runs.items():
+        parts = label.split("/")
+        if len(parts) != 4 or parts[0] not in POLICIES or parts[3] not in LAYOUTS:
+            continue
+        policy, knob, value, layout = parts
+        tables = {name[len("svg-"):]: next(iter(table.values()))
+                  for name, table in run.items() if name.startswith("svg-")}
+        if tables:
+            out[(policy, knob, float(value), layout)] = tables
+    return out
+
+
+def svg_steady(rows):
+    """Live pages over live size, averaged over the second half of a run,
+    and the bytes written per edit during that half."""
+    half = rows[len(rows) // 2:]
+    mid, end = rows[len(rows) // 2 - 1], rows[-1]
+    live = statistics.mean((r["data_pages"] + r["table_pages"]) * PAGE / r["alloc_bytes"] for r in half)
+    return (written(end) - written(mid)) / (end["ops"] - mid["ops"]), live
+
+
+def svg_tradeoff(runs, out):
+    """The space the live pages take against the bytes written per edit, a
+    panel per drawing and layout, and a curve per policy through its
+    settings, from the one that cleans least, hollow, to the one that cleans
+    most: the churn floor falling, the target fill rising."""
+    series = svg_policies(runs)
+    if not series:
+        return
+    fig, axes = plt.subplots(3, 3, figsize=(7.5, 7.2), squeeze=False)
+    for i, layout in enumerate(LAYOUTS):
+        for j, (drawing, name) in enumerate(DRAWINGS.items()):
+            ax = axes[i][j]
+            for policy, (label, color, marker) in POLICIES.items():
+                settings = sorted((-v if k == "lambda" else v, tables[drawing])
+                                  for (p, k, v, l), tables in series.items()
+                                  if p == policy and l == layout and drawing in tables)
+                points = [svg_steady(rows) for _, rows in settings]
+                if not points:
+                    continue
+                ax.plot([x for x, _ in points], [y for _, y in points], "-", color=color, lw=1.2,
+                        marker=marker, ms=4.5, mec="white", mew=0.8, label=label)
+                ax.plot(*points[0], marker=marker, ms=4.5, color=color, mfc="white", mew=1.0)
+            ax.set_title(f"{name}, {layout}", fontsize=8.5)
+            if i == len(LAYOUTS) - 1:
+                ax.set_xlabel("bytes written per edit")
+            if j == 0:
+                ax.set_ylabel("live pages / live size")
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=4, fontsize=7.5, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+    save(fig, out, "svg-tradeoff", rect=(0, 0, 1, 0.965))
+
+
+def svg_pages(runs, out):
+    """What a file holds, averaged over the second half of each run, in
+    multiples of the live size: data pages, leaves, free pages, and the
+    headers and the journal; a panel per drawing and layout, and a bar per
+    run."""
+    series = svg_policies(runs)
+    if not series:
+        return
+    parts = [("data pages", "#1c5cab"), ("leaves", "#86b6ef"), ("free pages", "#c3c2b7"),
+             ("headers and journal", "#e6e5df")]
+    fig, axes = plt.subplots(3, 3, figsize=(7.5, 7.0), sharex=True, squeeze=False)
+    keys = sorted(series, key=lambda k: (list(POLICIES).index(k[0]), -k[2] if k[1] == "lambda" else k[2]))
+    labels = []
+    for key in keys:
+        policy, knob, value, _ = key
+        text = f"{POLICIES[policy][0]}, {pretty(f'{knob}={value:g}')}"
+        if text not in labels:
+            labels.append(text)
+    for i, layout in enumerate(LAYOUTS):
+        for j, (drawing, name) in enumerate(DRAWINGS.items()):
+            ax = axes[i][j]
+            for key in keys:
+                policy, knob, value, l = key
+                if l != layout or drawing not in series[key]:
+                    continue
+                half = series[key][drawing][len(series[key][drawing]) // 2:]
+                mean = lambda f: statistics.mean(f(r) * PAGE / r["alloc_bytes"] for r in half)
+                values = [mean(lambda r: r["data_pages"]), mean(lambda r: r["table_pages"]),
+                          mean(lambda r: r["free_pages"]),
+                          mean(lambda r: r["file_pages"] - r["data_pages"] - r["table_pages"] - r["free_pages"])]
+                y = labels.index(f"{POLICIES[policy][0]}, {pretty(f'{knob}={value:g}')}")
+                left = 0.0
+                for (part, color), v in zip(parts, values):
+                    ax.barh(y, v, left=left, height=0.7, color=color, edgecolor="white", linewidth=1,
+                            label=part if y == 0 else None)
+                    left += v
+            ax.set_title(f"{name}, {layout}", fontsize=8.5)
+            ax.set_yticks(range(len(labels)))
+            ax.set_yticklabels(labels if j == 0 else [], fontsize=7)
+            ax.invert_yaxis()
+            ax.grid(axis="y", visible=False)
+            if i == len(LAYOUTS) - 1:
+                ax.set_xlabel("file / live size")
+    handles, names = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, names, loc="upper center", ncol=4, fontsize=7.5, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+    save(fig, out, "svg-pages", rect=(0, 0, 1, 0.965))
+
+
 def summary(runs):
     """The end state of every series, as a Markdown table on stdout."""
     print("| run | scenario | variant | size | file/live | data fill | table fill | written/app | flushes | median flush ms |")
@@ -608,7 +730,7 @@ def main():
         label, _, directory = spec.partition("=")
         runs[label] = load(directory)
     figures = [space_amplification, mixed, live_fraction, write_breakdown, budget, shrink, description, flush_latency,
-               throughput, tradeoff, defrag_share, kappa, svg]
+               throughput, tradeoff, defrag_share, kappa, svg, svg_tradeoff, svg_pages]
     only = set(args.only.split(",")) if args.only else None
     for figure in figures:
         if only is None or figure.__name__.replace("_", "-") in only:
