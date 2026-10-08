@@ -6,7 +6,8 @@ title: Sparse leaves, and consolidation from the statements up
 The consolidation policy of [Consolidation](../impl/consolidation.md), as kladde-rs implemented it, kept address-table leaves far emptier than data pages, so that 4 to 33 % of a file's live pages were leaves it would not have needed had they been as full as its data pages.
 Three causes did it, and each is gone.
 [The newest size rule](../spec/address-table.md#conflict-resolution-across-epochs) let the statements that kept nearly empty leaves alive die, and removed the reason the cut refused them; that left leaves half empty, so that fuller ones would have saved 2 to 15 % of the live pages.
-A fill floor on retiring leaves kept them so, and [the budget loop](../impl/consolidation.md#the-budget-loop) no longer holds leaves to it, since retiring a leaf opens no page; leaves as full as the data pages would now save 0.4 to 6 % of the live pages.
+A fill floor on retiring leaves kept them so, and [the budget loop](../impl/consolidation.md#the-budget-loop) no longer holds leaves to it, since retiring a leaf opens no page; leaves as full as the data pages would then have saved 0.4 to 6 % of the live pages.
+Since kladde-rs also prices a leaf at its coverage, where it priced it at 1.25 times, the leaves come out about as full as the data pages under main's churn floor, and fuller ones would save at most 2.8 %.
 The three causes had one root, which is not a tuning constant but the way the policy interleaves three decisions, which page to retire, which statements to write, and where to put them, so that each constrains the others.
 The second half of this draft starts over from [the logical level of the address table](../spec/address-table.md#logical-level) and keeps the three apart.
 
@@ -32,9 +33,9 @@ The means are over the rows svg-bench records every 1000 edits, and the shares o
 Were the table pages as full as each run's own data pages, the files would carry 0.4 to 6 % fewer live pages, the most on the world map in its base and packed layouts.
 The small tiger is the exception to the ranges above: its statements need a fifth of a page, which the header mostly holds, and it has one leaf at a time, or none.
 
-**What keeps leaves a few points emptier than data pages is their price, not a rule that keeps them out.**
-A leaf's restatements are estimated at 1.25 times its coverage, since restated statements lose their neighbours' delta encoding, so at the default churn floor a leaf is a victim only up to 40 % full, where a data page is one up to 50 %.
-[Cleaning edits without the leaves' fill floor](../evaluation/leaf-floor.md) measures every setting of main's churn floor and of the three ripeness branches.
+**What kept leaves a few points emptier than data pages was their price, not a rule that kept them out.**
+A leaf's restatements were estimated at 1.25 times its coverage, since restated statements were thought to lose their neighbours' delta encoding, so at the default churn floor a leaf was a victim only up to 40 % full, where a data page is one up to 50 %; restated on their own, they take 0.94 to 1.05 times its coverage.
+[Cleaning edits without the leaves' fill floor](../evaluation/leaf-floor.md) measures every setting of main's churn floor and of the three ripeness branches at that price, and [Cleaning edits with leaves priced at their coverage](../evaluation/leaf-price.md) at the price of their coverage, at kladde-rs `7eb2ec4`, under which the churn floor's leaves come out about as full as its data pages.
 
 ### Before the fill floor went
 

@@ -183,6 +183,7 @@ The statements are still 20 to 28 % of the live bytes there, so the leaves remai
 **The leaves still fill less than the data pages, likely because the churn floor prices a leaf as costlier to clean.**
 The restatements of a leaf are estimated at 1.25 times its coverage, so at λ = 0.25 a leaf is a budgeted victim only up to 64 % full, where a data page is one up to 80 % full; the leaves settle 10 to 14 points emptier than the data pages.
 How well 1.25 estimates what a rewrite of leaves takes was not measured, and no run here tests a different estimate.
+[Cleaning edits with leaves priced at their coverage](leaf-price.md) does both.
 
 **Where the leaves hold little, the fix changes little.**
 In the drawings' small layout, the leaves hold 2 to 5 % of the live bytes and are 3 to 7 % of the live pages, and on the texts 4 to 6 % and 4 to 7 %; their fill rose there too, but they were too few to matter.
