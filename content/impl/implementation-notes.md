@@ -105,10 +105,6 @@ Where the implementation departs from what kladde-docs states, in a way the docu
 - **`PersistableVec` reads through `Deref<Target = [T]>`**, so a slice's whole read API works on it; the whole-value `set` takes a `PersistableVec`, and the byte-level replacement `PersistableString` uses is `PersistableVecGuard<u8>::set_bytes`.
 - **`Kladde::create_in` and `Kladde::open_in` take any `Storage` and `Options`**; `Kladde::new` is `create_in` with a `MemoryStorage`, and cannot fail.
   The root's allocation and the descriptor table's are ordinary allocations, and count in `Kladde::stats`.
-- **A table victim's restatements are estimated at 1.25 times its coverage.**
-  Fragments split by shadowing need a statement each, and restated statements lose the delta encoding of their old neighbours; `impl/consolidation.md#the-page-rewrite` prices the rewrite by coverage alone, as `(C − written) / written`.
-  With the estimate as `written`, a victim passes the churn floor at coverage up to `C / (1.25 · (1 + λ))`, and an offer of table victims costs the budget `written / C` pages.
-  If the estimate is too low for a filler, what does not fit the last page spills into another leaf.
 - **An age record is current if no *live* statement naming its allocation is newer than `up_to_date`.**
   `impl/consolidator-state.md#checking-it` asks about every statement naming it; statements that are physically present but dead are not in memory after a load.
   A dead statement newer than every live one is rare (content past the size, from another writer), and the cost of missing it is an age that errs toward old.

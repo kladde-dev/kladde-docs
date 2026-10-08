@@ -690,6 +690,12 @@ Executing one is [`rewrite_page`](address-table-operations.md#rewrite_pagevictim
 Its cost is those restatements' encoded bytes, estimated from the victim's coverage while it is only being offered, and known exactly once the cut has derived them — possibly less, since they merge with whatever else the flush states nearby; its benefit is the whole victim.
 So it is priced exactly as evacuation is, `(C − written) / written`, and the two compete in [the budget loop](#the-budget-loop) on equal terms, but for the fill floor, which holds evacuation's page alone, since the page rewrite opens none.
 [Coverage charges an inline payload per byte to the table page that carries it](liveness.md#coverage), so the estimate includes payloads without special care — which matters, since a page of 64-byte inlines is ~90 % payload and would look ten times sparser than it is if only framing counted.
+On kladde-svg's drawings and text-bench's texts, a victim's restatements take 0.94 to 1.05 times its coverage, since what a leaf's live statements own is mostly inline payload, which a rewrite copies byte for byte, and they are rarely split.
+
+**Into the room of the cut's last page, a victim is taken only once its restatements are computed, not estimated**, since an estimate too low there would spill the excess into a leaf of its own, nearly empty.
+They follow from the fragment map, before the victim is taken: a statement per run of the fragments its live statements own, merged as the cut merges a run, and a `Size` or `Tombstone` for each id whose size statement or tombstone it holds, encoded as one run of their own.
+Merged into the last page, they add at most that much, so the check needs no slack: each statement's delta to its neighbour there is no larger than in the run, whose first statement already pays its whole id and offset, and merging with neighbours only drops statements.
+A victim that would not fit is passed over for the rest of the flush.
 
 A victim with children — an interior page — is rewritten the same way, and its `child_ref`s move with it; see [unlinking](#unlinking-an-emptied-page).
 
@@ -712,6 +718,7 @@ fn rotating_window(room: u32, dirty: &mut Dirty) -> Vec<DefragCandidate> {
         // window costs.
         if fragment.statement().is_none() { continue; }
         encoded += re_encoded_size(fragment);      // against the previous restatement
+        encoded += sizes_called_for(fragment);     // `Size`s it now calls for; see below
         if encoded > room { stop = Some(key); }
     }
     rewrite_key_range(start, stop.unwrap_or(cursor), dirty);
@@ -725,6 +732,10 @@ The walk meets fragments the flush has already taken, whose statements the cut h
 **The cursor is a fragment-map key**, `(Id, AllocationOffset)`, so a window is a plain range of the structure it walks, with no special case at either end.
 An allocation whose live statements alone outgrow the room is simply resumed mid-allocation by the next window, where a cursor keyed by id alone would never get past it.
 Size statements need no position in the window: [`rewrite_key_range`](address-table-operations.md#rewrite_key_rangelo-hi-dirty) states an id's size again only when its size statement's page is one the window restates from, which is a question about pages rather than about how much of the id the window covered.
+
+**But the `Size` statements the window calls for take room, and it counts them**, so that what it adds never spills the cut's last page into a leaf of its own.
+A fragment calls for one for each id already taken whose size statement lies in the fragment's page, if the window had not restated from that page yet, and for its own id, if its size statement lies in a page the window restates from; each is counted as if encoded alone.
+Left out, they made the last page spill into leaves of about ten bytes on kladde-svg's drawings.
 
 **A new session resumes the rotation where the last one left it, or else somewhere new.**
 The cursor lives in memory, so the [consolidator state](consolidator-state.md#the-rotating-windows-position) carries it from one session to the next.
