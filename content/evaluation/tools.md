@@ -247,8 +247,7 @@ tools/plot-evaluation.py [--only NAMES] [--summary] --out <directory> <label>=<d
 
 **Draws the evaluation pages' figures from tables, gzipped or not, each directory a run and each label its name in the figures.**
 It recognizes the tables by name: `kladde-bench`'s by their scenario, `svg-bench`'s as `svg-<drawing>.csv`, and `text-bench`'s as `text-<size>.csv`.
-`--only` draws the figures it names, out of `space-amplification`, `mixed`, `live-fraction`, `write-breakdown`, `budget`, `shrink`, `description`, `flush-latency`, `throughput`, `tradeoff`, `defrag-share`, `kappa`, `svg`, `svg-tradeoff`, `svg-shift`, `svg-pages` and `text-tradeoff`; a figure whose tables are missing is skipped.
-`svg-shift` draws `svg-tradeoff`'s curves together with, dashed, those of the runs labelled `before/policy/knob/value/layout`, to show how a change moved them.
+`--only` draws the figures it names, out of `space-amplification`, `mixed`, `live-fraction`, `write-breakdown`, `budget`, `shrink`, `description`, `flush-latency`, `throughput`, `tradeoff`, `defrag-share`, `kappa`, `svg`, `svg-tradeoff`, `svg-pages` and `text-tradeoff`; a figure whose tables are missing is skipped.
 `--summary` prints the last row of every series as a Markdown table.
 The figures are SVG, the same bytes whenever the data and matplotlib's version are, which `tools/requirements.txt` pins; install it with pip into a virtual environment.
 

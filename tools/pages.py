@@ -70,8 +70,6 @@ ORDER = [
     "evaluation/ripeness2.md",
     "evaluation/bayesian-ripeness.md",
     "evaluation/cleaning-edits.md",
-    "evaluation/leaf-floor.md",
-    "evaluation/leaf-price.md",
     # Kept for the reasoning, not the result.
     "superseded/index.md",
     "superseded/relocatable-heap.md",

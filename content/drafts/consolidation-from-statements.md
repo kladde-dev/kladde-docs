@@ -35,7 +35,7 @@ The small tiger is the exception to the ranges above: its statements need a fift
 
 **What kept leaves a few points emptier than data pages was their price, not a rule that kept them out.**
 A leaf's restatements were estimated at 1.25 times its coverage, since restated statements were thought to lose their neighbours' delta encoding, so at the default churn floor a leaf was a victim only up to 40 % full, where a data page is one up to 50 %; restated on their own, they take 0.94 to 1.05 times its coverage.
-[Cleaning edits without the leaves' fill floor](../evaluation/leaf-floor.md) measures every setting of main's churn floor and of the three ripeness branches at that price, and [Cleaning edits with leaves priced at their coverage](../evaluation/leaf-price.md) at the price of their coverage, at kladde-rs `7eb2ec4`, under which the churn floor's leaves come out about as full as its data pages.
+[Cleaning edited drawings and texts](../evaluation/cleaning-edits.md) measures every setting of main's churn floor and of the three ripeness branches at the price of their coverage, at kladde-rs `7eb2ec4`, under which the churn floor's leaves come out about as full as its data pages.
 
 ### Before the fill floor went
 
@@ -297,5 +297,5 @@ No rule of one epoch needs relaxing for consolidation's sake, with or without th
 
 - **Whether an epoch per run pays for itself**: its bytes against the restatements and re-stamped header statements it saves, which svg-bench's drawings could measure.
 - **How victims are ranked once packing no longer constrains them**, and how much a flush may retire, which bounds both its work and how far the file can fall behind; this is where ripeness, survivor classes, and the churn floor's price of space come back in.
-  Without the fill floor on table offers, main's churn floor fills the drawings' live pages to about nine tenths at λ = 0.25, where it needed λ = 0.1 before, with 13 to 31 % fewer writes ([the evaluation](../evaluation/leaf-floor.md)).
+  Without the fill floor on table offers, main's churn floor fills the drawings' live pages to about nine tenths at λ = 0.25 ([the evaluation](../evaluation/cleaning-edits.md)).
 - **Whether the rotating window survives**: it restates a key range for description density, which in this frame is a victim too, a range rather than a page, ranked by what its restatement saves.

@@ -4,39 +4,41 @@ title: Cleaning edited drawings and texts
 
 ## Executive summary
 
-**Cleaning hard, kladde keeps the live pages of an edited drawing at 1.10 to 1.51 times its live size and of a typed text at 1.09 to 1.19 times, 71 to 96 % full; at main's default settings they take 1.10 to 1.70 times the live size, and are 64 to 95 % full.**
+**Cleaning until its live pages are about nine tenths full, kladde keeps the live pages of an edited drawing at 1.12 to 1.35 times its live size and of a typed text at 1.10 to 1.19 times; at main's default settings they take 1.34 to 1.56 times the live size on the drawings, and 1.09 and 1.25 times on the texts.**
 Four cleaning policies ran on kladde-svg's three drawings, in three layouts, under a drawing editor's edits that keep to one part of the drawing at a time, and on texts of 64 and 512 KiB, typed into keystroke by keystroke.
-Each ran at the setting that fills its pages most: main's churn floor at λ = 0.1, and cleaning by ripeness, with a static share, and by Bayesian ripeness, each at a target fill of 0.9.
-Their data pages come out 82 to 97 % full.
+In the regime this page dwells on, main's churn floor runs at λ = 0.25, which fills the drawings' live pages 89 to 92 % full.
+Cleaning by ripeness, with a static share, and by Bayesian ripeness each aim at a target fill of 0.9, which they reach on the world map and fall short of on the tiger and the coat of arms, at 80 to 90 %.
+The churn floor at λ = 0.1 fills the drawings' live pages fullest, 91 to 97 %, at 1.08 to 1.19 times the live size.
 
-**Main's churn floor does at least as well as the ripeness branches everywhere but on the world map.**
-On the texts it lies lowest at every setting: at equal writes, the ripeness branches keep 1 to 23 % more live pages on the 64 KiB text, and on the 512 KiB text, which main's default already keeps 95 % full, they need τ = 0.95 to come within 3 % of it, at 9 to 14 % more writes.
-On the tiger and the coat of arms, the ripeness branches stop short of their target, their data pages 80 to 91 % full at every target from 0.85 up, while the churn floor at λ = 0.1 fills them 93 to 97 % full and keeps 2 to 12 % fewer live pages than the best of them, the static share, at 1.1 to 1.4 times its writes; at equal writes, the churn floor keeps up to 11 % fewer live pages on the tiger, and the two lie within 2.5 % of each other on the coat of arms in its base and packed layouts.
-Only on the world map does cleaning by ripeness keep the fewest live pages, 5 and 4 % fewer than the churn floor at λ = 0.1 in the base and packed layouts, with 16 and 10 % fewer writes; the static share and the Bayesian posterior match its space within 2 % but write 3 to 13 % more.
+**Main's churn floor lies lowest on every workload, or within 0.7 % of the lowest.**
+At equal writes, the ripeness branches keep 0.3 to 15 % more live pages than the churn floor in the drawings' base and packed layouts, between 0.7 % fewer and 8 % more in the small layout, and 2 to 22 % more on the texts.
+The churn floor also reaches further: at λ = 0.1 it keeps 1.08 to 1.19 times the drawings' live size, where the best setting of any ripeness branch stops at 1.10 to 1.26.
+In the regime, the ripeness branches keep 1 to 12 % more live pages than the churn floor at λ = 0.25, with between 19 % fewer and 10 % more writes.
 
 **The ripeness branches give up the cleaning that costs nothing.**
-Main's free filling takes any victim that fits into the room of the pages a flush writes anyway: 57 to 892 per run at λ = 1, about as many as the pages it opens to clean, 14 to 1,663.
-The ripeness branches take only small, ripe victims there, as [their draft](../drafts/ripeness.md) has it, 3 to 106 per run, and open 117 to 7,080 pages instead.
-That is the likely source of their extra writes on the smaller drawings and the texts, though no run here tests it alone.
+Main's free filling takes any victim that fits into the room of the pages a flush writes anyway: at λ = 1, 54 to 919 per run, half to four times as many as the pages it opens to clean, 14 to 1,673.
+The ripeness branches take only small, ripe victims there, as [their draft](../drafts/ripeness.md) has it, 0 to 116 per run at τ = 0.9, and open 117 to 4,809 pages instead.
+That is the likely source of their extra writes for the same space, though no run here tests it alone.
 
-**The leaves hold the drawings' fill back.**
-In the drawings' base and packed layouts, the address table's statements are 20 to 28 % of the live bytes, and the leaves that hold them stay 40 to 72 % full under every policy and setting, so that they make up 29 to 43 % of the live pages.
-Leaves as full as the data pages would save 4 to 25 % of the live pages.
-The small layout keeps short content inline, which leaves the statements 1 to 5 % of the live bytes, and a text's statements take a few kilobytes; there, the leaves are 4 to 9 % of the live pages.
+**The leaves fill about as much as the data pages under the churn floor, and a few points less under the ripeness branches.**
+In the drawings' base and packed layouts, the address table's statements are 19 to 27 % of the live bytes, and the leaves that hold them 20 to 29 % of the live pages.
+At λ = 0.25, the leaves come out 88 to 90 % full, against data pages 89 to 93 % full, since the churn floor prices a leaf as it prices a data page; under the ripeness branches at τ = 0.9, they come out 79 to 86 % full, against data pages 82 to 93 %.
+Leaves as full as the data pages would save at most 3.5 % of the live pages.
+In the drawings' small layout and on the texts, the leaves are 3 to 7 % of the live pages, and their fill matters little.
 
 **Free pages make up much of the smaller files, and cleaning harder adds to them.**
-During the edits, the tiger's files hold 24 to 37 free pages beside 13 to 38 live ones, and the coat of arms' 26 to 52 beside 36 to 105; the texts' free pages are 20 to 31 % of the file at 64 KiB and 11 to 12 % at 512 KiB.
-Closed, the tiger's files take 2.3 to 4.2 times its edited SVG, the coat of arms' 1.4 to 3.1 times, the world map's 1.15 to 2.3 times, and the texts' 1.22 to 1.77 times the typed text.
-From λ = 1 to λ = 0.1, the drawings' files gain 6 to 24 free pages while they lose 3 to 59 live ones, and the closed files come out between 11 % smaller and 24 % larger.
+During the edits, the tiger's files hold 23 to 47 free pages beside 13 to 34 live ones, and the coat of arms' 26 to 71 beside 35 to 95; the texts' free pages are 20 to 30 % of the file at 64 KiB and 11 to 12 % at 512 KiB.
+Closed, the tiger's files take 2.4 to 5.1 times its edited SVG, the coat of arms' 1.5 to 3.0 times, the world map's 1.07 to 1.9 times, and the texts' 1.24 to 1.71 times the typed text.
+From λ = 1 to λ = 0.1, the drawings' files gain 3 to 41 free pages while they lose 3 to 99 live ones, and the closed files come out between 16 % smaller and 24 % larger.
 
-**Filling the pages costs 1.2 to 2.4 times the writes of main's default on the drawings, and up to 1.3 times on the texts, which is still a fraction of saving the file.**
-At the settings above, an edit writes 112 to 452 bytes, against 91 to 206 at main's default, and a keystroke 43 to 54, against 36.5 and 49.5.
+**Filling the pages costs 1.2 to 1.9 times the writes of main's default on the drawings, and up to 1.2 times on the texts, which is still a fraction of saving the file.**
+In the regime, an edit writes 118 to 432 bytes, against 96 to 233 at main's default, and a keystroke 40.5 to 54.2, against 36.8 and 49.9.
 Saving the canonical SVG every 100 edits would write 590 bytes per edit on the tiger, 1,845 on the coat of arms, and 10,699 on the world map, and saving the text every 1000 keystrokes 241 and 700 bytes per keystroke.
-On the drawings, the journal and the headers take 48 to 83 bytes per edit under every policy, and cleaning decides the rest; on the texts, the journal, the headers, and the leaves that splices fill with restated statements take 32 to 45 bytes of each keystroke's writes, and the data pages 5 to 16.
+On the drawings, the journal and the headers take 48 to 83 bytes per edit under every policy, and cleaning decides the rest; on the texts, the journal, the headers, and the leaves that splices fill with restated statements take 31 to 47 bytes of each keystroke's writes, and the data pages 5 to 13.
 
-**Edits and keystrokes stay fast, and flushes short: cleaning hard, kladde's calls take 21,000 to 106,000 edits per second on the drawings, against 34,000 to 109,000 at main's default, and 800,000 to 930,000 keystrokes per second on the texts; the median flush takes 3.2 to 10.5 ms on the drawings and 7 to 12 ms on the texts.**
-On the drawings, cleaning hard costs 2 to 44 % of the edit rate, the least under single-rate ripeness, and on the world map, the static share's and the Bayesian posterior's flushes take 1.3 to 1.9 times as long as single-rate ripeness's; on the texts, the policies differ by less than identical runs do.
-Reopening an edited file takes 0.7 to 28 ms.
+**Edits and keystrokes stay fast, and flushes short: in the regime, kladde's calls take 22,000 to 108,000 edits per second on the drawings, against 37,000 to 119,000 at main's default, and 936,000 to 1,016,000 keystrokes per second on the texts; the median flush takes 3.2 to 10.6 ms on the drawings and 6.8 to 10.8 ms on the texts.**
+On the drawings, the regime costs up to 42 % of the edit rate, the least under single-rate ripeness, up to 17 %; on the world map, the static share's and the Bayesian posterior's flushes take 1.2 to 1.7 times as long as single-rate ripeness's.
+Reopening an edited file takes 0.7 to 18 ms.
 
 ## What was measured
 
@@ -69,20 +71,22 @@ It ran on texts of 64 and 512 KiB of random words, which the typing grows to 241
 
 | branch | commit | policy | knob, default | settings run |
 | --- | --- | --- | --- | --- |
-| `defrag-shifts` | `e88fd47` | main's [churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) | churn floor λ, 1 | 1, 0.5, 0.25, 0.1 |
-| `ripeness-svg` | `df6188f` | [cleaning by ripeness](../drafts/ripeness.md), one rate per page | target fill τ, 0.75 | 0.75, 0.85, 0.9, 0.95 |
-| `ripeness2-svg` | `1f88fb8` | ripeness with a static share per page | target fill τ, 0.75 | as above |
-| `bayesian-ripeness-svg` | `d0bd751` | [Bayesian ripeness](../drafts/bayesian-ripeness.md), rule (a), with the empirical prior capped at the events it has seen | target fill τ, 0.75 | as above |
+| `defrag-shifts` | `7eb2ec4` | main's [churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) | churn floor λ, 1 | 1, 0.5, 0.35, 0.25, 0.15, 0.1 |
+| `ripeness-svg` | `d3b3a7e` | [cleaning by ripeness](../drafts/ripeness.md), one rate per page | target fill τ, 0.75 | 0.75, 0.85, 0.9, 0.95 |
+| `ripeness2-svg` | `f659de7` | ripeness with a static share per page | target fill τ, 0.75 | as above |
+| `bayesian-ripeness-svg` | `65d041a` | [Bayesian ripeness](../drafts/bayesian-ripeness.md), rule (a), with the empirical prior capped at the events it has seen | target fill τ, 0.75 | as above |
 
 The three ripeness branches are ports, onto `defrag-shifts`, of the branches that [Cleaning by ripeness](ripeness.md), [Ripeness with a static share](ripeness2.md), and [Bayesian ripeness](bayesian-ripeness.md) measured on kladde-bench's workloads.
-`text-bench` came from kladde-rs `7c5cdd6`, on the branch `text-bench`, which is `defrag-shifts` with that benchmark added; it ran on the ripeness branches unchanged but for its `--churn-floor` option, which their store lacks.
+On every branch, a budgeted rewrite of leaves opens no page of its own and costs the budget the pages its restatements take, which [the page rewrite](../impl/consolidation.md#the-page-rewrite) estimates at the leaves' coverage; on main, the churn floor weighs a leaf by the same estimate, as [the budget loop](../impl/consolidation.md#the-budget-loop) has it.
+`text-bench` came from kladde-rs `7c5cdd6`, on the branch `text-bench`, and was added to each of these commits with `git cherry-pick`, without its `--churn-floor` option on the ripeness branches, whose store lacks it.
 
 Main's budget controller aims the file at a target fill of 0.8, measured over all of its pages, free ones included.
-In every run but those on the 512 KiB text, its budget stayed at the maximum, 256 pages, so that the churn floor alone decided what was cleaned; on that text, the file passed the target after about 10,000 keystrokes, the controller had cut the budget to its minimum, one page, by 40,000, and every λ cleaned about alike.
+Over the second half of every run but those on the 512 KiB text, it held the budget at its maximum, 256 pages, but for a row or two in four runs on the world map, where it dipped to 196 pages at the lowest, so that the churn floor alone decided what was cleaned; on the world map, whose file starts out fuller than the target, it held the budget lower during parts of the first half.
+On the 512 KiB text, the file passed the target after about 11,000 keystrokes, the controller had cut the budget to its minimum, one page, by 39,000 to 42,000, and every λ cleaned about alike.
 The ripeness branches' controller moves the price of space until the data pages and leaves are as full as the target.
 
-**The regime this page dwells on is the one that fills the pages most**: λ = 0.1 for the churn floor, and τ = 0.9 for the ripeness branches, whose results at 0.85, 0.9, and 0.95 hardly differ on the drawings; on the texts, 0.95 fills a few points more.
-Main's default, λ = 1, is the reference; the [sweep](#the-sweep-in-numbers) has every setting.
+**The regime this page dwells on is live pages about nine tenths full**: λ = 0.25 for the churn floor, and τ = 0.9 for the ripeness branches, whose results at 0.85, 0.9, and 0.95 hardly differ on the tiger and the coat of arms.
+Main's default, λ = 1, is the reference, and λ = 0.1, which fills the pages most, the churn floor's furthest reach; the [sweep](#the-sweep-in-numbers) has every setting.
 The tables name the churn floor by its λ, and the three ripeness branches, each at τ = 0.9, by their estimate: *ripeness*, *static share*, and *Bayesian*.
 
 **Space is averaged over the second half of each run, and writes are what kladde wrote during that half, per edit or keystroke**, as on the other evaluation pages.
@@ -91,20 +95,21 @@ The tables name the churn floor by its λ, and the three ripeness branches, each
 *Free pages* are pages within the file that hold nothing live; the *closed file* is the file's size after the last edit and `close`, which truncates it after its last live page.
 Writes count the journal's bytes and every page written, headers included, at 4,096 bytes each.
 
-**The space and the writes come from 144 runs of `svg-bench`, eight at a time, and 32 of `text-bench`; the times from two further passes, one run at a time on an otherwise idle host, of the five configurations in the tables on the drawings and of every setting on the texts.**
+**The space and the writes come from 198 runs, eight at a time, 162 of `svg-bench` and 36 of `text-bench`; the times from two further passes, one run at a time on an otherwise idle host, of the six configurations in the tables on the drawings and of every setting on the texts.**
 All were built with `--release` by Rust 1.99.0 and ran on an Intel Core i7-1165G7, four cores and eight threads, with 16 GB of memory under Linux 7.0, in a development container, on mains power.
 The benchmarks are deterministic but for their times, and both timing passes reproduced the first runs' tables to the byte; the [times](#times) give their mean, and how far the two passes differed.
-`data/cleaning-edits/` keeps every run's table, `logs/` beside them the end of each run's output, with the closed file's size, and `timing/` and `timing2/` that of the two timing passes.
+`data/cleaning-edits/` keeps every run's table, `logs/` beside them the end of each run's output, with the closed file's size, and `timing/` and `timing2/` that of the two timing passes, with the texts' tables, from which their keystroke rates come.
 
-To reproduce a run, build `svg-bench` on the branch, with `--features packed` or `--features small` for those layouts, and run it on the drawing with its number of edits, or build `text-bench` and run it on a text of the size:
+To reproduce a run, build `svg-bench` on the branch's commit, with `--features packed` or `--features small` for those layouts, and run it on the drawing with its number of edits, or add `text-bench` and run it on a text of the size:
 
 ```sh
+git cherry-pick --no-commit 7c5cdd6   # text-bench; drop --churn-floor on the ripeness branches
 cargo build --release -p kladde-svg --bin svg-bench --features packed
-# --target-fill 0.9 instead of --churn-floor 0.1 on the ripeness branches
+# --target-fill 0.9 instead of --churn-floor 0.25 on the ripeness branches
 target/release/svg-bench crates/kladde-svg/corpus/drawings/world-map.svg \
-    out/ --edits 177831 --journal-budget 4 --churn-floor 0.1
+    out/ --edits 177831 --journal-budget 4 --churn-floor 0.25
 cargo build --release -p kladde-bench --bin text-bench
-target/release/text-bench out/ --size 524288 --journal-budget 4 --churn-floor 0.1
+target/release/text-bench out/ --size 524288 --journal-budget 4 --churn-floor 0.25
 ```
 
 The figures come from the tables in `data/`; each run's directory is named `<policy>-<knob><value>-<layout>`, with `text` for the layout of the texts' runs, and `tools/plot-evaluation.py` takes it labelled `<policy>/<knob>/<value>/<layout>`:
@@ -118,228 +123,252 @@ for dir in $D/*-*-*/; do
 done
 tools/plot-evaluation.py --only svg-tradeoff,text-tradeoff --out $F "${runs[@]}"
 tools/plot-evaluation.py --only svg-pages --out $F $(printf '%s\n' "${runs[@]}" |
-    grep -E '^(main/lambda/(1|0.1)|[a-z0-9]+/tau/0.9)/')
+    grep -E '^(main/lambda/(1|0.25|0.1)|[a-z0-9]+/tau/0.9)/')
 ```
 
 ## Live pages
 
-**On the drawings, cleaning hard takes 9 to 26 % of main's live pages at its default away, most of them data pages; on the texts, the churn floor at λ = 0.1 takes 11 and 1 % away, and the ripeness branches at τ = 0.9 keep 6 % fewer live pages than main's default on the 64 KiB text, but 7 to 8 % more on the 512 KiB one.**
-Each cell gives the live pages, and in parentheses the leaves among them; the first column gives the live bytes they hold, in data pages and in leaves, which differ by about 1 % between the policies:
+**On the drawings, the regime takes 9 to 21 % of main's live pages at its default away, most of them data pages; on the 64 KiB text, 5 to 6 %, while on the 512 KiB text, which main's default already keeps 95 % full, the churn floor at λ = 0.25 keeps as many and the ripeness branches 7 to 8 % more.**
+Each cell gives the live pages, and in parentheses the leaves among them; the first column gives the live bytes they hold, in data pages and in leaves, which differ by at most 1.4 % between the policies:
 
-| workload | layout or size | live bytes, KiB | λ = 1 | λ = 0.1 | ripeness | static share | Bayesian |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| tiger | base | 72 + 26 | 38.1 (13.0) | 28.2 (9.3) | 34.6 (12.8) | 32.0 (11.6) | 32.2 (11.1) |
-| tiger | packed | 37 + 14 | 18.6 (5.7) | 15.8 (5.8) | 16.9 (5.4) | 16.1 (5.5) | 16.4 (4.9) |
-| tiger | small | 45 + 1 | 16.2 (0.8) | 12.8 (0.7) | 14.4 (0.6) | 13.3 (0.6) | 14.6 (0.7) |
-| coat of arms | base | 203 + 67 | 105.4 (33.6) | 79.6 (26.2) | 91.3 (33.1) | 86.0 (29.2) | 87.0 (30.3) |
-| coat of arms | packed | 107 + 39 | 55.4 (18.2) | 43.0 (14.9) | 49.2 (17.9) | 46.2 (16.3) | 48.2 (17.2) |
-| coat of arms | small | 127 + 7 | 47.4 (3.5) | 35.6 (2.6) | 41.5 (3.4) | 38.8 (3.4) | 41.1 (3.8) |
-| world map | base | 1,107 + 346 | 560.2 (205.9) | 505.3 (217.2) | 480.1 (185.6) | 489.8 (195.3) | 478.8 (185.8) |
-| world map | packed | 833 + 203 | 370.6 (109.5) | 335.3 (119.3) | 320.9 (100.7) | 324.8 (105.0) | 321.8 (103.7) |
-| world map | small | 937 + 36 | 322.5 (19.0) | 264.0 (21.2) | 275.6 (21.9) | 274.5 (20.2) | 273.9 (18.9) |
-| text | 64 KiB | 192 + 13 | 61.1 (3.8) | 54.3 (3.8) | 57.4 (3.8) | 57.5 (4.3) | 57.5 (3.9) |
-| text | 512 KiB | 640 + 28 | 176.5 (7.8) | 175.1 (7.7) | 188.6 (10.6) | 187.9 (11.3) | 190.2 (10.7) |
+| workload | layout or size | live bytes, KiB | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 72 + 26 | 34.2 (8.8) | 26.9 (7.1) | 25.8 (6.9) | 30.1 (8.2) | 28.4 (8.2) | 29.3 (8.0) |
+| tiger | packed | 37 + 14 | 18.0 (4.6) | 14.4 (4.0) | 14.1 (4.0) | 15.8 (4.4) | 14.9 (4.4) | 15.9 (4.4) |
+| tiger | small | 45 + 1 | 16.1 (0.5) | 13.1 (0.5) | 12.7 (0.5) | 14.3 (0.5) | 13.2 (0.5) | 14.6 (0.6) |
+| coat of arms | base | 203 + 67 | 94.8 (23.7) | 75.2 (18.8) | 71.0 (17.7) | 78.2 (20.3) | 76.6 (20.5) | 77.1 (20.0) |
+| coat of arms | packed | 107 + 38 | 51.0 (13.6) | 40.6 (10.8) | 38.3 (10.1) | 43.2 (11.9) | 40.9 (11.5) | 42.0 (11.0) |
+| coat of arms | small | 127 + 7 | 45.8 (2.1) | 37.1 (2.0) | 35.0 (2.0) | 40.3 (2.6) | 37.5 (2.8) | 40.8 (2.8) |
+| world map | base | 1,110 + 345 | 478.8 (123.6) | 398.6 (96.6) | 379.4 (91.6) | 408.0 (106.3) | 409.8 (106.1) | 409.2 (107.1) |
+| world map | packed | 834 + 202 | 333.2 (72.6) | 282.2 (57.0) | 269.3 (53.8) | 290.0 (63.3) | 291.3 (63.5) | 290.8 (62.6) |
+| world map | small | 937 + 36 | 314.1 (12.0) | 264.6 (10.6) | 253.8 (11.1) | 273.1 (15.1) | 274.1 (17.1) | 273.7 (14.3) |
+| text | 64 KiB | 192 + 13 | 60.4 (3.8) | 56.9 (3.8) | 54.3 (3.7) | 57.4 (3.9) | 57.5 (4.1) | 57.3 (3.8) |
+| text | 512 KiB | 640 + 28 | 175.7 (7.6) | 176.5 (7.6) | 175.2 (7.6) | 188.5 (10.7) | 187.9 (11.3) | 189.9 (10.6) |
 
 Over the live size, which the first column gives here, the same live pages:
 
-| workload | layout or size | live size, KiB | λ = 1 | λ = 0.1 | ripeness | static share | Bayesian |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| tiger | base | 92 | 1.66 | 1.23 | 1.51 | 1.39 | 1.40 |
-| tiger | packed | 47 | 1.57 | 1.33 | 1.43 | 1.36 | 1.38 |
-| tiger | small | 46 | 1.39 | 1.10 | 1.24 | 1.15 | 1.25 |
-| coat of arms | base | 252 | 1.67 | 1.26 | 1.45 | 1.37 | 1.38 |
-| coat of arms | packed | 131 | 1.70 | 1.32 | 1.51 | 1.42 | 1.48 |
-| coat of arms | small | 128 | 1.48 | 1.11 | 1.29 | 1.21 | 1.28 |
-| world map | base | 1,353 | 1.66 | 1.49 | 1.42 | 1.45 | 1.42 |
-| world map | packed | 954 | 1.55 | 1.41 | 1.35 | 1.36 | 1.35 |
-| world map | small | 943 | 1.37 | 1.12 | 1.17 | 1.16 | 1.16 |
-| text | 64 KiB | 193 | 1.27 | 1.13 | 1.19 | 1.19 | 1.19 |
-| text | 512 KiB | 642 | 1.10 | 1.09 | 1.17 | 1.17 | 1.18 |
+| workload | layout or size | live size, KiB | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 92 | 1.49 | 1.17 | 1.12 | 1.31 | 1.24 | 1.28 |
+| tiger | packed | 47 | 1.52 | 1.22 | 1.19 | 1.33 | 1.26 | 1.35 |
+| tiger | small | 46 | 1.39 | 1.12 | 1.09 | 1.23 | 1.14 | 1.26 |
+| coat of arms | base | 252 | 1.50 | 1.19 | 1.13 | 1.24 | 1.22 | 1.22 |
+| coat of arms | packed | 131 | 1.56 | 1.24 | 1.17 | 1.32 | 1.25 | 1.29 |
+| coat of arms | small | 128 | 1.43 | 1.16 | 1.09 | 1.26 | 1.17 | 1.27 |
+| world map | base | 1,353 | 1.42 | 1.18 | 1.12 | 1.21 | 1.21 | 1.21 |
+| world map | packed | 954 | 1.40 | 1.18 | 1.13 | 1.22 | 1.22 | 1.22 |
+| world map | small | 943 | 1.34 | 1.12 | 1.08 | 1.16 | 1.16 | 1.16 |
+| text | 64 KiB | 193 | 1.25 | 1.18 | 1.13 | 1.19 | 1.19 | 1.19 |
+| text | 512 KiB | 642 | 1.09 | 1.10 | 1.09 | 1.17 | 1.17 | 1.18 |
 
 The live bytes exceed the live size in the drawings' base and packed layouts, since the statements that describe the allocations are live too.
 
-**The leaves fill far less than the data pages, under every policy and setting: 40 to 72 % in the drawings' base and packed layouts, where the data pages come out 71 to 97 % full.**
-Both the churn floor and the ripeness branches hold a budgeted rewrite of leaves to a data page's fill floor: its victims' restatements must fill 95 % of a leaf, which leaves between two fifths and a half full cannot do, alone or in pairs.
-[Sparse leaves](../drafts/consolidation-from-statements.md) traces this on main; the ripeness branches' budget loop applies the same floor.
-[Cleaning edits without the leaves' fill floor](leaf-floor.md) measures every policy without it.
-So in the drawings' base and packed layouts, the leaves are 29 to 43 % of the live pages, the most on the world map in its base layout at λ = 0.1, which fills its data pages most and has 5 % more leaves than at λ = 1.
-Only on the tiger and the coat of arms in their base layouts, and on the coat of arms in its packed one, does λ = 0.1 fill the leaves fuller, to 64 to 70 % from 50 to 53 %.
-
+**The churn floor fills the drawings' data pages 89 to 93 % full at λ = 0.25 and 93 to 97 % at λ = 0.1; the ripeness branches at τ = 0.9 fill them 82 to 93 % full.**
 Each cell gives the fill of the data pages, of the leaves, and of all live pages, in percent:
 
-| workload | layout or size | λ = 1 | λ = 0.1 | ripeness | static share | Bayesian |
-| --- | --- | --- | --- | --- | --- | --- |
-| tiger | base | 72 / 50 / 64 | 95 / 70 / 87 | 83 / 51 / 71 | 89 / 56 / 77 | 86 / 58 / 76 |
-| tiger | packed | 72 / 62 / 69 | 93 / 61 / 81 | 82 / 64 / 76 | 89 / 64 / 81 | 82 / 72 / 79 |
-| tiger | small | 74 / 17 / 71 | 95 / 23 / 91 | 83 / 28 / 80 | 90 / 27 / 88 | 83 / 21 / 80 |
-| coat of arms | base | 71 / 50 / 64 | 96 / 64 / 85 | 88 / 51 / 75 | 91 / 57 / 79 | 91 / 56 / 79 |
-| coat of arms | packed | 72 / 53 / 66 | 96 / 65 / 85 | 86 / 54 / 74 | 91 / 59 / 80 | 88 / 56 / 77 |
-| coat of arms | small | 72 / 50 / 71 | 97 / 68 / 94 | 84 / 49 / 81 | 91 / 51 / 87 | 86 / 47 / 82 |
-| world map | base | 78 / 42 / 65 | 97 / 40 / 72 | 95 / 48 / 77 | 95 / 46 / 75 | 95 / 48 / 77 |
-| world map | packed | 80 / 47 / 70 | 97 / 43 / 78 | 96 / 51 / 82 | 96 / 49 / 81 | 97 / 50 / 82 |
-| world map | small | 77 / 48 / 76 | 97 / 51 / 93 | 93 / 47 / 89 | 93 / 51 / 90 | 93 / 54 / 90 |
-| text | 64 KiB | 84 / 84 / 84 | 95 / 85 / 95 | 90 / 83 / 89 | 91 / 72 / 89 | 90 / 83 / 90 |
-| text | 512 KiB | 95 / 89 / 95 | 96 / 89 / 96 | 90 / 66 / 89 | 91 / 61 / 89 | 90 / 65 / 88 |
+| workload | layout or size | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 71 / 74 / 71 | 91 / 90 / 91 | 96 / 93 / 95 | 83 / 79 / 82 | 90 / 79 / 87 | 85 / 81 / 84 |
+| tiger | packed | 70 / 75 / 71 | 89 / 88 / 89 | 93 / 86 / 91 | 82 / 80 / 81 | 90 / 79 / 87 | 82 / 80 / 81 |
+| tiger | small | 73 / 28 / 72 | 91 / 33 / 89 | 94 / 35 / 91 | 83 / 28 / 81 | 90 / 29 / 88 | 82 / 32 / 80 |
+| coat of arms | base | 72 / 71 / 72 | 90 / 89 / 90 | 96 / 94 / 95 | 89 / 83 / 87 | 92 / 82 / 89 | 90 / 84 / 88 |
+| coat of arms | packed | 72 / 71 / 72 | 90 / 89 / 90 | 96 / 93 / 95 | 86 / 81 / 85 | 92 / 83 / 90 | 88 / 86 / 87 |
+| coat of arms | small | 73 / 80 / 73 | 91 / 81 / 90 | 97 / 85 / 96 | 85 / 64 / 84 | 92 / 65 / 90 | 84 / 63 / 83 |
+| world map | base | 78 / 70 / 76 | 92 / 89 / 92 | 97 / 95 / 96 | 93 / 83 / 90 | 92 / 83 / 90 | 93 / 82 / 90 |
+| world map | packed | 80 / 70 / 78 | 93 / 89 / 92 | 97 / 95 / 97 | 93 / 81 / 90 | 93 / 80 / 90 | 92 / 81 / 90 |
+| world map | small | 78 / 76 / 78 | 93 / 91 / 92 | 97 / 94 / 97 | 91 / 66 / 90 | 92 / 59 / 90 | 91 / 70 / 90 |
+| text | 64 KiB | 85 / 87 / 85 | 91 / 87 / 90 | 95 / 88 / 95 | 90 / 81 / 90 | 91 / 74 / 89 | 90 / 84 / 90 |
+| text | 512 KiB | 96 / 93 / 95 | 95 / 93 / 95 | 96 / 94 / 96 | 90 / 65 / 89 | 91 / 61 / 89 | 90 / 65 / 88 |
 
-In the drawings' small layout and in the texts, the leaves are 4 to 9 % of the live pages, so that their fill matters little; the data pages decide the live pages.
-
-**On the world map, the ripeness branches at τ = 0.9 fill their data pages 93 to 97 % full, as the churn floor at λ = 0.1 does; on the tiger and the coat of arms, they stop at 82 to 91 %, and on the texts at 90 to 91 %, where the churn floor fills them 95 to 96 % full.**
+**On the world map, the ripeness branches reach their target, their live pages 90 % full at τ = 0.9 in every layout; on the tiger and the coat of arms, single-rate ripeness and the Bayesian posterior stop at 80 to 88 %, and the static share at 87 to 90 %.**
 Their controller raises the price of space as long as the pages are emptier than the target, but on the smaller files no price makes it clean the pages that the churn floor cleans, and the targets 0.85, 0.9, and 0.95 end within a few points of each other.
-The static share comes closest, 89 to 91 % on the drawings.
-Of the three, the single-rate ripeness writes least, and on the world map it fills the pages as full as the other two.
+Of the three, single-rate ripeness writes least, and on the world map it fills the pages as full as the other two.
 
 **What the ripeness branches do not take is free cleaning.**
 [Free filling](../impl/consolidation.md#victims-are-pulled-one-at-a-time) puts victims into the room left in the pages a flush writes anyway, which costs no page of its own.
 Main takes any whole victim that fits there, sparsest first; [the ripeness draft](../drafts/ripeness.md) takes only ripe victims whose survivors fill at most θ, 5 %, of a page, and the cursor's survivors, so that survivors, cold by selection, do not settle next to fresh content.
 So the ripeness branches clean nearly everything on pages they open for it.
-Each cell gives the victims free filling took over a whole run, and the data pages opened only to take victims:
+Each cell gives, over a whole run, the data victims that free filling took, the data pages opened only to take victims, and the leaves rewritten, by the budget or by the cut's fillers:
 
-| workload | layout or size | λ = 1 | λ = 0.1 | ripeness | static share | Bayesian |
-| --- | --- | --- | --- | --- | --- | --- |
-| tiger | base | 107 / 117 | 79 / 915 | 6 / 346 | 8 / 518 | 5 / 368 |
-| tiger | packed | 90 / 70 | 49 / 448 | 8 / 199 | 5 / 333 | 7 / 244 |
-| tiger | small | 97 / 104 | 64 / 654 | 9 / 235 | 11 / 419 | 10 / 255 |
-| coat of arms | base | 210 / 230 | 117 / 2,116 | 18 / 838 | 15 / 1,054 | 12 / 954 |
-| coat of arms | packed | 135 / 125 | 77 / 1,141 | 12 / 446 | 10 / 647 | 10 / 528 |
-| coat of arms | small | 140 / 235 | 94 / 1,635 | 6 / 536 | 5 / 858 | 10 / 581 |
-| world map | base | 892 / 1,201 | 558 / 9,257 | 77 / 5,983 | 95 / 6,567 | 67 / 7,080 |
-| world map | packed | 790 / 796 | 490 / 6,604 | 58 / 4,677 | 103 / 4,977 | 71 / 5,717 |
-| world map | small | 801 / 1,663 | 482 / 11,786 | 76 / 5,125 | 88 / 5,322 | 106 / 5,057 |
-| text | 64 KiB | 57 / 14 | 44 / 206 | 9 / 117 | 7 / 154 | 3 / 128 |
-| text | 512 KiB | 65 / 90 | 58 / 146 | 6 / 138 | 9 / 177 | 7 / 152 |
+| workload | layout or size | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 112 / 145 / 219 | 66 / 545 / 411 | 78 / 923 / 601 | 7 / 340 / 292 | 5 / 524 / 310 | 6 / 395 / 324 |
+| tiger | packed | 90 / 64 / 118 | 56 / 301 / 200 | 51 / 482 / 275 | 8 / 196 / 168 | 1 / 336 / 168 | 0 / 213 / 175 |
+| tiger | small | 97 / 120 / 61 | 66 / 413 / 65 | 59 / 664 / 63 | 8 / 241 / 61 | 5 / 415 / 61 | 7 / 245 / 64 |
+| coat of arms | base | 215 / 226 / 388 | 131 / 1,045 / 858 | 100 / 2,282 / 1,569 | 9 / 847 / 645 | 11 / 1,155 / 660 | 15 / 1,004 / 737 |
+| coat of arms | packed | 123 / 145 / 223 | 90 / 604 / 460 | 84 / 1,186 / 748 | 13 / 433 / 348 | 13 / 701 / 390 | 20 / 495 / 443 |
+| coat of arms | small | 147 / 225 / 202 | 98 / 883 / 249 | 77 / 1,589 / 255 | 11 / 536 / 219 | 10 / 931 / 229 | 6 / 552 / 208 |
+| world map | base | 919 / 1,194 / 3,002 | 673 / 4,729 / 6,522 | 646 / 10,636 / 12,451 | 72 / 4,405 / 5,112 | 88 / 4,630 / 5,657 | 96 / 4,720 / 5,256 |
+| world map | packed | 795 / 817 / 1,792 | 573 / 3,130 / 3,867 | 523 / 7,691 / 7,993 | 50 / 3,102 / 2,865 | 97 / 3,269 / 3,050 | 60 / 3,173 / 3,018 |
+| world map | small | 774 / 1,673 / 2,400 | 571 / 5,996 / 4,157 | 515 / 12,072 / 5,903 | 76 / 4,406 / 2,435 | 116 / 4,809 / 2,380 | 87 / 4,357 / 2,870 |
+| text | 64 KiB | 54 / 14 / 157 | 50 / 69 / 161 | 45 / 210 / 162 | 8 / 117 / 127 | 8 / 148 / 119 | 4 / 133 / 134 |
+| text | 512 KiB | 63 / 90 / 174 | 57 / 101 / 190 | 61 / 110 / 186 | 6 / 137 / 22 | 9 / 178 / 8 | 6 / 146 / 29 |
 
-At λ = 1, main takes about as many victims free as it opens pages for, and on the 64 KiB text four times as many; the ripeness branches take 1 to 8 % as many.
-This is the likely reason they write more than the churn floor for the same space on the smaller drawings and the texts, but no run here tests it alone.
+At λ = 1, main takes half to four times as many victims free as it opens pages for; the ripeness branches at τ = 0.9 take 0 to 16 % as many free as main does at λ = 1.
+This is the likely reason they write more than the churn floor for the same space, but no run here tests it alone.
 A ripeness branch with main's free filling would, and would show whether keeping survivors apart from fresh content pays for the free cleaning it gives up.
+
+## Leaves
+
+**Under the churn floor, the leaves of the drawings' base and packed layouts fill about as much as the data pages: 70 to 75 % at λ = 1, 88 to 90 % at λ = 0.25 and 86 to 95 % at λ = 0.1, where the data pages are 70 to 80 %, 89 to 93 % and 93 to 97 % full.**
+The churn floor prices a leaf as it prices a data page: rewriting it reclaims the page less what the leaf's statements take restated, and writes those, which the page rewrite estimates at the leaf's coverage, so that a leaf is a victim up to the same fill as a data page.
+In those layouts, the statements are 19 to 27 % of the live bytes and the leaves 20 to 29 % of the live pages, so their fill matters; leaves as full as the data pages would save at most 2.8 % of the live pages under the churn floor.
+
+**Under the ripeness branches, the leaves stay a few points emptier than the data pages: at τ = 0.9, 79 to 86 % full, against 82 to 93 %, and leaves as full as the data pages would save at most 3.5 % of the live pages.**
+They charge a rewrite of leaves to the budget by the same estimate as main, but rank leaves by their ripeness; this page has not traced what keeps them emptier.
+
+**Where the leaves hold little, their fill matters little.**
+In the drawings' small layout, the statements are 1 to 5 % of the live bytes and the leaves 3 to 7 % of the live pages, and on the texts 4 to 6 % and 4 to 7 %.
+On the 512 KiB text, the ripeness branches' leaves stay 61 to 65 % full; they rewrite 8 to 29 leaves over a whole run, and this page has not traced why so few.
 
 ## The trade-off between space and writes
 
-**Each policy trades writes for space along its own curve, and which curve lies lowest depends on the workload: the churn floor's on the texts and the tiger, the ripeness branches' on the world map.**
+**Each policy trades writes for space along its own curve, and the churn floor's lies lowest on every workload, or within 0.7 % of the lowest.**
 The curves run through each policy's settings, from the one that cleans least, hollow, to the one that cleans most:
 
-![Live pages over live size against the bytes written per keystroke, a panel per text, for the churn floor at λ = 1, 0.5, 0.25 and 0.1, and the ripeness branches at τ = 0.75, 0.85, 0.9 and 0.95](figures/cleaning-edits/text-tradeoff.svg)
+![Live pages over live size against the bytes written per keystroke, a panel per text, for the churn floor at λ = 1, 0.5, 0.35, 0.25, 0.15 and 0.1, and the ripeness branches at τ = 0.75, 0.85, 0.9 and 0.95](figures/cleaning-edits/text-tradeoff.svg)
 
 - **On the texts, the churn floor lies lowest at every setting.**
-  On the 64 KiB text, the ripeness branches keep 1 to 23 % more live pages at equal writes, and 1 to 4 % at τ = 0.9 and 0.95.
-  On the 512 KiB text, every λ keeps 1.09 to 1.10 times the live size at 49 to 50 bytes per keystroke, since the controller holds the budget at one page; the ripeness branches keep 9 and 10 % more live pages at those writes, and come to 1.13 only at τ = 0.95, with 54 to 57 bytes per keystroke.
-- **The ripeness branches' default target, 0.75, keeps 1.43 and 1.44 times the 64 KiB text's live size**, where main's default keeps 1.27: it cleans less than the churn floor's default on the texts, and more on the drawings.
+  On the 64 KiB text, the ripeness branches keep 2 to 22 % more live pages at equal writes.
+  On the 512 KiB text, every λ keeps 1.09 to 1.10 times the live size at 50 to 52 bytes per keystroke, since the controller holds the budget at one page; the ripeness branches keep 7 to 12 % more live pages at those writes, and come within 4 % of it only at τ = 0.95, with 53.5 to 56.3 bytes per keystroke.
+- **The ripeness branches' default target, 0.75, cleans less than main's default on the texts and the world map, and more on the smaller drawings.**
+  It keeps 1.44 and 1.45 times the 64 KiB text's live size, where main's default keeps 1.25, and 2 to 5 % more live pages than main's default on the world map; on the tiger and the coat of arms, it keeps 2 to 6 % fewer, for 8 to 24 % more writes.
 
-![Live pages over live size against the bytes written per edit, a panel per drawing and layout, for the churn floor at λ = 1, 0.5, 0.25 and 0.1, and the ripeness branches at τ = 0.75, 0.85, 0.9 and 0.95](figures/cleaning-edits/svg-tradeoff.svg)
+Each drawing takes a row, whose panels share their range of live pages:
 
-- **On the world map, the ripeness branches lie below the churn floor in the base layout, by 2 to 6 % at equal writes**, and in the packed layout at their fuller targets, by 3 to 5 %; the churn floor's curve flattens from λ = 0.25 on in these layouts, where its fuller data pages are offset by more leaves.
-  In the small layout, the curves meet at the fuller targets, within 2.5 %.
-- **On the coat of arms, the two lie within 2.5 % of each other** in the base and packed layouts, and the churn floor up to 7 % lower in the small layout.
-- **On the tiger, the churn floor lies lowest**, by up to 11 % at equal writes, but for a few points within about 1 %.
-- **The churn floor reaches further on the smaller drawings**, where the ripeness branches' curves bunch once their target passes 0.85: on the tiger and the coat of arms, λ = 0.1 keeps 1.10 to 1.33 times the live size in live pages, where the ripeness branches' best settings stop at 1.14 to 1.42.
-  On the world map, the ripeness branches reach 1.14 to 1.41, and the churn floor 1.12 to 1.49.
+![Live pages over live size against the bytes written per edit, a panel per drawing and layout, for the churn floor at λ = 1, 0.5, 0.35, 0.25, 0.15 and 0.1, and the ripeness branches at τ = 0.75, 0.85, 0.9 and 0.95](figures/cleaning-edits/svg-tradeoff.svg)
+
+- **In the drawings' base and packed layouts, the ripeness branches keep 0.3 to 15 % more live pages than the churn floor at equal writes**, the most at τ = 0.75, and the least at their fuller targets on the world map, where single-rate ripeness at τ = 0.95 comes within 0.3 %.
+- **In the small layout, the curves come closest**: the ripeness branches keep 1 to 8 % more live pages than the churn floor at equal writes on the tiger and the coat of arms, and on the world map between 0.7 % fewer, single-rate ripeness at τ = 0.95, and 8 % more.
+- **On the tiger and the coat of arms, the ripeness branches' curves bunch once their target passes 0.85**: each branch's settings from 0.85 up lie within 0.07 of each other in live pages over live size, at 1.14 to 1.35 times the live size.
+  On the world map, each step of the target still takes live pages off, down to 1.10 to 1.17 times the live size at τ = 0.95.
+- **The churn floor reaches further**: at λ = 0.1 it keeps 1.08 to 1.19 times the drawings' live size, for 168 to 731 bytes per edit, where the best setting of any ripeness branch stops at 1.10 to 1.26.
+
+The equal-write comparisons interpolate the churn floor's curve between its settings, at every setting of the ripeness branches whose writes lie within it.
 
 ## Files
 
-**Free pages take 14 to 67 % of the drawings' files during the edits, and on the tiger in its packed and small layouts more pages than the live ones; of the texts' files, they take 11 to 31 %.**
+**Free pages take 14 to 69 % of the drawings' files during the edits, and on the tiger more pages than the live ones under every policy but main's default in the base layout; of the texts' files, they take 11 to 30 %.**
 Each bar is a drawing's file averaged over the second half of the edits, in multiples of the live size:
 
-![What the file holds during the edits, as multiples of the live size: data pages, leaves, free pages, and the headers and the journal, for main's churn floor at λ = 1 and 0.1 and the ripeness branches at τ = 0.9](figures/cleaning-edits/svg-pages.svg)
+![What the file holds during the edits, as multiples of the live size: data pages, leaves, free pages, and the headers and the journal, for main's churn floor at λ = 1, 0.25 and 0.1 and the ripeness branches at τ = 0.9](figures/cleaning-edits/svg-pages.svg)
 
 Each cell gives the file's pages during the edits, and in parentheses the free ones among them:
 
-| workload | layout or size | λ = 1 | λ = 0.1 | ripeness | static share | Bayesian |
-| --- | --- | --- | --- | --- | --- | --- |
-| tiger | base | 69 (28) | 68 (37) | 66 (29) | 71 (36) | 65 (30) |
-| tiger | packed | 46 (24) | 51 (32) | 48 (28) | 53 (34) | 47 (27) |
-| tiger | small | 45 (26) | 48 (32) | 43 (26) | 46 (30) | 45 (27) |
-| coat of arms | base | 138 (30) | 134 (52) | 133 (38) | 135 (46) | 133 (43) |
-| coat of arms | packed | 84 (26) | 88 (42) | 83 (31) | 86 (36) | 84 (33) |
-| coat of arms | small | 77 (26) | 89 (50) | 78 (34) | 80 (39) | 77 (33) |
-| world map | base | 661 (98) | 628 (120) | 563 (80) | 593 (100) | 569 (88) |
-| world map | packed | 448 (74) | 426 (88) | 409 (85) | 410 (82) | 408 (83) |
-| world map | small | 408 (82) | 358 (91) | 349 (71) | 347 (70) | 355 (78) |
-| text | 64 KiB | 80 (16) | 82 (25) | 81 (21) | 82 (22) | 83 (23) |
-| text | 512 KiB | 202 (23) | 200 (23) | 215 (24) | 216 (26) | 217 (25) |
+| workload | layout or size | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 64 (27) | 69 (39) | 76 (47) | 67 (34) | 70 (38) | 69 (36) |
+| tiger | packed | 44 (23) | 46 (29) | 52 (35) | 46 (28) | 51 (33) | 50 (31) |
+| tiger | small | 45 (26) | 44 (28) | 49 (34) | 45 (27) | 47 (31) | 43 (26) |
+| coat of arms | base | 127 (29) | 125 (47) | 144 (71) | 125 (44) | 128 (48) | 124 (44) |
+| coat of arms | packed | 80 (26) | 83 (39) | 94 (53) | 80 (33) | 86 (43) | 84 (39) |
+| coat of arms | small | 78 (29) | 79 (39) | 89 (51) | 78 (34) | 83 (43) | 79 (35) |
+| world map | base | 579 (97) | 510 (109) | 504 (121) | 477 (66) | 487 (74) | 482 (69) |
+| world map | packed | 428 (92) | 369 (83) | 367 (94) | 357 (64) | 371 (76) | 365 (71) |
+| world map | small | 408 (91) | 346 (78) | 355 (98) | 367 (91) | 345 (68) | 354 (77) |
+| text | 64 KiB | 79 (16) | 79 (20) | 81 (24) | 81 (21) | 83 (23) | 82 (22) |
+| text | 512 KiB | 201 (23) | 203 (24) | 201 (24) | 214 (23) | 216 (26) | 217 (25) |
 
 The rest of a file, about three pages, is the two header pages and the journal.
 
 **Free pages are returned only in bulk.**
 [Truncation](../impl/consolidation.md#truncation) waits until 16 pages at the file's end are free, `Options::truncate_tail`, 64 KiB, more than the tiger's live size in its packed and small layouts, and [compaction mode](../impl/consolidation.md#compaction-mode) starts only once free pages below the tail exceed a quarter of the file, `Options::hole_share`.
-Cleaning harder frees more pages per flush: at λ = 0.1, the drawings' files hold 6 to 24 free pages more than at λ = 1, and compaction mode ran in 2 to 35 flushes where it ran in 1 to 8; the 64 KiB text's file holds 9 more, and the 512 KiB text's, whose budget the controller holds at one page, as many.
+Cleaning harder frees more pages per flush: at λ = 0.1, the drawings' files hold 3 to 41 free pages more than at λ = 1, and compaction mode ran in 2 to 38 flushes where it ran in 1 to 10; the 64 KiB text's file holds 8 more, and the 512 KiB text's, whose budget the controller holds at one page, 1 more.
 This page has not measured how much of the free space either threshold accounts for.
 
-**Closed, the drawings' files take 1.15 to 4.2 times their edited SVG and the texts' 1.22 to 1.77 times the typed text, and which policy closes smallest changes from workload to workload.**
+**Closed, the drawings' files take 1.07 to 5.1 times their edited SVG and the texts' 1.24 to 1.71 times the typed text, and which policy closes smallest changes from workload to workload.**
 `close` truncates the file after its last live page, so what it keeps is the free pages below it:
 
-| workload | layout or size | edited SVG or text, KiB | λ = 1 | λ = 0.1 | ripeness | static share | Bayesian |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| tiger | base | 58 | 236 | 240 | 244 | 216 | 236 |
-| tiger | packed | 58 | 144 | 168 | 164 | 176 | 152 |
-| tiger | small | 58 | 132 | 164 | 144 | 172 | 140 |
-| coat of arms | base | 180 | 556 | 520 | 544 | 492 | 524 |
-| coat of arms | packed | 180 | 336 | 300 | 260 | 340 | 324 |
-| coat of arms | small | 180 | 296 | 300 | 292 | 328 | 300 |
-| world map | base | 1,045 | 2,452 | 2,192 | 2,052 | 2,092 | 2,184 |
-| world map | packed | 1,045 | 1,448 | 1,524 | 1,380 | 1,408 | 1,436 |
-| world map | small | 1,045 | 1,284 | 1,200 | 1,252 | 1,200 | 1,268 |
-| text | 64 KiB | 236 | 384 | 356 | 376 | 388 | 416 |
-| text | 512 KiB | 684 | 836 | 856 | 936 | 932 | 940 |
+| workload | layout or size | edited SVG or text, KiB | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 58 | 244 | 228 | 296 | 248 | 248 | 228 |
+| tiger | packed | 58 | 164 | 164 | 172 | 164 | 148 | 148 |
+| tiger | small | 58 | 136 | 164 | 168 | 144 | 156 | 144 |
+| coat of arms | base | 180 | 544 | 472 | 524 | 484 | 488 | 480 |
+| coat of arms | packed | 180 | 312 | 312 | 332 | 292 | 272 | 304 |
+| coat of arms | small | 180 | 292 | 276 | 324 | 280 | 300 | 296 |
+| world map | base | 1,045 | 1,980 | 1,912 | 1,796 | 1,764 | 1,760 | 1,756 |
+| world map | packed | 1,045 | 1,508 | 1,356 | 1,272 | 1,240 | 1,188 | 1,324 |
+| world map | small | 1,045 | 1,280 | 1,120 | 1,196 | 1,160 | 1,156 | 1,140 |
+| text | 64 KiB | 236 | 384 | 360 | 400 | 380 | 404 | 380 |
+| text | 512 KiB | 684 | 848 | 868 | 876 | 944 | 924 | 932 |
 
 The closed sizes vary by up to a third between policies that keep nearly as many live pages, since they depend on where the last live page happens to lie when the edits end.
 
 ## Writes
 
-**Filling the pages costs writes: on the drawings, the churn floor at λ = 0.1 writes 1.6 to 2.4 times as much per edit as at λ = 1, and the ripeness branches at τ = 0.9 1.2 to 2.0 times; on the texts, up to 1.3 times.**
+**Filling the pages costs writes: on the drawings, the churn floor at λ = 0.25 writes 1.4 to 1.8 times as much per edit as at λ = 1, and the ripeness branches at τ = 0.9 1.2 to 1.9 times; on the texts, up to 1.2 times.**
 The journal and the headers write the same under every policy; the rest is data pages and leaves, the flush's own and those cleaning rewrites:
 
-| workload | layout or size | journal + headers | λ = 1 | λ = 0.1 | ripeness | static share | Bayesian |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| tiger | base | 52 + 15 | 136 | 266 | 169 | 206 | 179 |
-| tiger | packed | 37 + 11 | 91 | 145 | 112 | 132 | 122 |
-| tiger | small | 37 + 11 | 95 | 166 | 115 | 146 | 115 |
-| coat of arms | base | 65 + 18 | 192 | 452 | 270 | 315 | 292 |
-| coat of arms | packed | 44 + 12 | 113 | 237 | 157 | 183 | 165 |
-| coat of arms | small | 45 + 13 | 135 | 292 | 173 | 217 | 176 |
-| world map | base | 63 + 17 | 206 | 427 | 359 | 394 | 402 |
-| world map | packed | 49 + 14 | 149 | 294 | 265 | 281 | 298 |
-| world map | small | 51 + 14 | 199 | 449 | 306 | 322 | 315 |
-| text | 64 KiB | 13.2 + 4.1 | 36.5 | 46.6 | 43.1 | 44.5 | 43.7 |
-| text | 512 KiB | 13.2 + 4.1 | 49.5 | 49.2 | 50.5 | 54.1 | 52.6 |
+| workload | layout or size | journal + headers | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 52 + 15 | 152 | 230 | 311 | 185 | 227 | 210 |
+| tiger | packed | 37 + 11 | 96 | 136 | 168 | 119 | 141 | 120 |
+| tiger | small | 37 + 11 | 96 | 135 | 169 | 118 | 146 | 118 |
+| coat of arms | base | 65 + 18 | 204 | 349 | 569 | 312 | 365 | 348 |
+| coat of arms | packed | 44 + 12 | 121 | 195 | 289 | 170 | 214 | 187 |
+| coat of arms | small | 45 + 13 | 142 | 213 | 291 | 180 | 228 | 182 |
+| world map | base | 63 + 17 | 233 | 426 | 731 | 395 | 432 | 421 |
+| world map | packed | 49 + 14 | 164 | 280 | 489 | 261 | 280 | 273 |
+| world map | small | 51 + 14 | 215 | 356 | 541 | 300 | 315 | 314 |
+| text | 64 KiB | 13.2 + 4.1 | 36.8 | 40.5 | 47.9 | 42.8 | 44.0 | 44.3 |
+| text | 512 KiB | 13.2 + 4.1 | 49.9 | 51.5 | 51.7 | 50.4 | 54.2 | 51.8 |
 
 All values are bytes per edit on the drawings, and per keystroke on the texts, over the second half of the run.
+Each cell splits the rest into data pages and leaves:
 
-**On the texts, describing the splices writes more than cleaning does.**
-A keystroke's splice shifts the text behind the cursor, 133 bytes per keystroke on the 64 KiB text and 529 on the 512 KiB one, which the flush states where it lies, restating the statements that describe it.
-So the leaves take 14 and 27 bytes of each keystroke's writes, the journal 13, and the headers 4, the same under every policy, and the data pages, which cleaning writes, 5 to 16.
-[Splices without restating the tail](../drafts/splices.md) proposes how to state a splice without that.
+| workload | layout or size | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 56 + 30 | 111 + 51 | 165 + 79 | 81 + 37 | 118 + 42 | 99 + 44 |
+| tiger | packed | 31 + 16 | 60 + 27 | 84 + 35 | 47 + 23 | 69 + 23 | 48 + 23 |
+| tiger | small | 41 + 7 | 79 + 8 | 114 + 8 | 62 + 7 | 91 + 7 | 62 + 8 |
+| coat of arms | base | 78 + 43 | 171 + 95 | 311 + 176 | 156 + 74 | 205 + 77 | 181 + 85 |
+| coat of arms | packed | 43 + 23 | 91 + 48 | 153 + 80 | 77 + 37 | 114 + 44 | 85 + 45 |
+| coat of arms | small | 63 + 21 | 129 + 27 | 208 + 26 | 97 + 25 | 146 + 25 | 101 + 23 |
+| world map | base | 80 + 73 | 176 + 169 | 329 + 322 | 185 + 130 | 209 + 143 | 207 + 134 |
+| world map | packed | 58 + 42 | 120 + 97 | 230 + 196 | 127 + 70 | 143 + 73 | 135 + 75 |
+| world map | small | 95 + 54 | 196 + 95 | 336 + 139 | 176 + 58 | 193 + 57 | 180 + 68 |
+| text | 64 KiB | 4.6 + 14.9 | 8.0 + 15.2 | 15.3 + 15.3 | 11.0 + 14.6 | 12.6 + 14.1 | 12.3 + 14.7 |
+| text | 512 KiB | 4.8 + 27.8 | 4.7 + 29.5 | 4.8 + 29.5 | 5.7 + 27.4 | 9.7 + 27.1 | 7.4 + 27.1 |
+
+- **In the drawings' base and packed layouts, the leaves take 25 to 49 % of what goes to data pages and leaves**, more than their 20 to 29 % of the live pages.
+- **On the texts, describing the splices writes more than cleaning does.**
+  A keystroke's splice shifts the text behind the cursor, 133 bytes per keystroke on the 64 KiB text and 529 on the 512 KiB one, which the flush states where it lies, restating the statements that describe it.
+  So the leaves take 14 to 15 and 27 to 30 bytes of each keystroke's writes, the journal 13, and the headers 4, about the same under every policy, and the data pages, which cleaning writes, 5 to 15.
+  [Splices without restating the tail](../drafts/splices.md) proposes how to state a splice without that.
 
 **Every policy writes far less than saving the file would.**
 Saving the canonical SVG every 100 edits would write 590 bytes per edit on the tiger, 1,845 on the coat of arms, and 10,699 on the world map, and every 1000 edits 59, 185, and 1,070; saving the text every 1000 keystrokes would write 241 and 700 bytes per keystroke.
-Cleaning hard, kladde writes 112 to 266 bytes per edit on the tiger, 157 to 452 on the coat of arms, and 265 to 449 on the world map, and 43 to 54 bytes per keystroke on the texts.
+In the regime, kladde writes 118 to 230 bytes per edit on the tiger, 170 to 365 on the coat of arms, and 261 to 432 on the world map, and 40.5 to 54.2 bytes per keystroke on the texts.
 
 ## Times
 
-**Edits stay fast and flushes short under every policy; on the drawings, cleaning hard costs up to 44 % of the edit rate, and on the world map the static share and the Bayesian posterior take up to twice the flush time; on the texts, the policies differ by less than identical runs do.**
+**Edits stay fast and flushes short under every policy; on the drawings, the regime costs up to 42 % of the edit rate, and on the world map the static share and the Bayesian posterior take up to 1.7 times single-rate ripeness's flush time; on the texts, the policies differ by little.**
 Each cell gives the edits per second in kladde's calls, in thousands, or on the texts the keystrokes per second, counting the flushes that a full journal starts within an edit; the median time of the flushes at the rows, in milliseconds; and the median time to reopen the closed file, in milliseconds; each the mean of the two timing passes:
 
-| workload | layout or size | λ = 1 | λ = 0.1 | ripeness | static share | Bayesian |
-| --- | --- | --- | --- | --- | --- | --- |
-| tiger | base | 85 / 2.8 / 1.9 | 65 / 4.4 / 1.5 | 78 / 3.3 / 1.7 | 67 / 4.2 / 1.8 | 68 / 4.2 / 1.6 |
-| tiger | packed | 109 / 2.9 / 1.7 | 98 / 3.9 / 1.8 | 106 / 3.4 / 1.5 | 98 / 4.2 / 1.7 | 86 / 4.2 / 1.7 |
-| tiger | small | 104 / 2.8 / 0.9 | 92 / 4.2 / 0.9 | 97 / 3.2 / 0.9 | 90 / 4.0 / 0.9 | 85 / 4.2 / 1.0 |
-| coat of arms | base | 62 / 3.0 / 4.4 | 44 / 4.1 / 3.7 | 58 / 3.3 / 4.0 | 45 / 4.6 / 4.6 | 43 / 5.3 / 4.4 |
-| coat of arms | packed | 83 / 3.7 / 4.2 | 63 / 4.8 / 3.6 | 78 / 3.9 / 3.5 | 64 / 5.2 / 4.6 | 62 / 5.2 / 4.1 |
-| coat of arms | small | 71 / 4.3 / 2.0 | 60 / 6.1 / 2.2 | 68 / 4.5 / 2.6 | 59 / 5.3 / 2.1 | 62 / 5.0 / 2.1 |
-| world map | base | 37 / 4.2 / 26.6 | 31 / 5.7 / 28.0 | 32 / 5.3 / 23.9 | 22 / 8.8 / 28.4 | 21 / 10.2 / 26.6 |
-| world map | packed | 43 / 4.1 / 21.9 | 38 / 5.1 / 24.2 | 39 / 5.0 / 20.6 | 30 / 7.0 / 24.6 | 25 / 9.6 / 21.7 |
-| world map | small | 34 / 5.9 / 10.6 | 29 / 7.4 / 10.7 | 31 / 6.7 / 10.2 | 26 / 8.9 / 10.3 | 25 / 10.5 / 11.0 |
-| text | 64 KiB | 746 / 8.7 / 0.9 | 906 / 7.0 / 0.7 | 886 / 7.2 / 0.9 | 929 / 7.6 / 0.9 | 903 / 7.4 / 1.0 |
-| text | 512 KiB | 900 / 9.3 / 1.4 | 907 / 9.1 / 1.5 | 870 / 8.9 / 1.5 | 800 / 12.0 / 2.4 | 820 / 10.5 / 2.3 |
+| workload | layout or size | λ = 1 | λ = 0.25 | λ = 0.1 | ripeness | static share | Bayesian |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | base | 86 / 3.0 / 1.3 | 74 / 4.2 / 1.2 | 68 / 4.8 / 1.1 | 84 / 3.4 / 1.2 | 79 / 4.1 / 1.2 | 73 / 3.6 / 1.2 |
+| tiger | packed | 119 / 2.8 / 1.2 | 105 / 3.8 / 1.2 | 90 / 4.2 / 1.4 | 107 / 3.4 / 1.3 | 101 / 4.1 / 1.4 | 95 / 3.9 / 1.4 |
+| tiger | small | 111 / 2.6 / 0.8 | 101 / 3.6 / 0.8 | 99 / 3.9 / 0.8 | 108 / 3.2 / 0.8 | 100 / 3.3 / 0.9 | 102 / 3.3 / 1.1 |
+| coat of arms | base | 62 / 3.2 / 3.4 | 49 / 4.3 / 3.0 | 34 / 6.9 / 2.9 | 55 / 3.8 / 3.1 | 45 / 5.3 / 3.5 | 42 / 5.3 / 3.3 |
+| coat of arms | packed | 85 / 3.5 / 3.4 | 70 / 5.2 / 3.0 | 58 / 7.5 / 2.9 | 77 / 4.4 / 3.1 | 67 / 5.3 / 3.3 | 60 / 6.5 / 3.0 |
+| coat of arms | small | 74 / 4.2 / 1.8 | 67 / 5.0 / 1.7 | 64 / 5.1 / 1.7 | 75 / 4.5 / 1.8 | 64 / 5.3 / 2.0 | 68 / 4.8 / 1.8 |
+| world map | base | 37 / 4.5 / 17.6 | 29 / 6.3 / 15.2 | 21 / 9.4 / 14.5 | 31 / 6.6 / 16.0 | 23 / 8.6 / 17.0 | 22 / 10.6 / 16.8 |
+| world map | packed | 45 / 4.3 / 16.3 | 35 / 5.8 / 14.8 | 26 / 8.6 / 14.0 | 39 / 6.0 / 15.4 | 32 / 7.3 / 16.7 | 27 / 9.4 / 16.0 |
+| world map | small | 37 / 6.1 / 8.0 | 29 / 7.8 / 7.9 | 24 / 10.8 / 7.6 | 35 / 6.3 / 8.2 | 29 / 8.1 / 8.2 | 26 / 10.5 / 8.2 |
+| text | 64 KiB | 982 / 6.9 / 0.7 | 1,016 / 6.8 / 0.7 | 968 / 7.2 / 0.7 | 990 / 6.8 / 0.7 | 994 / 7.3 / 0.9 | 968 / 7.3 / 0.9 |
+| text | 512 KiB | 958 / 9.2 / 1.4 | 993 / 8.9 / 1.4 | 966 / 9.0 / 1.5 | 936 / 9.1 / 1.7 | 975 / 10.8 / 1.9 | 970 / 9.4 / 2.2 |
 
-- **Against main's default, the churn floor at λ = 0.1 edits the drawings 10 to 29 % slower, single-rate ripeness 2 to 14 %, the static share 10 to 40 %, and the Bayesian posterior 12 to 44 %.**
+- **Against main's default, the churn floor at λ = 0.25 edits the drawings 9 to 23 % slower, and at λ = 0.1 11 to 46 %; single-rate ripeness up to 17 %, the static share 8 to 39 %, and the Bayesian posterior 8 to 42 %.**
   The edit rate falls with the writes, since cleaning works inside the flushes that edits start.
-- **The flushes at the rows take 2.8 to 5.9 ms at the median on the drawings under main's default, 3.2 to 10.5 ms cleaning hard, and 7.0 to 12.0 ms on the texts**, where each row's flush states a thousand keystrokes' splices, the journal never having filled before it.
-  On the world map, single-rate ripeness flushes as fast as the churn floor at λ = 0.1, and the static share and the Bayesian posterior take 1.3 to 1.9 times as long as single-rate ripeness, more than their 3 to 13 % more writes explain; on kladde-bench too, [their ranking cost more](bayesian-ripeness.md).
-- **Reopening the edited file takes 0.9 to 1.9 ms on the tiger, 2.0 to 4.6 ms on the coat of arms, 10 to 28 ms on the world map, and 0.7 to 2.4 ms on the texts**; the layout matters more than the policy, since the small layout's address table is small.
+- **The flushes at the rows take 2.6 to 6.1 ms at the median on the drawings under main's default, 3.2 to 10.6 ms in the regime, and 6.8 to 10.8 ms on the texts**, where each row's flush states a thousand keystrokes' splices, the journal never having filled before it.
+  On the world map, single-rate ripeness flushes as fast as the churn floor at λ = 0.25 in the base and packed layouts, and faster in the small one; the static share and the Bayesian posterior take 1.2 to 1.7 times as long as single-rate ripeness, more than their 5 to 9 % more writes explain, and on kladde-bench too, [their ranking cost more](bayesian-ripeness.md).
+- **Reopening the edited file takes 0.8 to 1.4 ms on the tiger, 1.7 to 3.5 ms on the coat of arms, 7.6 to 18 ms on the world map, and 0.7 to 2.2 ms on the texts**; the layout matters more than the policy, since the small layout's address table is small.
+- **On the texts, every setting takes 936,000 to 1,016,000 keystrokes per second**, with median flushes of 6.8 to 7.7 ms at 64 KiB and 8.8 to 10.8 ms at 512 KiB; the settings' keystroke rates lie within 9 % of each other, little more than identical runs differ.
 
-**Identical runs differed by little on the drawings, and by too much on the texts to rank the policies there.**
-The two timing passes differed in the drawings' edit rate by 2 % at the median and 19 % at most, in their median flush by 3 % and 35 %, and in their reopen times by 5 % and 50 %.
-On the texts, whose runs spend about a tenth of a second in the store, they differed by 11 % at the median in the keystroke rate and the median flush, and by 20 % in the reopen times, and by up to 43 %.
+**Identical runs differed by little.**
+The two timing passes differed in the drawings' edit rate by 1 % at the median and 23 % at most, in their median flush by 3 % and 19 %, and in their reopen times by 2.5 % and 29 %, the largest on the tiger, whose reopens take about a millisecond; on the texts, by 1 to 2 % at the median and at most 8, 10 and 9 %.
 The reopen times are medians of 21 opens each.
 
 ## The sweep in numbers
@@ -349,76 +378,84 @@ These are the points of [the trade-off figures](#the-trade-off-between-space-and
 
 | base | tiger | coat of arms | world map |
 | --- | --- | --- | --- |
-| churn floor, λ = 1 | 1.66, 136 | 1.67, 192 | 1.66, 206 |
-| churn floor, λ = 0.5 | 1.50, 162 | 1.52, 228 | 1.55, 240 |
-| churn floor, λ = 0.25 | 1.35, 191 | 1.42, 284 | 1.50, 298 |
-| churn floor, λ = 0.1 | 1.23, 266 | 1.26, 452 | 1.49, 427 |
-| ripeness, τ = 0.75 | 1.49, 169 | 1.45, 261 | 1.45, 296 |
-| ripeness, τ = 0.85 | 1.44, 173 | 1.43, 269 | 1.41, 361 |
-| ripeness, τ = 0.9 | 1.51, 169 | 1.45, 270 | 1.42, 359 |
-| ripeness, τ = 0.95 | 1.48, 171 | 1.43, 269 | 1.42, 361 |
-| static share, τ = 0.75 | 1.47, 190 | 1.45, 260 | 1.46, 349 |
-| static share, τ = 0.85 | 1.39, 203 | 1.39, 311 | 1.44, 395 |
-| static share, τ = 0.9 | 1.39, 206 | 1.37, 315 | 1.45, 394 |
-| static share, τ = 0.95 | 1.34, 214 | 1.39, 309 | 1.45, 394 |
-| Bayesian, τ = 0.75 | 1.44, 174 | 1.44, 254 | 1.46, 317 |
-| Bayesian, τ = 0.85 | 1.44, 182 | 1.40, 298 | 1.41, 401 |
-| Bayesian, τ = 0.9 | 1.40, 179 | 1.38, 292 | 1.42, 402 |
-| Bayesian, τ = 0.95 | 1.42, 179 | 1.42, 292 | 1.42, 401 |
+| churn floor, λ = 1 | 1.49, 152 | 1.50, 204 | 1.42, 233 |
+| churn floor, λ = 0.5 | 1.29, 179 | 1.29, 259 | 1.26, 304 |
+| churn floor, λ = 0.35 | 1.22, 203 | 1.23, 296 | 1.21, 354 |
+| churn floor, λ = 0.25 | 1.17, 230 | 1.19, 349 | 1.18, 426 |
+| churn floor, λ = 0.15 | 1.15, 279 | 1.14, 447 | 1.14, 570 |
+| churn floor, λ = 0.1 | 1.12, 311 | 1.13, 569 | 1.12, 731 |
+| ripeness, τ = 0.75 | 1.43, 166 | 1.44, 236 | 1.45, 273 |
+| ripeness, τ = 0.85 | 1.30, 189 | 1.27, 291 | 1.28, 337 |
+| ripeness, τ = 0.9 | 1.31, 185 | 1.24, 312 | 1.21, 395 |
+| ripeness, τ = 0.95 | 1.28, 200 | 1.24, 307 | 1.17, 476 |
+| static share, τ = 0.75 | 1.44, 172 | 1.45, 252 | 1.46, 303 |
+| static share, τ = 0.85 | 1.26, 204 | 1.27, 311 | 1.28, 369 |
+| static share, τ = 0.9 | 1.24, 227 | 1.22, 365 | 1.21, 432 |
+| static share, τ = 0.95 | 1.23, 226 | 1.20, 378 | 1.16, 548 |
+| Bayesian, τ = 0.75 | 1.43, 171 | 1.44, 243 | 1.45, 285 |
+| Bayesian, τ = 0.85 | 1.28, 199 | 1.27, 306 | 1.28, 351 |
+| Bayesian, τ = 0.9 | 1.28, 210 | 1.22, 348 | 1.21, 421 |
+| Bayesian, τ = 0.95 | 1.28, 197 | 1.22, 345 | 1.16, 549 |
 
 | packed | tiger | coat of arms | world map |
 | --- | --- | --- | --- |
-| churn floor, λ = 1 | 1.57, 91 | 1.70, 113 | 1.55, 149 |
-| churn floor, λ = 0.5 | 1.42, 101 | 1.56, 138 | 1.46, 175 |
-| churn floor, λ = 0.25 | 1.33, 124 | 1.48, 171 | 1.43, 211 |
-| churn floor, λ = 0.1 | 1.33, 145 | 1.32, 237 | 1.41, 294 |
-| ripeness, τ = 0.75 | 1.48, 106 | 1.57, 150 | 1.47, 191 |
-| ripeness, τ = 0.85 | 1.44, 114 | 1.53, 154 | 1.36, 261 |
-| ripeness, τ = 0.9 | 1.43, 112 | 1.51, 157 | 1.35, 265 |
-| ripeness, τ = 0.95 | 1.46, 113 | 1.53, 151 | 1.36, 261 |
-| static share, τ = 0.75 | 1.47, 117 | 1.52, 158 | 1.47, 204 |
-| static share, τ = 0.85 | 1.33, 140 | 1.50, 171 | 1.35, 282 |
-| static share, τ = 0.9 | 1.36, 132 | 1.42, 183 | 1.36, 281 |
-| static share, τ = 0.95 | 1.40, 123 | 1.50, 173 | 1.35, 283 |
-| Bayesian, τ = 0.75 | 1.47, 113 | 1.49, 151 | 1.47, 203 |
-| Bayesian, τ = 0.85 | 1.47, 114 | 1.47, 168 | 1.35, 297 |
-| Bayesian, τ = 0.9 | 1.38, 122 | 1.48, 165 | 1.35, 298 |
-| Bayesian, τ = 0.95 | 1.46, 114 | 1.48, 160 | 1.36, 300 |
+| churn floor, λ = 1 | 1.52, 96 | 1.56, 121 | 1.40, 164 |
+| churn floor, λ = 0.5 | 1.33, 109 | 1.34, 150 | 1.26, 208 |
+| churn floor, λ = 0.35 | 1.27, 126 | 1.29, 164 | 1.22, 240 |
+| churn floor, λ = 0.25 | 1.22, 136 | 1.24, 195 | 1.18, 280 |
+| churn floor, λ = 0.15 | 1.21, 155 | 1.20, 247 | 1.15, 365 |
+| churn floor, λ = 0.1 | 1.19, 168 | 1.17, 289 | 1.13, 489 |
+| ripeness, τ = 0.75 | 1.48, 108 | 1.50, 138 | 1.46, 188 |
+| ripeness, τ = 0.85 | 1.34, 121 | 1.32, 171 | 1.29, 224 |
+| ripeness, τ = 0.9 | 1.33, 119 | 1.32, 170 | 1.22, 261 |
+| ripeness, τ = 0.95 | 1.35, 117 | 1.32, 176 | 1.17, 328 |
+| static share, τ = 0.75 | 1.46, 113 | 1.50, 149 | 1.47, 202 |
+| static share, τ = 0.85 | 1.30, 135 | 1.32, 179 | 1.30, 242 |
+| static share, τ = 0.9 | 1.26, 141 | 1.25, 214 | 1.22, 280 |
+| static share, τ = 0.95 | 1.26, 140 | 1.26, 210 | 1.16, 365 |
+| Bayesian, τ = 0.75 | 1.46, 107 | 1.50, 145 | 1.47, 197 |
+| Bayesian, τ = 0.85 | 1.34, 120 | 1.32, 174 | 1.29, 234 |
+| Bayesian, τ = 0.9 | 1.35, 120 | 1.29, 187 | 1.22, 273 |
+| Bayesian, τ = 0.95 | 1.32, 121 | 1.28, 192 | 1.16, 364 |
 
 | small | tiger | coat of arms | world map |
 | --- | --- | --- | --- |
-| churn floor, λ = 1 | 1.39, 95 | 1.48, 135 | 1.37, 199 |
-| churn floor, λ = 0.5 | 1.23, 109 | 1.31, 158 | 1.24, 237 |
-| churn floor, λ = 0.25 | 1.14, 135 | 1.20, 200 | 1.16, 302 |
-| churn floor, λ = 0.1 | 1.10, 166 | 1.11, 292 | 1.12, 449 |
-| ripeness, τ = 0.75 | 1.32, 109 | 1.39, 155 | 1.39, 216 |
-| ripeness, τ = 0.85 | 1.25, 114 | 1.30, 165 | 1.23, 258 |
-| ripeness, τ = 0.9 | 1.24, 115 | 1.29, 173 | 1.17, 306 |
-| ripeness, τ = 0.95 | 1.24, 115 | 1.30, 168 | 1.17, 312 |
-| static share, τ = 0.75 | 1.34, 113 | 1.40, 157 | 1.40, 230 |
-| static share, τ = 0.85 | 1.20, 136 | 1.23, 194 | 1.23, 269 |
-| static share, τ = 0.9 | 1.15, 146 | 1.21, 217 | 1.16, 322 |
-| static share, τ = 0.95 | 1.14, 145 | 1.21, 216 | 1.14, 364 |
-| Bayesian, τ = 0.75 | 1.35, 111 | 1.40, 159 | 1.39, 229 |
-| Bayesian, τ = 0.85 | 1.30, 115 | 1.28, 181 | 1.23, 266 |
-| Bayesian, τ = 0.9 | 1.25, 115 | 1.28, 176 | 1.16, 315 |
-| Bayesian, τ = 0.95 | 1.25, 119 | 1.28, 175 | 1.15, 343 |
+| churn floor, λ = 1 | 1.39, 96 | 1.43, 142 | 1.34, 215 |
+| churn floor, λ = 0.5 | 1.20, 117 | 1.26, 170 | 1.20, 269 |
+| churn floor, λ = 0.35 | 1.17, 122 | 1.20, 189 | 1.16, 307 |
+| churn floor, λ = 0.25 | 1.12, 135 | 1.16, 213 | 1.12, 356 |
+| churn floor, λ = 0.15 | 1.11, 155 | 1.11, 255 | 1.09, 451 |
+| churn floor, λ = 0.1 | 1.09, 169 | 1.09, 291 | 1.08, 541 |
+| ripeness, τ = 0.75 | 1.31, 106 | 1.40, 154 | 1.39, 217 |
+| ripeness, τ = 0.85 | 1.22, 116 | 1.27, 179 | 1.23, 256 |
+| ripeness, τ = 0.9 | 1.23, 118 | 1.26, 180 | 1.16, 300 |
+| ripeness, τ = 0.95 | 1.23, 117 | 1.26, 179 | 1.13, 334 |
+| static share, τ = 0.75 | 1.31, 114 | 1.40, 164 | 1.40, 233 |
+| static share, τ = 0.85 | 1.17, 131 | 1.24, 194 | 1.23, 271 |
+| static share, τ = 0.9 | 1.14, 146 | 1.17, 228 | 1.16, 315 |
+| static share, τ = 0.95 | 1.15, 145 | 1.16, 227 | 1.10, 416 |
+| Bayesian, τ = 0.75 | 1.34, 109 | 1.40, 156 | 1.40, 234 |
+| Bayesian, τ = 0.85 | 1.28, 120 | 1.26, 181 | 1.23, 274 |
+| Bayesian, τ = 0.9 | 1.26, 118 | 1.27, 182 | 1.16, 314 |
+| Bayesian, τ = 0.95 | 1.27, 118 | 1.27, 182 | 1.12, 368 |
 
 | text | 64 KiB | 512 KiB |
 | --- | --- | --- |
-| churn floor, λ = 1 | 1.27, 36.5 | 1.10, 49.5 |
-| churn floor, λ = 0.5 | 1.23, 37.3 | 1.10, 49.8 |
-| churn floor, λ = 0.25 | 1.18, 39.9 | 1.09, 49.6 |
-| churn floor, λ = 0.1 | 1.13, 46.6 | 1.09, 49.2 |
-| ripeness, τ = 0.75 | 1.43, 37.9 | 1.21, 49.5 |
-| ripeness, τ = 0.85 | 1.26, 40.6 | 1.19, 49.8 |
-| ripeness, τ = 0.9 | 1.19, 43.1 | 1.17, 50.5 |
-| ripeness, τ = 0.95 | 1.17, 43.1 | 1.13, 53.9 |
-| static share, τ = 0.75 | 1.44, 40.1 | 1.20, 51.8 |
-| static share, τ = 0.85 | 1.26, 42.0 | 1.19, 52.7 |
-| static share, τ = 0.9 | 1.19, 44.5 | 1.17, 54.1 |
-| static share, τ = 0.95 | 1.15, 47.3 | 1.13, 56.6 |
-| Bayesian, τ = 0.75 | 1.44, 39.3 | 1.22, 51.0 |
-| Bayesian, τ = 0.85 | 1.27, 41.0 | 1.21, 51.1 |
-| Bayesian, τ = 0.9 | 1.19, 43.7 | 1.18, 52.6 |
-| Bayesian, τ = 0.95 | 1.18, 44.7 | 1.13, 56.0 |
+| churn floor, λ = 1 | 1.25, 36.8 | 1.09, 49.9 |
+| churn floor, λ = 0.5 | 1.23, 37.8 | 1.09, 50.4 |
+| churn floor, λ = 0.35 | 1.20, 39.0 | 1.09, 50.8 |
+| churn floor, λ = 0.25 | 1.18, 40.5 | 1.10, 51.5 |
+| churn floor, λ = 0.15 | 1.15, 44.0 | 1.09, 51.6 |
+| churn floor, λ = 0.1 | 1.13, 47.9 | 1.09, 51.7 |
+| ripeness, τ = 0.75 | 1.45, 37.9 | 1.21, 49.5 |
+| ripeness, τ = 0.85 | 1.26, 40.2 | 1.19, 49.9 |
+| ripeness, τ = 0.9 | 1.19, 42.8 | 1.17, 50.4 |
+| ripeness, τ = 0.95 | 1.17, 43.7 | 1.13, 53.5 |
+| static share, τ = 0.75 | 1.44, 40.5 | 1.20, 51.8 |
+| static share, τ = 0.85 | 1.26, 42.3 | 1.19, 52.6 |
+| static share, τ = 0.9 | 1.19, 44.0 | 1.17, 54.2 |
+| static share, τ = 0.95 | 1.15, 48.7 | 1.12, 56.3 |
+| Bayesian, τ = 0.75 | 1.45, 39.3 | 1.22, 51.0 |
+| Bayesian, τ = 0.85 | 1.27, 41.2 | 1.21, 51.1 |
+| Bayesian, τ = 0.9 | 1.19, 44.3 | 1.18, 51.8 |
+| Bayesian, τ = 0.95 | 1.19, 44.0 | 1.12, 55.0 |
