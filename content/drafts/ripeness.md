@@ -3,13 +3,13 @@ title: Cleaning by ripeness
 ---
 
 **Status: a proposal, not adopted.**
-It would replace data-page scoring, the churn floor, and part of free filling in [Consolidation](../impl/consolidation.md).
-[Cleaning by ripeness](../evaluation/ripeness.md) evaluates an earlier version, which estimated one rate per page.
+It would replace the budget's choice of victims by score and the churn floor in [Consolidation](../impl/consolidation.md), and leave free filling as it is.
+[Cleaning by ripeness](../evaluation/ripeness.md) evaluates an earlier version, which estimated one rate per page, and [Ripeness with main's free filling](../evaluation/ripeness-free-filling.md) this one, on kladde-svg's drawings and text-bench's texts.
 
 **Clean a page once waiting no longer pays, not once it has become sparse.**
 A page whose content is still dying should wait, since every byte that dies before the page is cleaned is a byte the cleaning need not copy.
 A page whose content has stopped dying gains nothing by waiting, however full it is, and its garbage stays until something moves it.
-This draft turns that into three things: a threshold per page, derived from a price for space; an estimate of how much of each page still drains and how fast, chosen so that pages can be ranked by the threshold without rescanning them as time passes; and a placement rule that makes fewer frozen pages in the first place.
+This draft turns that into three things: a threshold per page, derived from a price for space; an estimate of how much of each page still drains and how fast, chosen so that pages can be ranked by the threshold without rescanning them as time passes; and pages opened for cleaning that hold survivors of ripe pages only, so that they stay full.
 
 ## The problem
 
@@ -242,7 +242,7 @@ In simulation, the weight matters little: from 3 to 30 epochs, a heavier start h
 The draft takes $n_0 = 10$.
 
 **Only natural losses count**: bytes that the application's writes, frees, and shrinks supersede, which reach a page through the fold.
-Bytes that consolidation moves out of a page say nothing about how fast the rest will die, so evacuation, the page rewrite, the rotating window, and [the cursor](#the-flushs-own-pages-take-survivors-from-the-previous-flush) leave the estimate alone.
+Bytes that consolidation moves out of a page say nothing about how fast the rest will die, so evacuation, by the budget or by [free filling](#the-flushs-own-pages-take-what-costs-nothing), the page rewrite, and the rotating window leave the estimate alone.
 Where they move out part of a page, which share they came from is unknown, so they shrink $S_0$, $S_1$, and `fast` in proportion, which leaves the rate where it was.
 
 **The fit follows a page whose content changes character as far as its losses show it, and no further.**
@@ -304,7 +304,7 @@ The session's own losses correct it, and must earn a static share against the se
 The file records neither how a page lost its bytes nor when, so this cannot be avoided without the state.
 Moved-out bytes make the page look as if it had drained faster than it did, which raises its rate, lowers its index, and so delays its cleaning: the error can hold garbage a little longer, but never makes a page ripe that the true rate would not.
 It is also rare.
-Evacuation, the page rewrite, and the rotating window move whole pages, which are then free rather than seeded; only the cursor and description defragmentation move part of a page, and the cursor empties its page within a flush or two.
+Evacuation, the page rewrite, and the rotating window move whole pages, which are then free rather than seeded; only description defragmentation and free filling move part of a page, free filling only once nothing whole fits, and then part of the sparsest victim, which leaves it sparser still and so first in line to be taken whole.
 
 ### Checking the fit in simulation
 
@@ -380,7 +380,7 @@ impl Ripeness {
 
 The controller keeps the price as $-\ln \kappa$, which is what the keys compare with, and a step in it changes $\kappa$ by a factor, which suits a price that ranges over orders of magnitude.
 
-This gives up the bucket queues' $O(1)$ for $O(\log P)$ per changed page and per victim.
+This adds $O(\log P)$ per changed page and per budgeted victim to the bucket queues' $O(1)$, which free filling keeps.
 **An indexed binary max-heap would do as well as the B-trees, with less memory.**
 Each page's entry in the page table would hold its position in its heap, 4 bytes, so that a changed key can be sifted up or down from where it is; every swap updates the two pages' positions, which is why a stock heap will not do.
 The trees need no position, but hold the key and page number again in every node.
@@ -416,6 +416,10 @@ So the one rule is right in both cases, and no mode switch is needed.
 If the budget binds flush after flush, ripe pages queue up and the controller cannot reach $\tau$: the target and the cap conflict, and the cap wins, as it should.
 The controller must then not wind up: raising $\kappa$ would only lengthen the queue, so it holds $\kappa$ while the budget binds.
 
+**Nor does the controller lower $\kappa$ after a flush that cleaned nothing at the price: while the pages are fuller than $\tau$, a lower price could change nothing there either.**
+Without that hold, a file that starts full drives $\kappa$ to its floor within its first flushes, and takes one to two live sizes of writes to climb back.
+[Free filling's](#the-flushs-own-pages-take-what-costs-nothing) victims do not count as cleaned: it takes them whatever the price, in nearly every flush, and counting them would let $\kappa$ fall in every flush while the pages are fuller than $\tau$.
+
 ### Where survivors go
 
 **Whether to free a page now and where its survivors should go are separate decisions, and neither needs pairs.**
@@ -438,17 +442,15 @@ For the page of the mixture above:
 So the room of a page is best filled with content that dies at about the rate of what the page already holds.
 Cold content in a hot page costs a wait that grows with its share, and above $u^*$ it costs the page's garbage for good.
 
-**So each source of survivors has one place it may go, decided by its temperature and its size, not by a partner.**
-The case distinction gives the rule: survivors may join a hotter page only as a share $b$ small enough to stay below their own threshold $u^*(r_B)$; otherwise they need a page of their own temperature.
-The next two sections apply it to the two kinds of page that take survivors:
+**So the two kinds of page that take survivors take them by two rules: a page the budget loop opens holds survivors of ripe pages only, and the room of a page the flush writes anyway takes whatever costs nothing to move there.**
+A page opened for cleaning can avoid mixing at no cost, so it does; the room of a flush's own page could avoid it only by giving up victims it frees with no page written for them, which, measured, costs more than the mixing:
 
-| source | its share $b$ in the host | where it goes | case |
-| --- | --- | --- | --- |
-| survivors of ripe pages, except the small ones below | any | pages the budget loop opens, each filled with survivors of many ripe pages | cold with cold: no hot content to wait for |
-| a ripe page whose survivors take at most $\theta$ of a page | at most $\theta$ | the room of a flush's own page | $b \leq u^*(r_B)$, as long as $\theta$ lies below the threshold of content that has stopped dying |
-| the survivors of the previous flush | whatever fits | the room of a flush's own page | little mixing: about the host's temperature |
+| source | where it goes | case |
+| --- | --- | --- |
+| survivors of ripe pages | pages the budget loop opens, each filled with survivors of many ripe pages | cold with cold: no hot content to wait for |
+| survivors of any victim that fits, the sparsest first, ripe or not | the room of a flush's own page | mixed, but the victim is freed with no page written for it, and ripeness cleans the host once waiting no longer pays |
 
-None of these needs a counterfactual about pairs: each source is judged by its own rate and size against a threshold, and the room is simply offered in that order.
+Neither needs a counterfactual about pairs: a ripe page is judged by its own rate against a threshold, and a victim of free filling by whether it fits the room.
 
 #### Budgeted pages take survivors of ripe pages
 
@@ -457,55 +459,28 @@ This is LFS's segregation.
 The current budget loop already comes close: a page it opens holds survivors of victims and nothing else.
 The proposal changes two things about it.
 First, the victims are the ripe pages, taken in index order, rather than pages that pass the churn floor.
-Second, the loop's first page no longer takes the rest of a victim cut to fill the flush's last page; the cursor below fills that room instead, so no victim is split between a hot page and a cold one.
+Second, the loop's first page no longer takes the rest of a victim cut to fill the flush's last page; free filling fills that room instead, so no ripe page's survivors are split between a hot page and a cold one.
 
-#### The flush's own pages take survivors from the previous flush
+#### The flush's own pages take what costs nothing
 
-**This is the placement half of the proposal, and apart from its first step it would help any cleaning policy.**
-Ripeness decides when to clean; this decides what goes into the room of the pages a flush writes anyway, so that fewer frozen pages are made in the first place.
-Only step 1 uses the index.
+**The room left in a page the flush writes anyway goes to what [free filling](../impl/consolidation.md#victims-are-pulled-one-at-a-time) takes in Consolidation, whatever the price: in [compaction mode](../impl/consolidation.md#compaction-mode) the tail first, then whole data victims that fit, the sparsest first, then description defragmentation's candidates beyond its share, then as many of one victim's statements as fit.**
+A victim freed there costs no page, so its net gain is the whole page, whatever its fill or its ripeness; ripeness decides only what the budget pays to clean.
 
-**The room in every data page a flush writes anyway goes first to small ripe victims, then to the survivors of the previous flush's least-filled page.**
+**This mixes survivors, cold by selection, with fresh content, and on the workloads measured the free cleaning pays for it.**
+The survivors in the room of a page are a share of at most that room, about half a page on a flush's last page; once the page's fresh content has died, it is a mixed page of that share, which ripeness cleans as it cleans any page, once waiting no longer pays.
+Keeping survivors out of that room would mix less: the room could go to ripe victims whose survivors take at most $\theta$ of a page, a share below their own threshold, and then to the survivors of the previous flush's least-filled page, a whole statement at a time, the content closest in age to the flush's own.
+On kladde-svg's drawings, that would clean 0.01 to 0.15 victims per flush free where free filling cleans 0.8 to 1.4, would open more pages for cleaning, and would write a median 3 % more at the same target for as many live pages; at equal writes, it would keep a median 1.1 to 1.2 % more live pages, and up to 6 % more at $\tau = 0.75$, and on text-bench's texts about as many ([Ripeness with main's free filling](../evaluation/ripeness-free-filling.md)).
 
-1. Whole ripe victims that fit the room and whose survivors take at most $\theta$ of a page, highest index first.
-   Each frees a page for almost no room, and a host that freezes at under $\theta$ is ripe soon after its own content has died.
-2. The survivors of the **cursor page**, as many of its statements' as fit, a whole statement's at a time, so that the cursor never cuts a statement.
-   The cursor page is the least-filled data page of the latest earlier epoch that wrote data pages, chosen at open among the governing header's epoch's pages and again whenever the current one is empty.
-
-**A statement too long for the room cannot stop the cursor for good.**
-The cursor takes whichever of the page's statements fit, not only the next in order, so a long one is skipped until a flush leaves room enough for it.
-If no flush does, the page grows old, and the rule below that gives up a page after $W$ epochs moves the cursor on and leaves the rest of the page to ripeness.
-A statement can be at most a page long, so it takes a flush whose last page leaves that much room; how often a page is abandoned this way is a question for measurement.
-
-**The previous flush's content is the closest in age to the flush's own that exists outside the flush itself.**
-A page *closes short* when it is written with more than $\theta$ of it empty, which only a flush's last page can, when the flush runs out of content and free filling finds nothing to fill the room with.
-Unless the previous flush's last page closed short, its least-filled page is the one the current flush's fold drained most, which is the hottest of what the previous flush wrote; a page that closed short is least filled because of how it was written, not because anything died.
-So the room of the flush's own pages fills with content of about their own temperature, and the shortfall of the flush's last page, about half a page on average, comes out of a page that the next flush or two empty and free, with no page written for it.
-With about half a page of room per flush and at most a page to empty, the cursor stays about two epochs behind the flush.
-
-Four details keep it from going wrong:
-
-- **It still mixes, only less.**
-  The previous flush's survivors are exactly what the current flush did not rewrite, so they are colder than fresh content.
-  No other source matches fresh content better, and ripeness cleans whatever freezes.
-- **It moves content without writing a page, but not for free.**
-  Every survivor it moves is stated again in the flush's epoch, and its old statement becomes garbage in a table page.
-  The volume is bounded by the room of the flush's own pages, about half a page per flush.
-- **It does not count as a loss** in the cursor page's estimate, and the host's estimate starts as the byte-weighted mix of fresh and moved content.
-- **It gives up a page that has grown old.**
-  Flushes that end nearly full leave little room, and a cursor page drained slowly across many of them would hand out ever older content; once it is more than $W$ epochs old, the cursor moves on to the least-filled page of the latest earlier epoch, and the rest of the old page is left to ripeness.
-
-In [compaction mode](../impl/consolidation.md#compaction-mode), the tail page still takes the room ahead of both, since returning the tail is worth a mixed page.
+**Free filling's moves do not count as losses**, neither in its victims' estimates nor in the host's, which starts as the byte-weighted mix of fresh and moved content, as [a new page](#estimating-how-fast-a-page-still-drains) does.
 
 ## What would change in Consolidation
 
-- [Scoring a data page](../impl/consolidation.md#scoring-a-data-page) would give way to the ripeness index, for table pages as well, and sampling would go.
-  The bucket queues would give way to the two ordered sets, and victim selection would cost $O(\log P)$ rather than $O(1)$.
+- [Scoring a data page](../impl/consolidation.md#scoring-a-data-page) would give way to the ripeness index for the budget's victims, and for table pages as well.
+  The budget would take its victims from the two ordered sets, at $O(\log P)$ rather than $O(1)$ a victim; the bucket queues and their sampling would stay, for free filling's choice of the sparsest data victim.
 - [The churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) would give way to ripeness, and $\lambda$ to $\kappa$; the controller would move $\kappa$ toward $\tau$, and the budget would remain a cap.
-- [A free sink changes the arithmetic](../impl/consolidation.md#victims-are-pulled-one-at-a-time) — "free filling takes any victim that fits" — would no longer hold: free filling would take small ripe victims and the cursor's survivors.
-- [Free filling's order](../impl/consolidation.md#packing-in-id-order-with-look-ahead) would shrink to those two sources, with the cursor page taking the place of the victim too big to take whole.
+- [Free filling](../impl/consolidation.md#victims-are-pulled-one-at-a-time) would stay as it is, and its victims would not count as cleaning when the controller decides whether $\kappa$ holds.
 - [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 18 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add) would carry it, with $\kappa$, from one session to the next.
-- [The constants still to be chosen](../impl/consolidation.md#constants-still-to-be-chosen) would lose $\lambda$ and gain $\kappa$'s controller, $\beta$, $n_0$, $c$, $R_\text{min}$, and $W$.
+- [The constants still to be chosen](../impl/consolidation.md#constants-still-to-be-chosen) would lose $\lambda$ and gain $\kappa$'s controller, $\beta$, $n_0$, $c$, and $R_\text{min}$.
 
 ## Ablation: without the logarithm
 
@@ -555,8 +530,10 @@ Running the evaluation with $h$ replaced by $g$ would measure how much of a real
   Rates per epoch count flushes rather than work: a run of tiny flushes makes every page look colder than it is.
   A clock that counts the bytes the application writes would measure drain per unit of work, but pages record only their epoch, so the seed at open would still have to use epochs.
 - **The flush's own content.**
-  Packed in key order, it mixes allocations the application keeps rewriting with ones it has just created, which is the largest source of mixed pages this draft leaves in place.
+  Packed in key order, it mixes allocations the application keeps rewriting with ones it has just created, which, with free filling's survivors, is a source of mixed pages this draft leaves in place.
   [`last_written`](../impl/in-memory-state.md#3-the-allocation-map) could split a flush's chunks by whether their allocation was also written recently, at the price of key order; whether that pays is a question for measurement.
+- **Where keeping survivors apart would pay.**
+  On kladde-svg's drawings and text-bench's texts, the victims free filling frees outweigh what its survivors cost the pages they join; a workload whose survivors make a larger share of the room, or freeze their hosts above their thresholds more often, could tip the balance the other way, which only measurement can say.
 - **Description defragmentation's rewrites** are cold by selection and today share pages with the flush's fresh content.
   Packing them with the survivors of ripe pages instead would keep them apart, at the price of a second page per flush that may close short.
 - **Whether the static share pays.**

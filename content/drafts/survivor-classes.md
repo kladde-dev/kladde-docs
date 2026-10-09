@@ -80,7 +80,7 @@ So the bit is kept as it goes, as [the Bayesian draft proposes](bayesian-ripenes
 **The budget loop takes its victims before `pack`, and hands their hot survivors to it.**
 Today, `pack` runs first and [pulls victims into the room](../impl/consolidation.md#victims-are-pulled-one-at-a-time) of the flush's own pages, and the budget loop opens pages for more victims afterwards.
 Under this proposal, the loop chooses its victims first and takes their survivors, sorting each into its class; the hot ones join the flush's own chunks, and the warm and cold ones fill pages of their own.
-Victims whose survivors take at most $\theta$ of a page are left to free filling, as in [the ripeness draft](ripeness.md#the-flushs-own-pages-take-survivors-from-the-previous-flush), so that the loop does not open pages for what the room of the flush's own pages takes for nothing.
+Victims whose survivors take at most $\theta$ of a page are left to free filling, which takes any victim that fits the room of the flush's own pages, as in [the ripeness draft](ripeness.md#the-flushs-own-pages-take-what-costs-nothing), so that the loop does not open pages for what that room takes for nothing.
 The [one survivor cut at a page boundary](../impl/consolidation.md#victims-are-pulled-one-at-a-time) that a budgeted page may take is cut within its class.
 
 **The loop keeps one open page per class, and counts every page each class needs against the budget.**
@@ -92,8 +92,7 @@ When the budget is spent or no ripe victim is left, each class's last page is ch
 - otherwise it closes short, which costs a page that is soon ripe; the loop prefers, among the ripe victims within reach, those whose survivors fill the open pages, as the current offer prefers victims that fill its page.
 
 **Free filling sorts the survivors it takes too.**
-A small victim that rides in the room of a flush's own page sends its hot and warm survivors there, and its cold ones to the cold page if the flush has opened one; if it has not, they ride along as well, as a share of at most $\theta$.
-[The cursor](ripeness.md#the-flushs-own-pages-take-survivors-from-the-previous-flush), where ripeness has one, is left as it is: its page is a flush or two old, so the classes say little about its content, and it exists to match the flush's own temperature anyway.
+A victim that rides in the room of a flush's own page sends its hot and warm survivors there, and its cold ones to the cold page if the flush has opened one; if it has not, they ride along as well, as a share of at most that room.
 
 **Description defragmentation's rewrites go to the cold page.**
 They are cold by selection, and today share pages with the flush's fresh content, [an open question of the ripeness draft](ripeness.md#open-questions) that this answers.

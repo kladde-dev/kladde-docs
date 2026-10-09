@@ -62,6 +62,7 @@ $\varphi$ rises from 0, like $\sqrt{2y}$ for small $y$ and like $y + \ln(1 + y)$
 **All of them keep the drafts' ranking by an index, since each is monotone in $\kappa$.**
 For every $\theta$, $\gamma/\kappa$ rises with $\kappa$, since $\varphi$ rises with $r/\kappa$; so $\mathbb{E}[\gamma]/\kappa$ and $P(\gamma \geq 0)$ rise with $\kappa$ too, and each criterion holds for every $\kappa$ above one price $\kappa^*$.
 A page's index is $I = 1/\kappa^*$, the $1/\kappa$ at which it becomes ripe, as in the drafts, so the budget loop, the controller, and the floor stay as they are: a page is ripe once $I \geq 1/\kappa$, and the loop takes the highest index first.
+Where survivors go stays as in the drafts too: [free filling](ripeness.md#the-flushs-own-pages-take-what-costs-nothing) takes whatever fits the room of the flush's own pages, ripe or not, at no cost to the budget and without counting as cleaning for the controller, and the pages the budget opens hold survivors of ripe pages only.
 
 **Between losses, the ranking ages each posterior's scale, as the drafts age a rate.**
 A posterior changes every epoch, losses or not, but the ranking can only afford a change when a page changes.

@@ -17,7 +17,7 @@ In the regime, the ripeness branches keep 1 to 12 % more live pages than the chu
 
 **The ripeness branches give up the cleaning that costs nothing.**
 Main's free filling takes any victim that fits into the room of the pages a flush writes anyway: at λ = 1, 54 to 919 per run, half to four times as many as the pages it opens to clean, 14 to 1,673.
-The ripeness branches take only small, ripe victims there, as [their draft](../drafts/ripeness.md) has it, 0 to 116 per run at τ = 0.9, and open 117 to 4,809 pages instead.
+The ripeness branches measured here take only small, ripe victims there, 0 to 116 per run at τ = 0.9, and open 117 to 4,809 pages instead.
 With main's free filling instead, [the ripeness branches](ripeness-free-filling.md) close a third of their gap to the churn floor in the drawings' base and packed layouts, two thirds in the small layout, and none of it on the texts.
 
 **The leaves fill about as much as the data pages under the churn floor, and a few points less under the ripeness branches.**
@@ -186,7 +186,7 @@ Of the three, single-rate ripeness writes least, and on the world map it fills t
 
 **What the ripeness branches do not take is free cleaning.**
 [Free filling](../impl/consolidation.md#victims-are-pulled-one-at-a-time) puts victims into the room left in the pages a flush writes anyway, which costs no page of its own.
-Main takes any whole victim that fits there, sparsest first; [the ripeness draft](../drafts/ripeness.md) takes only ripe victims whose survivors fill at most θ, 5 %, of a page, and the cursor's survivors, so that survivors, cold by selection, do not settle next to fresh content.
+Main takes any whole victim that fits there, sparsest first; the ripeness branches measured here take only ripe victims whose survivors fill at most θ, 5 %, of a page, and then the survivors of a cursor through the previous flush's least-filled page, so that survivors, cold by selection, do not settle next to fresh content, as [the ripeness draft](../drafts/ripeness.md#the-flushs-own-pages-take-what-costs-nothing) proposed before it took main's free filling.
 So the ripeness branches clean nearly everything on pages they open for it.
 Each cell gives, over a whole run, the data victims that free filling took, the data pages opened only to take victims, and the leaves rewritten, by the budget or by the cut's fillers:
 
@@ -205,7 +205,7 @@ Each cell gives, over a whole run, the data victims that free filling took, the 
 | text | 512 KiB | 63 / 90 / 174 | 57 / 101 / 190 | 61 / 110 / 186 | 6 / 137 / 22 | 9 / 178 / 8 | 6 / 146 / 29 |
 
 At λ = 1, main takes half to four times as many victims free as it opens pages for; the ripeness branches at τ = 0.9 take 0 to 16 % as many free as main does at λ = 1.
-That count leaves out the pages the draft's cursor empties, a whole statement at a time, in the room that small ripe victims leave.
+That count leaves out the pages the cursor empties, a whole statement at a time, in the room that small ripe victims leave.
 [Ripeness with main's free filling](ripeness-free-filling.md) gives the ripeness branches main's free filling, which takes about one victim per flush on the drawings, as main's does: they write 2 to 3 % less at the same target, and close a third to two thirds of their gap to the churn floor on the drawings, and none of it on the texts.
 
 ## Leaves

@@ -8,7 +8,7 @@ title: Ripeness with main's free filling
 At equal writes, the ripeness branches keep, at the median, 2.5 % more live pages than the churn floor in the drawings' base and packed layouts, where they kept 3.7 % more without it, and 1.1 % more in the small layout, where they kept 3.0 % more; on the texts, 8.8 % more, where they kept 8.2 %.
 [Cleaning edited drawings and texts](cleaning-edits.md) named the free cleaning the ripeness branches give up as the likely source of their extra writes for the same space; it accounts for a third of the gap in the base and packed layouts, two thirds in the small one, and none on the texts.
 
-**Free filling takes about one victim per flush on the drawings, as on main, where the draft's took one in ten flushes or fewer, and the branches open fewer pages for cleaning.**
+**Free filling takes about one victim per flush on the drawings, as on main, where the draft's took one in seven flushes or fewer, and the branches open fewer pages for cleaning.**
 At τ = 0.9, free filling takes 0.80 to 1.37 victims per flush on the drawings, where the draft's took 0.01 to 0.15 and main's takes 1.0 to 1.3 at λ = 1, and 0.47 to 0.73 per flush on the texts.
 The branches evacuate a median 3 % more data pages whole than without it, 9 to 25 % of them free where 0 to 3 % were, and open 2 to 20 % fewer pages for cleaning, 7 % fewer at the median.
 
@@ -26,7 +26,7 @@ The fullest any branch fills the pages moves by 0.02 times the live size at most
 
 **Free filling on the ripeness branches is main's.**
 The room left in a page the flush writes anyway takes, in compaction mode, the tail first, then whole data victims that fit, the sparsest first, then description defragmentation's candidates beyond its reserved share, then as many of one victim's statements as fit, whether ripe or not.
-[The ripeness draft](../drafts/ripeness.md#the-flushs-own-pages-take-survivors-from-the-previous-flush) gives that room to ripe victims whose survivors take at most θ, 5 %, of a page, and then to the cursor, the least-filled data page of the previous flush, a whole statement at a time; both are gone.
+Without it, the branches gave that room to ripe victims whose survivors take at most θ, 5 %, of a page, and then to the cursor, the least-filled data page of the previous flush, a whole statement at a time, as the ripeness draft did then; both are gone, and [the draft](../drafts/ripeness.md#the-flushs-own-pages-take-what-costs-nothing) takes main's free filling too.
 
 **The price of space holds after a flush whose only cleaning was free filling.**
 The controller holds the price where moving it could change nothing: it does not lower it after a flush that cleaned nothing.
@@ -100,7 +100,7 @@ Each cell gives, over a whole run, the data victims that free filling took and t
   At τ = 0.9, they evacuate between 3 % fewer and 11 % more on the drawings than without main's free filling, 3 % more at the median, and 9 to 25 % of them by free filling, where 0 to 3 % were; on the texts, 7 to 33 % more, 24 to 33 % of them free.
 - **So they open fewer pages for cleaning**: 2 to 20 % fewer on the drawings at τ = 0.9, 7 % at the median, and 3 to 21 % on the texts.
   Over every setting, as many as 38 % fewer on the drawings and 68 % on the 64 KiB text, both at τ = 0.75.
-- **Neither count sees what the draft's cursor cleaned**: it took the room that small ripe victims left, a whole statement at a time, and freed its page only once the page was empty, which counts as no victim taken.
+- **Neither count sees what the cursor cleaned without main's free filling**: it took the room that small ripe victims left, a whole statement at a time, and freed its page only once the page was empty, which counts as no victim taken.
 
 ## The trade-off between space and writes
 
