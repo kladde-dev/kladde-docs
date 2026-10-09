@@ -2,20 +2,24 @@
 title: Transactions and batches
 ---
 
-How application operations are grouped into the [transactions](../spec/journal.md#transactions) the journal records.
+How application operations are grouped into the [transactions](../spec/journal.md#transactions) the journal records, how they wait in memory, and when they are appended to the journal pages and folded.
 
-**Status:** not implemented; the design is settled apart from the explicitly stated open questions.
+**Status:** settled apart from the open questions at the end; kladde-rs implements it as described here.
 
 Transactions are normative — they are the unit of atomicity an application builds on.
 **Batches are not**: they are an implementation's mechanism for turning a long run of operations into reasonably sized transactions, and an implementation is free to offer something else or nothing at all.
 Both exist only to affect how mutations are *persisted*; the accompanying in-memory mutations are always immediate.
+
+**From [the buffer](#one-buffer-and-three-cursors) on, this page is the design of the reference implementation, not one way among several to meet the format.**
+kladde-rs keeps exactly one buffer of operations and the cursors into it described below, and appends and flushes by exactly the rules in [Flush triggers](#flush-triggers).
+A departure — a second buffer, copying between spans, another trigger — is a deviation: it is recorded in kladde-rs' implementation notes with its reason, and proposed as a change to this page if it is better, rather than taken as a free choice.
 
 ## Three mechanisms over one journal
 
 | mechanism | effect on the journal | what it is for | when to use |
 | --- | --- | --- | --- |
 | **transaction** | wraps a sequence of operations in a single journal transaction, appended atomically when the caller commits | **correctness**: either all or none of the operations are persisted, so a crash can't expose an invalid intermediate state | whenever intermediate state would be invalid |
-| **batch** | cuts a long sequence of operations into reasonably sized subsequences, respecting nested transactions, and wraps each in a transaction | **optimization**: fewer I/O operations, while still bounding the journal's size and any individual write | when many operations happen at once with valid intermediate states — a large import, a paste |
+| **batch** | cuts a long sequence of operations into the largest pieces that fit in what is left of the journal's page budget, respecting nested transactions, and wraps each in a transaction | **optimization**: fewer and fuller journal writes, while keeping the journal within its budget | when many operations happen at once with valid intermediate states — a large import, a paste |
 | **bare operation** | recorded as its own transaction | **simplicity**: changes persist immediately | single mutations, prototyping |
 
 **Transactions enforce correctness.**
@@ -25,8 +29,8 @@ The same happens in application code, where a transition between two valid state
 **Batches are an optimization, and a necessary one.**
 Kladde's promise to persist every mutation immediately carries a small unavoidable per-transaction overhead.
 That is usually worth it, but it adds up when an action triggers a large or unbounded burst — and for such bursts, per-operation durability buys little anyway.
-It is tempting to wrap the burst in a transaction instead, but **very large transactions perform poorly**, because the whole transaction is held in memory until it ends, and the journal, and therefore the file, must then temporarily grow in proportion to the number and size of the operations.
-A batch is the middle ground: the backend decides how to divide the sequence, respecting any explicit transaction inside it.
+It is tempting to wrap the burst in a transaction instead, but **very large transactions perform poorly**, because the whole transaction is held in memory until it ends, and the journal pages, and therefore the file, must then temporarily grow in proportion to the number and size of the operations.
+A batch is the middle ground: the backend decides how to divide the sequence, respecting any explicit transaction inside it, so that each piece fills what is left of the journal's budget as far as the transaction boundaries allow.
 
 ### Recommendations
 
@@ -55,27 +59,50 @@ The backend flattens the nesting, because the journal only deals with a flat seq
 - **Batch in a transaction ⇒ the transaction.** The inner batch is meaningless, since the transaction already forces the operations to commit as one group.
   A potential code smell: batches are for large or unbounded sequences, transactions should be short, so this combination implies a long chain of state transitions with only invalid intermediate states.
 
-## The buffering state machine
+## One buffer and three cursors
 
-The backend keeps an in-memory buffer `ops` of serialized operations, not all of which are necessarily in the file yet, and a state:
+**Every operation recorded since the last flush lives in one in-memory buffer `ops`, in the order it was recorded, whether it is already in the journal pages or not.**
+Between two flushes, the operations form a single stream: some prefix of it has been appended to the journal pages, the operations on top of that are a batch's ready run, and those on top of that belong to the transaction that is still open.
+So everything that happens between two flushes either appends to the buffer or moves a boundary between these spans; **nothing is ever copied from one span to another**.
+
+The flush folds the operations the journal pages hold from this buffer, not from the pages, which only [recovery](../spec/journal.md#recovery) reads back.
+Recovery decodes the journal's complete transactions into the buffer, and `open` folds them before it returns (see [opening a file](#flush-triggers)).
+
+**In kladde-rs, the buffer is a `VecDeque` of records, beside a byte arena, also a `VecDeque`, that holds their payloads.**
+Positions in both are counted from the start of the session rather than from the buffer's front, so that discarding the folded prefix after a flush moves the front and nothing else: no record moves, and every position held elsewhere — a record's payload, a pending fragment of the flush pointing into the arena — stays valid.
+The flush also appends the bytes it hoists from elsewhere to the end of the arena, past every buffered payload, and drops them again once it has committed.
+
+Three cursors, `front <= committed_cursor <= ready_cursor <= end`, divide the buffer into three spans:
+
+- `committed := ops[front..committed_cursor]` — appended to the journal pages since the last flush: what the next flush folds;
+- `ready := ops[committed_cursor..ready_cursor]` — a batch's operations, held back to be appended as one transaction;
+- `transaction := ops[ready_cursor..end]` — the operations of the open transaction.
+
+**Each cursor also carries the encoded size of the records before it**, so that the encoded size of any span is a subtraction, and deciding whether a span [fits](#flush-triggers) costs constant time.
+The journal's [length prefix](../spec/journal.md#framing) needs a transaction's size before its first byte is written anyway.
+
+**Moving the cursors is all that recording, appending, and flushing do:**
+
+- **Recording an operation** appends it at `end`.
+- **Appending a span to the journal pages** encodes it as one transaction, writes it, and moves `committed_cursor` to the span's end.
+- **A flush** folds `committed` and moves `front` to `committed_cursor`.
+- **Discarding operations** — a transaction that failed halfway and is rolled back, or one the application abandons — moves `end` back to where they began.
+
+The backend's state holds the depths of the open scopes and the cursors that are not implied by them:
 
 ```rust
 enum TransactionState {
     Immediate,
-    InBatch              { batch_depth: NonZero, committed_cursor: usize },
+    InBatch              { batch_depth: NonZero, committed_cursor: Cursor },
     InTransaction        { transaction_depth: NonZero, batch_depth: u32,
-                           committed_cursor: usize },
+                           committed_cursor: Cursor },
     InTransactionInBatch { transaction_depth: NonZero, batch_depth: NonZero,
-                           committed_cursor: usize, ready_cursor: usize },
+                           committed_cursor: Cursor, ready_cursor: Cursor },
 }
 ```
 
 `transaction_depth` and `batch_depth` count begins minus ends, with an implied zero in any variant where they are absent.
-Two cursors, `committed_cursor <= ready_cursor <= ops.len()`, divide the operations since the last flush into three spans:
-
-- `committed := ops[..committed_cursor]` — written to the on-storage journal;
-- `ready := ops[committed_cursor..ready_cursor]` — pending operations of the current batch, ready to be appended;
-- `transaction := ops[ready_cursor..]` — pending operations of an ongoing transaction.
+`front` and `end` belong to the buffer, and the table below gives the cursors each state implies.
 
 ```mermaid
 stateDiagram-v2
@@ -103,40 +130,72 @@ An implementation should make that unrepresentable at the API level rather than 
 | --- | --- | --- | --- | --- |
 | **`transaction_depth`** | `0` (implicit) | `0` (implicit) | `> 0` | `> 0` |
 | **`batch_depth`** | `0` (implicit) | `> 0` | any | `> 0` |
-| **`committed_cursor`** | `ops.len()` (implicit) | explicit | explicit | explicit |
-| **`ready_cursor`** | `ops.len()` (implicit) | `ops.len()` (implicit) | `committed_cursor` (implicit) | explicit |
+| **`committed_cursor`** | `end` (implicit) | explicit | explicit | explicit |
+| **`ready_cursor`** | `end` (implicit) | `end` (implicit) | `committed_cursor` (implicit) | explicit |
 | **`begin_transaction()`** | `InTransaction { t: 1, b: 0 }` | `InTransactionInBatch { t: 1, .. }` | `transaction_depth += 1` | `transaction_depth += 1` |
 | **`end_transaction()`** | error | error | `−1`; at `0`: `Immediate` if `batch_depth == 0`, else error | `−1`; at `0`: `InBatch` |
 | **`begin_batch()`** | `InBatch { b: 1 }` | `batch_depth += 1` | `batch_depth += 1` | `batch_depth += 1` |
 | **`end_batch()`** | error | `−1`; at `0`: `Immediate` | `batch_depth -= 1` | `−1`; at `0`: error |
 
+The implied cursors are invariants at every operation boundary, not just labels: in `Immediate`, everything recorded is in the journal pages, and in `InBatch`, everything not yet appended is the batch's.
+
 ## Flush triggers
 
-> **Append whole transactions, and flush once the journal segment has outgrown its page budget.**
+> **Keep the journal within its page budget.**
+> **A transaction that would not fit in what is left of the budget is preceded by a flush, and only a transaction too large for the budget on its own exceeds it, followed by a flush at once.**
 
-The budget is a trigger, not a capacity.
-The journal is a [chain of pages](../spec/journal.md#pages), so a transaction larger than what is left of the budget — or larger than the whole budget — needs no special case: it is appended whole, spanning as many pages as it needs, and the flush that follows folds it.
+**The budget is a number of journal pages, `B`, and a transaction fits if the journal's stream, with the transaction appended, ends within `B` pages.**
+Each journal page holds `page_size − 8` bytes of the stream, the rest being [its trailer](../spec/journal.md#pages), and a transaction of `n` record bytes takes `n` plus its length prefix plus its 4-byte `crc`.
+The writer takes the next journal page only once the stream continues past the current one, so fitting within `B · (page_size − 8)` stream bytes is fitting within `B` pages.
+A transaction that does not fit even into an empty journal is **overlong**.
 
-The rules, all applied at operation boundaries:
+**Whenever operations close** — a bare operation recorded in `Immediate` or `InBatch`, or the outermost transaction ending, `InTransaction → Immediate` or `InTransactionInBatch → InBatch` — let `X` be the operations that just closed, `ops[ready_cursor..end]`, and apply:
 
-- **Recording an operation in `Immediate`**, and **`InTransaction` → `Immediate`:** append the operation, or `transaction`, to the journal as one transaction; then flush if the segment is over budget.
-- **Recording an operation in `InBatch`:** add it to `ready`; if `ready` has reached the batch size, append `ready` as one transaction, then flush if the segment is over budget.
-- **`InTransactionInBatch` → `InBatch`:** `transaction` joins `ready`, and the same check follows as when recording an operation in `InBatch` — which is why a batch is never cut inside a transaction.
-- **`InBatch` → `Immediate`:** append `ready` as one transaction, then flush if the segment is over budget.
-- **An explicit `flush()`:** append `ready`, which lies outside any open transaction, then flush.
-- **Opening a file whose recovered journal is non-empty:** flush before the first append, as [the journal requires](../spec/journal.md#the-start-of-a-session).
+1. **The candidate is `ops[committed_cursor..end]`:** `X` alone outside a batch, where `ready` is empty, and `ready` followed by `X` inside one, to be appended as one transaction.
+2. **If the candidate does not fit, the batch is cut before `X`:** append `ready` as one transaction if it is not empty, which it [always fits](#why-ready-always-fits), and flush, unless the journal is empty.
+   The candidate is now `X` alone, in an empty journal.
+3. **Inside a batch, a candidate that fits stays in memory as the new `ready`**, which the batch holds back until its next cut or its end.
+4. **Otherwise, the candidate is appended as one transaction, and if that took the journal past its budget, flush again.**
+   Only an overlong `X` can do that, since step 2 left it an empty journal.
 
-The batch size decides how much a batch may hold back from the journal, trading the per-transaction overhead against what an application crash can lose; it is independent of the segment budget.
+The other triggers:
+
+- **The outermost batch ends, `InBatch → Immediate`:** append `ready` if it is not empty.
+  It fits, so no flush follows.
+- **An explicit `flush()`:** append `ready` if it is not empty, then flush — on an empty journal too, since a flush also consolidates.
+  An open transaction stays in the buffer, past `committed_cursor`.
+- **Opening a file:** kladde-rs folds a non-empty recovered journal before `open` returns, since reads see the flushed state only.
+  That also keeps [the journal's rule](../spec/journal.md#the-start-of-a-session) that nothing is appended to a non-empty recovered journal, and no state outlives `open`.
+
+So **an overlong transaction is flushed twice, once before it and once after it**, the first unless the journal was empty; and **a batch is always cut at the last boundary at which its run still fits**, which lies between two closed transactions or operations, never inside a transaction.
+
+### Why `ready` always fits
+
+`ready` only becomes longer in step 3, which checked that it fits after what the journal pages already hold.
+Nothing else is appended while a batch holds a ready run, since every closing operation inside the batch either joins `ready` or cuts the batch, and the cut appends `ready` first.
+So what the journal pages hold does not change until `ready` itself is appended, and `ready` still fits then.
+
+### Why flush first
+
+**A flush before the append leaves no journal page behind that only the start of an overflowing transaction occupies.**
+Appending first and flushing once the journal is over budget would end every journal with such a page, nearly empty; and at the moment of a flush, the journal it folds and the previous one, still [the fallback](../spec/durability.md#the-reuse-rule), are both off limits, so that it would cost two pages at a time.
+
+**It costs nothing.**
+The operations of `X` are already in the buffer, and their encoded size is known from the cursors, so deciding before the append is as cheap as deciding after it.
+A flush folds only `committed`, so `X` waits in the buffer past `committed_cursor` and is appended to the next journal; only the order of the two steps changes.
+
+**The flush after an overlong transaction keeps a long journal from lingering**: the journal is back within its budget as soon as the operation that exceeded it returns.
 
 **The budget bounds the file, not memory.**
 An open transaction is held in memory in full, whatever the budget, because nothing can [fold an unfinished transaction](../spec/journal.md#checkpoint-versus-commit); a huge transaction costs memory in proportion to its size, and journal pages in proportion too once it is appended.
 
 ### Consequence for write-phase geometry
 
-Every automatic flush runs right after an append, with `ready` and `transaction` empty, so it folds exactly the operations the write-phase geometry has seen, and the geometry can simply be cleared.
+**A flush may run while operations are still in the buffer past `committed_cursor`**: the `X` that step 2 holds back, or, at an explicit `flush()`, an open transaction.
+The write-phase geometry describes them as well, so after every flush it is **rebuilt** from the operations the buffer still holds, rather than cleared.
+They are few: at most one transaction's operations.
 
-An explicit `flush()` inside a transaction is the exception.
-The open transaction's operations stay buffered past `committed_cursor`, so the geometry no longer describes the same point in the sequence as the fold, and it must be **repopulated** from those operations after the flush rather than cleared.
+Discarding operations rebuilds the geometry the same way, from what the buffer holds after `end` has moved back.
 
 ## Checkpoint versus commit
 
@@ -147,7 +206,7 @@ The open question was whether a checkpoint could fold part of an unfinished tran
 It cannot: the header it committed would describe a state inside the transaction, and undoing that part on recovery would need a mechanism the format does not have.
 So every flush folds complete transactions only, and the memory an open transaction holds is bounded only by [keeping transactions short](#recommendations).
 
-What remains is that application authors need never call `flush()`: the operation that pushes the journal over its budget flushes automatically.
+What remains is that application authors need never call `flush()`: the operation whose transaction would not fit in the journal's budget flushes automatically.
 Two consequences follow:
 
 **Flush needs only shared access to the backend.**
@@ -161,4 +220,4 @@ An operation is the natural atomic unit, being the smallest thing an application
 
 ## Open questions
 
-- The segment's page budget and the batch size: whether each is fixed or scales with the file, and whether either should adapt to an application whose transactions routinely exceed it.
+- The journal's page budget: whether it is fixed or scales with the file, and whether it should adapt to an application whose transactions routinely exceed it.

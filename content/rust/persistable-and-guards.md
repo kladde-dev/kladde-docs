@@ -119,14 +119,14 @@ The two traits are also split like `Read`/`Write` in `std`: `ReadBackend` has *n
 
 ## Why an automatic flush cannot tear a mutation
 
-The store flushes by itself once its journal outgrows its budget, and it does so [from inside the mutating call](../impl/transactions-and-batches.md#checkpoint-versus-commit) that pushed it over — while a guard is alive.
+The store flushes by itself whenever a mutation would not fit in what is left of its journal's budget, and it does so [from inside the mutating call](../impl/transactions-and-batches.md#checkpoint-versus-commit) that closed it — while a guard is alive.
 That is safe for two reasons, one per layer.
 
 **The flush touches no `Persistable` value.**
 It folds journal records into pages; it never reads or writes an in-memory value, so the guard's borrow of the root is irrelevant to it, and the store's own interior borrow is released before the flush takes it again.
 
 **A flush lands only on a transaction boundary.**
-It runs after an append, and an append is a whole transaction — a bare operation, a committed transaction, or a batch's ready run — so every state a flush commits is one the [ordering discipline](../spec/journal.md#ordering) already requires to be valid.
+It runs between appends, and every append is a whole transaction — a bare operation, a committed transaction, or a batch's ready run — so every state a flush commits is one the [ordering discipline](../spec/journal.md#ordering) already requires to be valid.
 
 ## The chain, end to end
 

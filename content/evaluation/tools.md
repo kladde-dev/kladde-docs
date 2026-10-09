@@ -159,7 +159,7 @@ The text grows with the typing, to about 3.7 times its size at the defaults.
 
 **Every 1000 keystrokes the store is flushed and a row goes to `text-<variant>.csv`**, where the variant is the text's size in KiB, as in `64k`, unless `--variant` names it.
 `app_bytes` counts the bytes typed and pasted; deletions count nothing.
-`--journal-budget` sets `Options::journal_budget_pages`, so that the store also flushes by itself when the journal outgrows that many pages; `--shift-decay`, `--churn-floor` and `--target-fill` set the options of those names.
+`--journal-budget` sets `Options::journal_budget_pages`, so that the store also flushes by itself whenever a transaction would not fit in that many journal pages; `--shift-decay`, `--churn-floor` and `--target-fill` set the options of those names.
 
 The summary on stderr has five lines:
 

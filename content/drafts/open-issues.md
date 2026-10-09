@@ -16,7 +16,7 @@ Ordered most to least severe, where severity means *how likely this is to make s
 *Was:* [Transactions and batches](../impl/transactions-and-batches.md#flush-triggers) treated the journal as a **fixed-capacity allocation**, grown by being freed and re-allocated while empty, while [Durability](../spec/durability.md#the-flush-protocol) and [File format](../spec/file-format.md#pages) described a **chain of journal pages** drawn from the reusable-page pool.
 
 **Resolved** in favour of the chain.
-[Journal](../spec/journal.md#pages) now specifies the page layout, and [Transactions and batches](../impl/transactions-and-batches.md#flush-triggers) treats the segment's page budget as a flush trigger rather than a capacity: a transaction is appended whole, taking as many pages as it needs, and the flush that follows folds it.
+[Journal](../spec/journal.md#pages) now specifies the page layout, and [Transactions and batches](../impl/transactions-and-batches.md#flush-triggers) keeps the journal within a budget of journal pages: a transaction that would not fit is preceded by a flush, and only a transaction too large for the budget on its own exceeds it, taking as many pages as it needs, with a flush right after it.
 
 ### 2. ~~Journal pages cannot satisfy the page framing~~ — resolved
 
@@ -172,7 +172,7 @@ Each of these blocks the prototype only in the sense that a number must be typed
 
 - **page size** — take 4 KiB and defer the 16 KiB measurement;
 - **the `Inline` threshold** — the [documented starting policy](../impl/flush.md#the-inline-threshold) of ~64 bytes;
-- **the journal segment's page budget and the batch size** — see [flush triggers](../impl/transactions-and-batches.md#flush-triggers);
+- **the journal's page budget** — see [flush triggers](../impl/transactions-and-batches.md#flush-triggers);
 - **consolidation constants** — see below.
 
 ### Deferrable, and why

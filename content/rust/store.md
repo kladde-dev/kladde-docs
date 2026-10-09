@@ -11,7 +11,7 @@ None of this changes what the structures *mean*; it is about realising them in R
 **`Store` keeps all of its state behind one `RefCell`, and borrows it for the length of one call.**
 `WriteBackend`'s methods take `&self` so that sibling guards can share a backend, which forces interior mutability somewhere, and one cell is enough: no store method calls out into user code, so no borrow is ever held across a callback, and a single dynamic borrow per call costs nothing measurable next to the journal append it guards.
 
-The one reentrant path is the [automatic flush](../impl/transactions-and-batches.md#flush-triggers), which runs inside the mutating call that pushed the journal over its budget.
+The one reentrant path is the [automatic flush](../impl/transactions-and-batches.md#flush-triggers), which runs inside the mutating call whose transaction would not fit in what is left of the journal's budget.
 It runs after that call's own borrow has ended, and takes the cell again for itself.
 
 `Store` is therefore `Send` but not `Sync`, which matches the [single-writer scope](../spec/file-format.md#concurrency) of the format.

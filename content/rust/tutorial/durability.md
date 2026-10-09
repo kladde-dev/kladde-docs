@@ -37,7 +37,7 @@ A crash before that commit leaves the old state intact and the half-written new 
 
 You do not normally have to think about this.
 
-Flushing is **automatic**: once the journal outgrows its budget, the mutation that pushed it over folds it before returning.
+Flushing is **automatic**: a mutation that would not fit in what is left of the journal's budget folds the journal before it returns.
 Application authors mutate state and never call anything.
 
 An explicit `flush()` remains available for the cases where you want the fold to happen now — before a long idle period, say, since a flush is also what makes everything before it survive a power cut.
