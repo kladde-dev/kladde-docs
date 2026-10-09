@@ -620,65 +620,88 @@ def svg_steady(rows):
     return (written(end) - written(mid)) / (end["ops"] - mid["ops"]), live
 
 
+def before_runs(runs):
+    """The runs labelled `before/…`, with that prefix taken off their
+    labels."""
+    return {label[len("before/"):]: run for label, run in runs.items() if label.startswith("before/")}
+
+
+def policy_curves(ax, series, before, table, layout=None):
+    """Each policy's curve through its settings in one panel, from the one
+    that cleans least, hollow, to the one that cleans most: the churn floor
+    falling, the target fill rising; and, dashed and pale, the curve of its
+    runs in `before`. `table` names the table of the panel, and `layout`, if
+    given, its layout."""
+    for policy, (label, color, marker) in POLICIES.items():
+        for runs, dashed in ((before, True), (series, False)):
+            settings = sorted((-v if k == "lambda" else v, tables[table])
+                              for (p, k, v, l), tables in runs.items()
+                              if p == policy and layout in (None, l) and table in tables)
+            points = [svg_steady(rows) for _, rows in settings]
+            if not points:
+                continue
+            xs, ys = [x for x, _ in points], [y for _, y in points]
+            if dashed:
+                ax.plot(xs, ys, "--", color=color, lw=1.2, alpha=0.45, marker=marker, ms=4,
+                        mfc="white", mec=color, mew=0.8)
+                continue
+            ax.plot(xs, ys, "-", color=color, lw=1.2, marker=marker, ms=4.5, mec="white", mew=0.8,
+                    label=label)
+            ax.plot(*points[0], marker=marker, ms=4.5, color=color, mfc="white", mew=1.0)
+
+
+def policy_legend(fig, ax, before):
+    """The policies' legend at the top of `fig`, with an entry for the
+    dashed curves if there are any."""
+    handles, labels = ax.get_legend_handles_labels()
+    if before:
+        handles.append(plt.Line2D([], [], color="#777777", ls="--", alpha=0.6, lw=1.2))
+        labels.append("before")
+    fig.legend(handles, labels, loc="upper center", ncol=len(labels), fontsize=7.5, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+
+
 def svg_tradeoff(runs, out):
     """The space the live pages take against the bytes written per edit, a
     panel per drawing and layout, and a curve per policy through its
-    settings, from the one that cleans least, hollow, to the one that cleans
-    most: the churn floor falling, the target fill rising.  A row per
-    drawing, whose panels share their range of live pages."""
+    settings, as `policy_curves` draws them.  A row per drawing, whose panels
+    share their range of live pages.  Runs labelled
+    `before/policy/knob/value/layout` are drawn dashed and pale, to show how
+    a change moved each policy's curve."""
     series = svg_policies(runs)
     if not series:
         return
+    before = svg_policies(before_runs(runs))
     fig, axes = plt.subplots(3, 3, figsize=(7.5, 7.2), sharey="row", squeeze=False)
     for i, (drawing, name) in enumerate(DRAWINGS.items()):
         for j, layout in enumerate(LAYOUTS):
             ax = axes[i][j]
-            for policy, (label, color, marker) in POLICIES.items():
-                settings = sorted((-v if k == "lambda" else v, tables[drawing])
-                                  for (p, k, v, l), tables in series.items()
-                                  if p == policy and l == layout and drawing in tables)
-                points = [svg_steady(rows) for _, rows in settings]
-                if not points:
-                    continue
-                ax.plot([x for x, _ in points], [y for _, y in points], "-", color=color, lw=1.2,
-                        marker=marker, ms=4.5, mec="white", mew=0.8, label=label)
-                ax.plot(*points[0], marker=marker, ms=4.5, color=color, mfc="white", mew=1.0)
+            policy_curves(ax, series, before, drawing, layout)
             ax.set_title(f"{name}, {layout}", fontsize=8.5)
             if i == len(DRAWINGS) - 1:
                 ax.set_xlabel("bytes written per edit")
             if j == 0:
                 ax.set_ylabel("live pages / live size")
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=4, fontsize=7.5, frameon=False,
-               bbox_to_anchor=(0.5, 1.0))
+    policy_legend(fig, axes[0][0], before)
     save(fig, out, "svg-tradeoff", rect=(0, 0, 1, 0.965))
 
 
 def text_tradeoff(runs, out):
     """As `svg_tradeoff`, for text-bench's typing: a panel per text, from
-    the runs labelled `policy/knob/value/text`."""
+    the runs labelled `policy/knob/value/text`, and dashed and pale those
+    labelled `before/policy/knob/value/text`."""
     series = svg_policies(runs, prefix="text-", layouts=["text"])
     if not series:
         return
+    before = svg_policies(before_runs(runs), prefix="text-", layouts=["text"])
     texts = sorted({t for tables in series.values() for t in tables}, key=lambda t: int(t.rstrip("k")))
     fig, axes = plt.subplots(1, len(texts), figsize=(7.5, 3.0), squeeze=False)
     for ax, text in zip(axes[0], texts):
-        for policy, (label, color, marker) in POLICIES.items():
-            settings = sorted((-v if k == "lambda" else v, tables[text])
-                              for (p, k, v, _), tables in series.items()
-                              if p == policy and text in tables)
-            points = [svg_steady(rows) for _, rows in settings]
-            if not points:
-                continue
-            ax.plot([x for x, _ in points], [y for _, y in points], "-", color=color, lw=1.2,
-                    marker=marker, ms=4.5, mec="white", mew=0.8, label=label)
-            ax.plot(*points[0], marker=marker, ms=4.5, color=color, mfc="white", mew=1.0)
+        policy_curves(ax, series, before, text)
         ax.set_title(f"a text of {text[:-1]} KiB at the start", fontsize=8.5)
         ax.set_xlabel("bytes written per keystroke")
     axes[0][0].set_ylabel("live pages / live size")
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=4, fontsize=7.5, frameon=False,
-               bbox_to_anchor=(0.5, 1.0))
+    policy_legend(fig, axes[0][0], before)
     save(fig, out, "text-tradeoff", rect=(0, 0, 1, 0.9))
 
 

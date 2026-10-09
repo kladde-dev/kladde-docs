@@ -18,7 +18,7 @@ In the regime, the ripeness branches keep 1 to 12 % more live pages than the chu
 **The ripeness branches give up the cleaning that costs nothing.**
 Main's free filling takes any victim that fits into the room of the pages a flush writes anyway: at λ = 1, 54 to 919 per run, half to four times as many as the pages it opens to clean, 14 to 1,673.
 The ripeness branches take only small, ripe victims there, as [their draft](../drafts/ripeness.md) has it, 0 to 116 per run at τ = 0.9, and open 117 to 4,809 pages instead.
-That is the likely source of their extra writes for the same space, though no run here tests it alone.
+With main's free filling instead, [the ripeness branches](ripeness-free-filling.md) close a third of their gap to the churn floor in the drawings' base and packed layouts, two thirds in the small layout, and none of it on the texts.
 
 **The leaves fill about as much as the data pages under the churn floor, and a few points less under the ripeness branches.**
 In the drawings' base and packed layouts, the address table's statements are 19 to 27 % of the live bytes, and the leaves that hold them 20 to 29 % of the live pages.
@@ -205,8 +205,8 @@ Each cell gives, over a whole run, the data victims that free filling took, the 
 | text | 512 KiB | 63 / 90 / 174 | 57 / 101 / 190 | 61 / 110 / 186 | 6 / 137 / 22 | 9 / 178 / 8 | 6 / 146 / 29 |
 
 At λ = 1, main takes half to four times as many victims free as it opens pages for; the ripeness branches at τ = 0.9 take 0 to 16 % as many free as main does at λ = 1.
-This is the likely reason they write more than the churn floor for the same space, but no run here tests it alone.
-A ripeness branch with main's free filling would, and would show whether keeping survivors apart from fresh content pays for the free cleaning it gives up.
+That count leaves out the pages the draft's cursor empties, a whole statement at a time, in the room that small ripe victims leave.
+[Ripeness with main's free filling](ripeness-free-filling.md) gives the ripeness branches main's free filling, which takes about one victim per flush on the drawings, as main's does: they write 2 to 3 % less at the same target, and close a third to two thirds of their gap to the churn floor on the drawings, and none of it on the texts.
 
 ## Leaves
 
