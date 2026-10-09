@@ -111,5 +111,6 @@ Otherwise the records it could not vouch for would become current by default, th
 ## What the ripeness draft would add
 
 The [ripeness draft](../drafts/ripeness.md) estimates how fast each page still drains from that page's own losses, which a session would otherwise have to observe afresh.
-It would add, for each page below `1 − θ`, `(page, epoch, coverage, s0, s1, rate, at, fast)`, appended as the fold drains pages, and the price `κ` its controller had reached.
-A page's entry is current if the page's epoch still matches, and the coverage the page has lost since the entry was written is a loss that happened in the gap.
+It would add, for each page below `1 − θ`, `(page, epoch, coverage, s0, s1, rate, at, fast)`, appended as natural losses drain pages, and the price `κ` its controller had reached.
+A flush appends its record right after its fold, so the entries of the pages its fold drained go into it; the state's own rewrite, which supersedes the previous record's bytes, drains pages after that, and their entries go into the next flush's record.
+A page's entry is current if the page's epoch still matches, and the coverage the page has lost since the entry was written is a loss that happened in the gap: content consolidation moved out of it, or what the last flush before a close drained by rewriting the state.
