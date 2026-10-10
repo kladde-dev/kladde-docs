@@ -6,7 +6,7 @@ title: The file as one sequence
 A kladde file would hold no allocations.
 Its content would be one byte sequence: the root value's encoding, in a packed format that the schema defines, with every value inline in its parent.
 On file, the sequence is a **chain of spans**, statements that each show a run of its bytes and name the span that follows.
-In memory, the store keeps a rope over the spans, and each container keeps where its children start.
+In memory, the store keeps a rope, a balanced tree over the spans that finds the one holding a given position, and each container keeps where its children start.
 A data type sees only its own **region** of the sequence: it overwrites bytes in it and splices it, and it neither knows where the region lies nor can reach anything outside it.
 Pages, epochs, the two header slots, the flush protocol and copy-on-write stay as they are, and so does the application's API, except that the choice between packed and slotted containers goes.
 
@@ -19,7 +19,7 @@ A policy holds both at targets, at a cost per modification that is constant in b
 With spans of 128 bytes where the sequence is hot and of a page where it is cold, and pages kept 90 % live, a large file's live pages come to about 1.12 times its sequence ([the arithmetic](#a-worked-example)).
 
 **What goes**: allocations, their ids, pointers, ownership, freeing, size statements, tombstones, per-byte shadowing, the coverage rule, the fragment map and the statement slab, small values, and the distinction between packed and slotted places.
-**What it costs**: containers keep positions in memory; offsets after a value whose size depends on its value are computed at run time; an overwrite inside a long span splits it; spans need a compaction policy; moving a value between containers encodes it again; a schema change rewrites the sequence; and partial loading needs an idea of its own.
+**What it costs**: containers keep positions in memory; offsets after a value whose size depends on its value are computed at run time; an overwrite inside a long span splits it; spans need a compaction policy; moving a value between containers encodes it again; writing in a foreign schema interprets that schema's descriptors at every write; and partial loading needs an idea of its own.
 
 ## The design in brief
 
@@ -74,6 +74,7 @@ The drawing keeps nothing either: its title starts at 0, and its shapes start wh
 Setting the title to "World map" splices 10 bytes over the first 4, `Splice(0, 4, 09 "World map")`, and every byte behind it moves by 6 without being mentioned.
 On file, the sequence was one span, #1, showing 28 bytes at some address `a` in a data page.
 Afterwards it is two: a new span #2 holds the 10 new bytes inline and names #1 as its successor, and #1 is stated again to show 24 bytes at `a + 4`; the header names #2 as the first span.
+A span is known by its id, not by its position, so had the splice landed in the middle of a sequence of many spans, every span behind it would have kept its statement although its bytes moved.
 The same splice costs the same two statements wherever it lands, in a sequence of 28 bytes or of 28 million.
 
 ## Fundamental decisions
@@ -86,7 +87,7 @@ The same splice costs the same two statements wherever it lands, in a sequence o
   Today every allocation costs a pointer in its parent, statements naming its id, and a size, so the description grows with the number of values, and the [variable-size draft](variable-size.md#the-problem) found allocations of short strings and short lists to be most of them.
   With one sequence, the description depends only on how the store cuts the sequence into spans, which the store chooses and the data model never sees.
 - **The unit of description and the unit of the data model stop pulling against each other.**
-  Today a cheap description wants few allocations, so values move inline into long ones, as kladde-svg's small layout does; and a cheap splice wants short allocations, since a splice [restates the tail](splices.md#what-a-splice-costs-today) of its allocation.
+  Today a cheap description wants few allocations, so values move inline into long ones, as kladde-svg's small layout does; and a cheap splice wants short allocations, since a statement is keyed by its offset in its allocation, so a splice restates every statement behind it, or writes those bytes again.
   Separating the two removes the trade-off rather than choosing a point on it.
 - **Everything that exists because of allocations goes with them.**
   Ownership, the free walk, publishing a pointer before freeing what it replaced, tombstones, id recycling and leaks all exist because content lives in allocations that pointers reach.
@@ -129,36 +130,38 @@ A container hands each child a subregion and keeps, in memory, where each child 
 A child that changes size reports the change to its container, which updates its index and reports its own change to its container in turn, up to the root.
 The guard chain, made from the root down for each mutation as it is today, adds the relative offsets up into the start of the value it reaches.
 
-So no value stores where it lies, and neither does the store: the store knows bytes, the container knows its children, and the chain composes the two.
+So no value stores where it lies, and neither does the store: the store knows bytes, the container knows its children, and the chain of guards composes the two for as long as it lives.
 The alternative, a global index of anchors in the store, one for every value whose position anyone may ask for, would cost a node of an order-statistics tree per value, where a container's index costs four bytes per variable-size element and nothing per fixed-size one.
 It would also teach the store about values, which nothing else requires it to know.
 kladde-rs's `variable-size` branch already builds the mechanism for packed values, as `Place`, `Link` and `Node` in kladde-persist, with an index of element starts in the packed vector.
 
-Making a guard then costs a lookup per level of nesting, `O(depth · log fanout)` in all, and so does reporting a change of size.
+**A guard is a cursor: it holds where its value starts, so the guard made from it looks its child up in the value's own index, starting there, and nothing above it is searched again.**
+An application reaches a value through its ancestors' guards, one level at a time, here as today, so the walk from the root is one it makes anyway; what each step adds is one lookup in one container's index, and a change of size adds one update per level on the way back.
+For fields and for fixed-size elements that is a constant; for variable-size elements it is the index's cost, `O(log m)` in a Fenwick tree over `m` elements, and an index that weighs elements by their encoded size makes a whole chain cost `O(depth + log n)` ([what a guard costs](#what-a-guard-costs)).
 
 ### 5. The order of the sequence lives in links between spans
 
 **On file, the sequence is a chain of spans: a span is a statement that shows a run of the sequence's bytes — bytes in a data page, bytes in the statement itself, or zeros — and names the span after it, and the header names the first.**
-This is the piece table that [the splices draft](splices.md#d-linked-spans-over-backings-the-recommendation) recommends for long allocations, applied to the only sequence there is.
-The draft compares it with the alternatives, measured on kladde-svg's drawings; with one sequence, each alternative fares worse than it did there:
+This is a *piece table*, the structure in which text editors have kept documents under editing since Xerox's Bravo, and in which Visual Studio Code keeps them today: a document is a list of pieces, each a run of some buffer, and an edit changes the list but never a buffer.
+Here the buffers are data pages and statements, the pieces are spans, and the list is kept in the file, as the spans' successor links.
 
-| order recorded by | a splice states | a move states | what else it needs |
-| --- | --- | --- | --- |
-| offsets, as today | everything behind it, `O(n)` | everything between its ends | nothing |
-| chunks of bounded size, ordered by key | a chunk's tail | the moved run | relabeling when two adjacent keys leave no room between them |
-| dense position keys | one or two spans | the moved run | a tombstone per removed span, kept while older statements of its key exist |
-| a tree of spans on file | the path to the root, `O(log n)` | two paths | nothing |
-| **links** | **one to three spans** | **three to six spans** | a chain walk at open, and a rope in memory |
+**A span is known by an id, not by a position, so an edit restates only the spans at the places where it cuts the chain.**
+Today a statement is keyed by its offset in its allocation, so a splice changes the key of every statement behind it, and each of those must be stated again.
+A span's id stays the same when bytes before it come or go, and the order of the sequence is recorded nowhere but in the links, so an edit changes what the spans at its cuts show and where they link, and nothing behind them.
 
-A move, which today's design makes cheap between allocations with [`Move`](move-op.md), stays cheap only with links, and costs at most six statements, however many spans it moves.
-Cutting a run out at its start and its end and inserting it at its destination splits at most three spans, one at each of those places.
+A move cuts the chain at three places — the start and the end of the moved run, and its destination — and splits at most one span at each.
 Each split states its left part again, with a shorter length, and its right part as a new span over the same bytes.
 The three left parts are also exactly the spans whose successors change: the one before the run now links to what followed the run, the run's last span to what follows the destination, and the span before the destination to the run's first span.
 Where a place is the sequence's start, the header's first span changes instead, which costs no statement.
 Every span inside the run keeps its statement, since neither its bytes nor its successor change, and the reach rule of [decision 6](#6-one-statement-per-span-the-newest-wins-reachability-decides-the-rest) asks nothing of it, since the chain reaches it before and after.
 Where a place already falls between two spans, its split goes, and a move between such places states three spans.
-A splice is the same argument with one place fewer: one to three statements.
-A tree's random access, the reason to keep a rope on file, is worth nothing to a file that is read whole; the rope belongs in memory, where it finds the span that holds a position in `O(log k)` for `k` spans.
+So a move, which today's design can state without writing bytes only between allocations, with [`Move`](move-op.md), states three to six spans here, however many it moves.
+A splice is the same argument with one place fewer: one to three statements, counting the span of its new bytes.
+
+**The links are kept on file and a tree over them in memory, because the file is read whole.**
+A tree of spans on file would let a reader find a position without reading what lies before it, which kladde never does, and keeping the lengths in its interior nodes current would restate a path to the root at every edit.
+In memory, the rope finds the span that holds a position in `O(log k)` for `k` spans, which is what the flush needs to map the journal's positions to spans.
+[Splices without restating the tail](splices.md) weighs links against other ways to record the order of content.
 
 ### 6. One statement per span; the newest wins; reachability decides the rest
 
@@ -168,7 +171,7 @@ There are no fragments, no pins that count them, no size statements, no tombston
 A page rewrite restates each live span in it under the span's own id, and no statement elsewhere changes its meaning.
 
 A writer needs one rule, the analogue of today's [coverage rule](../spec/address-table.md#the-coverage-rule): **a span that the chain reaches at the end of an epoch but did not reach at the end of the epoch before is stated in that epoch.**
-Without it, a writer could link in a span id whose newest statement a page rewrite had dropped, and an older statement of the same id would show its stale bytes.
+Statements of older epochs stay in their pages until those pages are rewritten, so without it, a writer could link in a span id whose newest statement a page rewrite had dropped as dead, and an older statement of the same id, still in a page nobody rewrote, would show its stale bytes.
 With it, span ids can be recycled at once.
 
 The price is that an overwrite cannot shadow part of a long span: it splits the span, or writes it again whole, which [choice A](#a-overwrites-split-rewrite-or-shadow) weighs.
@@ -177,7 +180,7 @@ The price is that an overwrite cannot shadow part of a long span: it splits the 
 
 **The header names three chains: the sequence, the schema, and the implementation's private state, which is today's [consolidator state](../spec/file-format.md#the-consolidator-state).**
 The journal edits only the sequence.
-The schema changes only when a file is created or upgraded, which a flush does before the application gets the file, and the private state is written only by flushes, so no journal record needs to say which chain it edits.
+The schema changes only when a flush writes it — when a file is created or upgraded, before the application gets the file, or, with [capsules](#mixing-schemas-capsules), when a session adds a version of a type — and the private state is written only by flushes, so no journal record needs to say which chain it edits.
 The sequence's positions then start at the root value's first byte, and a file whose fingerprint matches never decodes its schema.
 
 The schema could instead be a prefix of the sequence, which would work as well; it would offset every position by the schema's length, and a reader would decode the schema to find where the root begins.
@@ -217,17 +220,20 @@ Neither touches the format, which allows spans of any length from one byte to a 
 
 ### C. What a container keeps to find its children
 
-**A container of variable-size elements has four ways to keep where they start, and the frequent operation decides between them.**
+**A container of variable-size elements has five ways to keep where they start, and the frequent operation decides between them.**
 
 | index | finding an element | a size change | an insertion | memory per element |
 | --- | --- | --- | --- | --- |
 | an array of starts | `O(1)` | `O(m)` | `O(m)` | 4 bytes |
 | a Fenwick tree of sizes | `O(log m)` | `O(log m)` | `O(m)` | 4 bytes |
 | a counted B-tree | `O(log m)` | `O(log m)` | `O(log m)` | about 8 bytes |
+| a tree weighted by the elements' sizes | `O(1 + log(W / w))`, amortized | the same | the same | about 16 bytes |
 | a start every 64 elements | `O(64)` | `O(m / 64)` | `O(m)` | 1/16 byte |
 
+`m` is the number of elements, `W` the container's encoded size and `w` the element's.
 The `variable-size` branch's packed vector keeps an array of starts.
 A Fenwick tree is the better default for kladde-types' vector, since a size change of an element, typing into a string inside it, say, is the frequent case and costs `O(m)` in the array, while an insertion costs `O(m)` in the `Vec` that holds the elements anyway.
+The weighted tree finds an element that holds much of its container near the tree's root, which makes the lookups along a chain of guards add up to `O(depth + log n)` rather than a logarithm per level ([what a guard costs](#what-a-guard-costs)); it pays for deep nesting of large containers.
 A struct keeps no index at all: it adds up its fields' encoded sizes after its first variable-size field, and every container caches its own total, so that adding up never recurses.
 
 ### D. Moving a value from one container to another
@@ -274,14 +280,14 @@ In steady state, garbage arrives no faster than bytes are written, and a cleaner
 That is the classic bound for log-structured cleaning (Rosenblum and Ousterhout, "The Design and Implementation of a Log-Structured File System", SOSP 1991), and uniformly random overwrites are its worst case; skewed workloads clean far more cheaply, which is what today's ripeness and survivor sorting exploit.
 
 **Everything else is constant or logarithmic.**
-A splice, an overwrite and a move state a constant number of spans; a moved byte restates its span and nothing else, since no key changes; the rope finds and edits spans in `O(log k)`; a guard finds its value in `O(depth · log fanout)`; victims come from bucket queues in `O(1)`, and their spans from a reverse index in `O(1)` each; and the table pages' directory changes `O(depth)` pages per leaf added or removed, amortized over the statements a leaf holds, as today.
+A splice, an overwrite and a move state a constant number of spans; a moved byte restates its span and nothing else, since no key changes; the rope finds and edits spans in `O(log k)`; a guard is made from its parent's with one lookup in the parent's index, and a change of size updates one entry per level, which size-weighted indexes bound by `O(depth + log n)` for a whole chain from the root; victims come from bucket queues in `O(1)`, and their spans from a reverse index in `O(1)` each; and the table pages' directory changes `O(depth)` pages per leaf added or removed, amortized over the statements a leaf holds, as today.
 
-So the overhead is `c / L̄ + G / n + 0.004`, set by `L` and `u`, and the work per modification is `O(w + L)` bytes for `w` bytes written and `O(log n)` time, none of it growing with the file.
+So the overhead is `c / L̄ + G / n + 0.004`, set by `L` and `u`, and the work per modification is `O(w + L)` bytes for `w` bytes written and `O(log n)` time in the store, plus the walk from the root to the modified value, which the application makes anyway and which costs `O(depth + log n)` with size-weighted indexes; none of it grows with the file beyond the logarithm, and the depth only with how deeply the data model nests.
 
 ### Why today's design cannot
 
 **Today the description is paid per allocation and a splice per allocation's tail, so keeping either small makes the other grow.**
-A small description wants values inline in few allocations, and then each allocation is long, and a splice into one restates or rewrites everything behind it: on kladde-svg's small layout of the world map, [24 bytes per edit](splices.md#what-a-splice-costs-today) restated from leaves and 16 written again, growing with the length of the lists.
+A small description wants values inline in few allocations, and then each allocation is long, and a splice into one restates or rewrites everything behind it: on kladde-svg's small layout of the world map, flushes were [measured](splices.md#what-a-splice-costs-today) to restate 24 bytes of statements per edit that had lain in leaves and to write 16 bytes of data again, growing with the length of the lists.
 Cheap splices want short allocations, and then each value pays its pointer and statements, a cost that grows with the number of values rather than with their bytes.
 No policy escapes that, because the format ties the unit of description to the unit of the data model; the proposal unties them.
 
@@ -525,6 +531,32 @@ The derive generates a field's guard at a constant offset up to the struct's fir
 The obligations of a hand-written implementation become: `FIXED_SIZE` and `encoded_len` match what `encode` writes; `encode` and `decode` are inverses; every guard method leaves its region holding the value's encoding when its transaction ends; and the descriptor matches the bytes.
 The third is checkable, which today's ordering discipline is only by replay: a store in a test can keep the sequence in memory and compare a region with the value's encoding after every method.
 
+### What a guard costs
+
+**Making a guard costs one lookup in its parent's index, however deep its value lies, because the parent's guard already holds where the parent starts.**
+Every guard holds the absolute start of its value, which it needs anyway, since journal records name positions in the sequence.
+An application reaches a value one level at a time, `drawing.guard().shapes_mut().get_mut(7)?`, here as today, and each step adds its child's start relative to the parent to the parent's start:
+
+- a field before its struct's first variable-size field, or an element of a container of fixed-size elements, starts at a constant, or at `i` times the element's size;
+- a field after it starts at the sum of the encoded sizes of the fields before it, a number of additions fixed by the struct's type, since each field's size is its in-memory value's or its container's cached total;
+- an element of a container of variable-size elements starts where the container's index says, [choice C](#c-what-a-container-keeps-to-find-its-children).
+
+The start a guard holds stays right for as long as the guard lives: the guard borrows its parent mutably, so nothing before its value can change size meanwhile, and its value's own changes of size move only what lies behind it.
+Iterating needs no index at all: a guard that steps through a container's elements adds each element's size to the start of the one before.
+
+**A change of size walks the same chain back up**, since it changes the encoded size of every value around the one that changed: each ancestor updates its cached total and its index's entry for the child the change came from.
+That is one update per level, at the index's cost, where today a slotted value never changes size and a change of an allocation's size concerns no other allocation.
+
+**So the depth is not a cost of the design, and the logarithm per level is a choice of index.**
+Every mutation walks the chain from the root to its value, here and today, so a constant per level adds nothing that grows with the file.
+What a level adds beyond a constant is its container's index: nothing for fields and for fixed-size elements, and for variable-size elements `O(1)` with an array of starts, at `O(m)` per change of size, or `O(log m)` with a Fenwick tree.
+
+**Indexes that weigh elements by their encoded size make the whole chain cost `O(depth + log n)`, as one tree over every value's position would, with no such tree.**
+In a tree over a container's elements in which an element of `w` bytes, in a container of `W`, lies at depth `O(1 + log(W / w))` — a biased search tree (Bent, Sleator and Tarjan, "Biased Search Trees", SIAM Journal on Computing, 1985), or a splay tree, whose amortized cost of access is the same for any weights (Sleator and Tarjan, "Self-Adjusting Binary Search Trees", Journal of the ACM, 1985) — the lookups from the root, of `n` bytes, down to a value of `w` bytes cost `O(depth + log(n / w))` in all, since each level's `log(W / w)` cancels against the next level's.
+Changes of size telescope the same way on the way back up.
+Each guard is then a cursor into one tree of positions that the containers' indexes form together, and the guard made from it starts its search there.
+That pays for deep nesting of large containers, a document tree whose nodes hold long lists of nodes, say; for nesting as shallow as kladde-svg's, a Fenwick tree per container is simpler.
+
 ### The built-in containers
 
 - **`PersistableVec<T>`**: the count, then the elements; in memory, a `Vec<T>`, and for variable-size `T` a Fenwick tree of the elements' sizes, [choice C](#c-what-a-container-keeps-to-find-its-children).
@@ -535,11 +567,46 @@ The third is checkable, which today's ordering discipline is only by replay: a s
 
 ### Evolution
 
-**Reading a foreign schema works as the variable-size draft describes for packed values; writing in it does not, so an upgrade rewrites the sequence.**
-The per-type read plan becomes a parse of the writer's encoding, run during the load that decodes everything anyway.
-But a guard that wrote in the writer's layout would have to encode every value by the writer's descriptors at run time, so the *retain* mode of [evolution](../spec/schema/evolution.md#what-is-settled) is out of reach, and the *upgrade* mode becomes the only one: a file opened with a new schema is rewritten whole, schema chain and sequence, in one flush before the application gets it.
-That flush needs no journal: a crash before it commits leaves the old file, and the next open upgrades again.
-It costs `O(n)` once per change of schema.
+**A change of schema is no more invasive here than today: reading a writer's schema works as it does, an upgrade writes again only the values whose encoding changed, and only the *retain* mode, writing in the writer's schema, gets dearer, because of packed encodings rather than of one sequence.**
+
+**Reading is unchanged.**
+The schema chain holds the writer's descriptors and the header its root fingerprint; a reader whose fingerprint matches decodes natively, and one whose fingerprint differs resolves the writer's types against its own once, as [evolution](../spec/schema/evolution.md#what-is-settled) settles it, into a plan per type.
+With packed encodings, the plan is a parse of the writer's encoding rather than a list of offsets, as [the variable-size draft](variable-size.md#evolution) found; it runs during the decode that the load does anyway.
+
+**Neither design mixes schemas in one file.**
+Today's header names one schema table and one root fingerprint, as this design's does, and the specification [leaves open](../spec/schema/evolution.md#what-is-tbd) whether a schema could ever be tagged per allocation or per region.
+Until one is, the whole file decodes by one schema at every commit, here as there, so a session that opens a file with a different schema either upgrades everything whose layout changed before its first commit, or writes in the writer's schema all session.
+
+**Upgrading costs the same order here as there: the bytes of what changed.**
+Values whose type is unchanged keep their bytes, and so do values whose type changed in a way their bytes do not show, such as an enum that gained a variant they do not hold; the upgrade encodes the others again, compares, and splices the new encoding in wherever the bytes differ.
+Each splice states a constant number of spans besides its new bytes, and where changed values lie densely, as in a vector whose element type gained a field, [the span policy](#b-how-short-spans-may-stay) writes their container's region again as one span, as today's upgrade writes the vector's allocation again.
+Nothing behind a changed value is restated, although all of it moves, since no position is stored on file.
+The upgrade is a flush at open that folds these splices along with the new schema chain, before the application gets the file, and needs no journal: a crash before it commits leaves the old file, and the next open upgrades again.
+
+**Retaining is dearer, because of packing.**
+To write in the writer's schema, a guard needs the writer's offsets and the writer's encoding of each value it writes.
+Today a slotted value's offsets follow from the writer's inline sizes, which the read plan holds; a packed value's depend on the writer's encoded size of every variable-size field before them, and those sizes, like the encoding itself, come only from interpreting the writer's descriptors on the in-memory value at each write.
+The variable-size draft meets the same cost for packed containers; this design makes every container packed, so it meets it everywhere except inside `Fixed` values, whose offsets the writer's descriptors give as today's slotted ones do.
+Upgrading is therefore the default, and retaining a mode for files that an older application must still read, which interprets descriptors at each write.
+
+### Mixing schemas: capsules
+
+**Keeping parts of a file in different versions of their schema, and upgrading each part on its own, is what capsules were meant to do, and one sequence makes them cheaper than allocations would.**
+Capsules were sketched in kladde-rs's notes on schema evolution in July 2026, which kladde-rs `d18baa1` removed in September with the other notes of the relocatable heap; the specification's "per schema-boundary region" is what is left of them.
+Three ideas made them up:
+
+- **A `Capsule<T>` is a schema boundary**: a subtree that records which version of `T`'s schema it is written in, as an index into a table of the versions the file holds, each stored once and resolved once per session, however many capsules use it.
+- **Fingerprints computed outside a capsule erase its inner type**, so the root fingerprint does not change when `T` does, and a stale capsule is found by comparing the table's fingerprints with the reader's, once per version, and reading each capsule's index.
+- **Each capsule upgrades on its own**, at first touch, or keeps its version for as long as nothing writes it.
+
+**Today a capsule would need an allocation of its own**, since a value whose size changed with its version would otherwise shift everything behind it in its parent's allocation, and an allocation per capsule is a pointer, statements and a size: the per-value cost this design removes.
+In one sequence, a value's size concerns nothing but positions in memory, so a capsule is inline: its version's index as a varint, then `T`'s encoding in that version.
+Upgrading one at first touch is a splice of its region, with the new index, in the same transaction as the write that touched it: a constant number of span statements, plus the capsule's bytes.
+The capsule's guard is where that happens, since every guard inside it is made from it.
+
+The schema chain then holds the table of versions in use.
+A session whose types are missing from it adds them in the flush at open, before any capsule names them, and a count of capsules per version, built at open and kept in memory, says when a flush may drop a version from the table.
+Nothing in the span format or the journal changes: capsules are a matter of the schema and of one wrapper type, and can come later.
 
 ### Tooling and testing
 
@@ -559,12 +626,12 @@ The format already has three chains, so a fourth kind changes the header's field
   Every container of variable-size elements keeps an index, four bytes per element, where today's slotted containers keep none; fixed-size elements cost nothing, and the store's own structures lose their entries per allocation.
 - **Offsets at run time.**
   A field behind a variable-size field, and an element of a container of variable-size elements, are found by a sum or a lookup instead of a constant.
-- **Guards cost a walk.**
-  Making one costs `O(depth · log fanout)` where today it costs a constant per level.
+- **Guards look positions up, and changes of size walk back up.**
+  Making a guard costs a lookup in its parent's index, and a change of size an update at each level above it, where today the one costs a constant and the other nothing: `O(log m)` per level of variable-size container with Fenwick trees, or `O(depth + log n)` for a whole chain with size-weighted indexes ([what a guard costs](#what-a-guard-costs)).
 - **Overwrites inside long spans split them**, three statements the first time a place is written, against today's one.
 - **Two records for every insertion and removal**, the element and the count, in one transaction.
 - **Moving a value between containers encodes it again**, until [cut and paste](#d-moving-a-value-from-one-container-to-another) exists.
-- **A schema change rewrites the sequence**, once, and the retain mode of evolution goes.
+- **Writing in a foreign schema interprets its descriptors at each write**, as it would for packed values today; upgrading costs what it costs today ([evolution](#evolution)).
 - **Partial loading needs segments**, which need a pointer of their own.
 - **A rewrite of everything above the pages**: the address table, allocations and journal documents of the specification, most of the implementation documents, and the store, persist, types and derive crates of kladde-rs.
 
@@ -582,6 +649,9 @@ The format already has three chains, so a fourth kind changes the header's field
 | removing a value | a splice, then a free walk over what it owns | a splice |
 | field access when mutating | constant offsets | constant up to the first variable-size field |
 | opening | a sweep resolving bytes across epochs | one pass over statements, a chain walk, and the decode |
+| upgrading to a new schema | the allocations holding values whose layout changed, written again | the values whose encoding changed, spliced in again |
+| writing in the writer's schema | offsets from the writer's inline sizes | offsets and encodings interpreted from the writer's descriptors |
+| parts of a file in different schema versions | not supported; a capsule would take an allocation | not supported; a capsule would be inline |
 | tooling | opaque containers, a pointer graph | a decode from the schema |
 
 ## How to get there
@@ -599,9 +669,9 @@ The specification and the implementation documents would change only once those 
 
 - **The span policy's constants**: `L`, what counts as cold, and how hot spans and the header share the address table's room.
 - **Where to split and where to rewrite** on an overwrite, and whether shadowing statements earn their way back for some workload.
-- **The containers' indexes**: whether a Fenwick tree is the right default, and what an application with millions of variable-size elements should use.
+- **The containers' indexes**: whether a Fenwick tree is the right default, what an application with millions of variable-size elements should use, and whether any data model nests deeply enough for size-weighted indexes to pay.
 - **Moving values between containers**: whether cut and paste is worth a scratch chain and a chain number in `Move`.
 - **Memory for very large files**: the rope costs about 16 bytes per span plus the span table's 16; for a file of a gigabyte that is cold, spans of a page keep that near 8 MB, but a file edited everywhere at once would not be.
 - **Opaque types**: whether declaring a fixed size is enough, or whether some want both modes.
-- **Upgrades of large files**: whether rewriting the whole sequence at the first open with a new schema is acceptable, or whether some schema changes should be expressible as edits.
+- **Capsules**: whether to bring back schema versions per subtree, [inline](#mixing-schemas-capsules), so that a large file whose element type changed can upgrade a part at a time rather than every element at the first open.
 - **Segments**: how a reference to another chain looks in the schema, in the journal, and in a transaction.
