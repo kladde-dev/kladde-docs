@@ -148,9 +148,16 @@ The draft compares it with the alternatives, measured on kladde-svg's drawings; 
 | chunks of bounded size, ordered by key | a chunk's tail | the moved run | relabeling when two adjacent keys leave no room between them |
 | dense position keys | one or two spans | the moved run | a tombstone per removed span, kept while older statements of its key exist |
 | a tree of spans on file | the path to the root, `O(log n)` | two paths | nothing |
-| **links** | **two or three spans** | **a handful of spans** | a chain walk at open, and a rope in memory |
+| **links** | **one to three spans** | **three to six spans** | a chain walk at open, and a rope in memory |
 
-A move, which today's design makes cheap between allocations with [`Move`](move-op.md), stays cheap only with links: cutting a run of spans out of the chain and linking it in elsewhere restates the spans at its ends, however many lie between.
+A move, which today's design makes cheap between allocations with [`Move`](move-op.md), stays cheap only with links, and costs at most six statements, however many spans it moves.
+Cutting a run out at its start and its end and inserting it at its destination splits at most three spans, one at each of those places.
+Each split states its left part again, with a shorter length, and its right part as a new span over the same bytes.
+The three left parts are also exactly the spans whose successors change: the one before the run now links to what followed the run, the run's last span to what follows the destination, and the span before the destination to the run's first span.
+Where a place is the sequence's start, the header's first span changes instead, which costs no statement.
+Every span inside the run keeps its statement, since neither its bytes nor its successor change, and the reach rule of [decision 6](#6-one-statement-per-span-the-newest-wins-reachability-decides-the-rest) asks nothing of it, since the chain reaches it before and after.
+Where a place already falls between two spans, its split goes, and a move between such places states three spans.
+A splice is the same argument with one place fewer: one to three statements.
 A tree's random access, the reason to keep a rope on file, is worth nothing to a file that is read whole; the rope belongs in memory, where it finds the span that holds a position in `O(log k)` for `k` spans.
 
 ### 6. One statement per span; the newest wins; reachability decides the rest
@@ -225,7 +232,7 @@ A struct keeps no index at all: it adds up its fields' encoded sizes after its f
 
 ### D. Moving a value from one container to another
 
-**Moving a value within one container is one `Move` record and a handful of span statements, whatever its size; moving it between containers has no answer yet as good.**
+**Moving a value within one container is one `Move` record and three to six span statements, whatever its size; moving it between containers has no answer yet as good.**
 Today a value that owns allocations moves by writing its pointers, and what they point to stays where it is.
 In one sequence, every value is its bytes, so restacking a group, reordering a list, or sorting it are `Move`s inside their container, and moving a subtree to another parent is the question:
 
@@ -234,7 +241,7 @@ In one sequence, every value is its bytes, so restacking a group, reordering a l
 - **A move at a common ancestor**: a guard method on the container that holds both places.
   Rust's borrows forbid holding guards on two places at once, so the ancestor would have to take both paths, which is awkward to type and to derive.
 - **Cut and paste**: `cut` moves the value's bytes into a scratch chain and returns a detached value; `paste` moves them in where it goes.
-  It costs a handful of statements however large the value, and needs a chain number in `Move` records, and a rule for a detached value that is dropped without being pasted, whose bytes the next transaction or the next open would splice out of the scratch chain.
+  It costs two moves of three to six statements each, however large the value, and needs a chain number in `Move` records, and a rule for a detached value that is dropped without being pasted, whose bytes the next transaction or the next open would splice out of the scratch chain.
 
 Encoding again is the starting point; cut and paste is worth building once a workload moves large subtrees between parents.
 
@@ -565,8 +572,8 @@ The format already has three chains, so a fourth kind changes the header's field
 
 | | today | proposed |
 | --- | --- | --- |
-| statements per splice | every fragment behind it in its allocation, or its bytes written again | two or three spans |
-| moving a value within a container | the moved bytes, or [`Move`](move-op.md)'s statement edits | a handful of spans, no bytes |
+| statements per splice | every fragment behind it in its allocation, or its bytes written again | one to three spans |
+| moving a value within a container | the moved bytes, or [`Move`](move-op.md)'s statement edits | three to six spans, no bytes |
 | statements per overwrite | one | three the first time, one after |
 | description per value | a pointer, its statements, and its size | none; a few bytes per span of up to a page |
 | what a page rewrite must also state | the sizes and tombstones of the ids it touches | nothing |
