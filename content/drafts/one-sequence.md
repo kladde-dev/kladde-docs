@@ -119,7 +119,7 @@ The distinction buys three things, all in memory:
 - a container of fixed-size elements finds element `i` at `i` times the element's size, and keeps no index of where its elements start;
 - a fixed-size value never changes size, so writing it is always an overwrite in place, and nothing above it has to hear about it.
 
-The choice is the author's, per field and per element type.
+The choice is the application author's, per field and per element type.
 Packed encodings save bytes on file; fixed ones save memory and time in containers that hold many values, and keep a field that changes often, such as a counter, from changing size whenever it crosses a power of 128.
 Unlike the variable-size draft's places, nothing is inherited: a type is fixed-size or it is not, and `Fixed(T)` applies to all of `T`.
 
@@ -144,6 +144,8 @@ For fields and for fixed-size elements that is a constant; for variable-size ele
 **On file, the sequence is a chain of spans: a span is a statement that shows a run of the sequence's bytes — bytes in a data page, bytes in the statement itself, or zeros — and names the span after it, and the header names the first.**
 This is a *piece table*, the structure in which text editors have kept documents under editing since Xerox's Bravo, and in which Visual Studio Code keeps them today: a document is a list of pieces, each a run of some buffer, and an edit changes the list but never a buffer.
 Here the buffers are data pages and statements, the pieces are spans, and the list is kept in the file, as the spans' successor links.
+
+@Claude: add a section at an appropriate position in this document that contains a thorough comparison between the proposal in this document and existing systems that are most related to it. I've had you do a comparison like this when I started working on kladde, but back then the design of kladde was significantly different: the design back then had no concept of pages, and the idea was still to have pointers to allocations that are contiguous in the file and are always relocated as a whole for compaction. Since then, the design of kladde has changed significantly multiple times. I want to check if the past design changes have made kladde converge towards something that already exists.
 
 **A span is known by an id, not by a position, so an edit restates only the spans at the places where it cuts the chain.**
 Today a statement is keyed by its offset in its allocation, so a splice changes the key of every statement behind it, and each of those must be stated again.
@@ -200,8 +202,16 @@ Chains cost nothing extra in the span format, so the schema takes one, and so wo
 - **Shadow**: a second kind of statement that overwrites part of a span by offset, as today's content statements overwrite part of an allocation.
   It costs one statement and writes no other byte, and it brings back per-byte resolution, fragments inside spans, and liveness that counts them: most of what decision 6 removes.
 
-A writer would rewrite a span shorter than a threshold and split a longer one, so that a drag that moves a point many times splits its span once and restates an inline span of eight bytes at every later flush.
+**Decision:** a writer should rewrite a span shorter than a threshold and split a longer one, so that a drag that moves a point many times splits its span once and restates an inline span of eight bytes at every later flush.
+Note that this means that even an `Inline` statement longer than the threshold should initially be split rather than rewritten (so that potential future overwrites at the same position will be cheap), even though splitting an `Inline` statement effectively means restating the its full content, just with a few control bytes to start a new span interjected at the split points. (@Cloude: did I understand the proposal correctly here or should `Inline` never be split?)
+
 Shadowing is the option to revisit if overwrites inside long, cold spans turn out to dominate a workload; today's design pays one statement for them, and splitting pays three, once.
+Instead of full shadowing, a first step towards it could instead introduce statements for shrinking and/or relinking existing `Inline` spans, i.e., statements that only state an existing `Inline` span's size and/or next-pointer.
+These statements should only be allowed to be issued for spans that are defined in an earlier epoch by an `Inline` statement, as their purpose would be to avoid having to restate the content of the `Inline` statement, which could be up to 128 bytes long.
+The cost of these shrinking and/or relinking statements would be that they keep the existing `Inline` statement alive, which now contains a dead payload (in the case of a shrinking statement).
+The rule would still be "newest wins", only that for `Inline` statements it would then apply separately for its backing content, size, and next-pointer.
+For `Ref` statements, nothing would change since shrinking or relinking them by issuing a full new `Ref` statement is already cheap.
+These shrinking and relinking statements should not be adopted until motivated by measurements.
 
 ### B. How short spans may stay
 
@@ -210,6 +220,9 @@ Shadowing is the option to revisit if overwrites inside long, cold spans turn ou
 - **Bounded spans**, the discipline of a B-tree's leaves without the interior nodes: no two neighbouring spans are shorter than `L` together.
   After each flush, the spans around each edited place that break the rule are written again as one, which costs at most `L` bytes per boundary removed and never cascades, since a merged span is longer than either neighbour was.
   The mean span is then at least `L / 2` long, everywhere and at all times.
+  @Claude:
+	- What do you mean with "After each flush"? Do you mean "after the fold, but before page content is written"? Mo
+	- I think there should be some rule that a bounded number of very hot pages (maybe only the header to start with) should be allowed to have very small spans (even below `L / 2`). This covers the case of an active edit site in a text editor that persists on every keystroke, or the case of moving around a shape in a vector graphics program or gradually moving a slider in an audio editor until the user has found the desired setting. What's the cleanest way to do this? Once the content becomes cold, it should be consolidated to larger spans (maybe at the point it leaves the header page, or by some dedicated description defragmentation).
 - **Merging by temperature**: a run of spans whose content has not been written for a while is written again as spans of up to a page.
   Each boundary is removed once, after the edits that made it, and a cold span of a page costs about six bytes, 0.15 % of what it shows.
   It needs a temperature per region of the sequence, as today's [heat and `last_written`](../impl/in-memory-state.md#3-the-allocation-map) give one per allocation.
@@ -230,11 +243,16 @@ Neither touches the format, which allows spans of any length from one byte to a 
 | a tree weighted by the elements' sizes | `O(1 + log(W / w))`, amortized | the same | the same | about 16 bytes |
 | a start every 64 elements | `O(64)` | `O(m / 64)` | `O(m)` | 1/16 byte |
 
-`m` is the number of elements, `W` the container's encoded size and `w` the element's.
+`m` is the number of elements, `W` the container's encoded size and `w` the element's, and the "memory per element" column assumes that sizes are recorded in 32-bit values, which is fine since larger containers should probably hold their content in `Segment`s once they land.
 The `variable-size` branch's packed vector keeps an array of starts.
 A Fenwick tree is the better default for kladde-types' vector, since a size change of an element, typing into a string inside it, say, is the frequent case and costs `O(m)` in the array, while an insertion costs `O(m)` in the `Vec` that holds the elements anyway.
 The weighted tree finds an element that holds much of its container near the tree's root, which makes the lookups along a chain of guards add up to `O(depth + log n)` rather than a logarithm per level ([what a guard costs](#what-a-guard-costs)); it pays for deep nesting of large containers.
 A struct keeps no index at all: it adds up its fields' encoded sizes after its first variable-size field, and every container caches its own total, so that adding up never recurses.
+
+**Decision:** prefer a Fenwick tree over a weighted tree to save memory unless a specific container type justifies a different choice.
+As far as I understand, the runtimes discussed here are for calculations that happen typically at most a handful of times per mutation, and at the time the mutations happen (i.e., not during the flush). @Claude: correct me if I misunderstood this.
+Kladde is meant for interactive applications where mutations happen due to some user action and therefore on human time scales, so a millisecond delay per mutation is unnoticable.
+For bulk operations (e.g., pasting large and complex content from the clipboard), the API should make it the natural choice for application authors to first construct any large and complex data types outside of a guard and then bring them in as a whole, which should then encode them into a buffer and splice them in.
 
 ### D. Moving a value from one container to another
 
@@ -251,11 +269,41 @@ In one sequence, every value is its bytes, so restacking a group, reordering a l
 
 Encoding again is the starting point; cut and paste is worth building once a workload moves large subtrees between parents.
 
+@Claude: I have a rough idea for a solution that I think would require neither re-encoding nor an explicit scratch chain. It achieves this by restricting "cut and paste" to lie within a transaction, so that the full trajectory can be resolved in-memory during the fold. Rephrase my notes below more concisely, fill in any gaps for corner cases I might have missed, and discuss the tradeoffs of this idea.
+- We add two more record types to the journal vocabulary: `pop_write` and `pop_splice`, which are encoded like `write` and `splice`, respectively, except that they have a `skip` field instead of `bytes`.
+- When folding the journal as part of a flush:
+	- We maintaint a stack of subsequences removed by `Splice`.
+	- The stack is cleared at every transaction start.
+	- Every `splice` operation puts the subsequence it removed onto the stack.
+	  Each subsequence is probably defined by the id of the splice in which it start, the offset of the start within that splice, and the length of the subsequence, but I'm not sure about the implementation details here.
+	- `pop_write` and `pop_slice` do two things: they pop `skip + 1` subsequences off the stack, and they use the last popped subsequence as the payload for `write` or `slice`, respectively.
+	- Any spliced-out subsequences that were never used as payload in `pop_write` or `pop_slice` (either because they were left on the stack when the transaction ended, or because they were skipped by a `skip > 0`) are dead at the end of the transaction, just like they would have been immediately after the `splice` operation in the current proposal.
+	  So I think this idea doesn't require any new handling for "freeing", but I'm not sure if this is correct.
+- A possible API for this:
+	-   When `splice` is called on the backend (I'm not sure if "backend" is still the correct term) while it is in `InTransaction` or `InTransactionInBatch` state (see [transactions and batches](../impl/transactions-and-batches.md)), it returns an opaque index to the `Splice` op it just added to the in-memory `transaction`.
+	  For example, this index could be an opaque newtype around a counter of `splice` operations in the active transaction.
+	  The newtype should be neither `Copy` nor `Clone`.
+	- Calling `remove` on a container starts a transaction and does the actual removing (i.e., splice out the value and decrement the container's size).
+	  It returns a handle `h` that holds the transaction open until the caller either calls `h.commit()` (which returns a `Result`) or until the handle is dropped (which calls `h.commit().unwrap()`).
+	  The handle `h` wraps the removed value as `h.value` and the index that `splice` returned as `h.removed_at`.
+	- If we want to insert `h` anywhere else (e.g., another container, or overwriting a struct field, etc.), we can provide a `h`.
+	  The lifetime system would have to statically enforce that only `h`s of this or a parent transaction can ever by provided.
+	  The guard implementation then uses `h.removed_at` to tell backend: take the subsequence that was removed in the splice operation at `h.removed_at`.
+	  The backend consumes `h.removed_at` and emits a `pop_write` or `pop_splice` record with the appropriate value for `skip`, and it decreases its counter accordingly (simulating the popping of `skip + 1` stack entries).
+	- There should probably still be a method that removes entries from the container without starting a new transaction, which then returns the value raw (without the handle).
+	- Ideally, we should be able to descent into `h` like into any other guard, and then insert a substring somewhere, but this can be deferred for later.
+	- I guess this mechanic is not limited to containers.
+	  Structs could also implement it (maybe a `replace` method that overwrites and returns a handle to the old value), and changing the variant of an enum could return handles to the payload if requested).
+	- The type system should make sure that handles for `Fixed(T)` can't be used to insert `T` and vice versa.
+
+
 ## The guiding principle: overhead and work independent of size
 
 **The live pages exceed the sequence by three terms — the description, the garbage, and the page framing — and each is held at a target that does not depend on the sequence's length, at a cost per modification that does not either.**
 
 ### Where the bytes of live pages go
+
+@Claude: discuss file size, not just size of live pages, i.e., add reusable and fallback pages to the overhead and discuss a model for them too in "Each term, and what keeping it costs" below.
 
 Let `n` be the length of the sequence (with the schema's and the private state's, which are small), `k` the number of spans the chains reach, `c` the mean encoded size of their statements without inline payloads, and `L̄ = n / k` the mean length of a span.
 The live pages hold:
@@ -276,8 +324,10 @@ Merging cold regions into spans of a page lowers the term for them to about 0.15
 
 **The garbage, `G / n`, is set by the cleaner's target.**
 Holding pages at a mean live fraction `u` leaves `G ≤ (1 / u − 1) · n`, 11 % at `u = 0.9`.
-In steady state, garbage arrives no faster than bytes are written, and a cleaner that takes the emptiest page first takes one at most `u` full, so each byte of garbage it reclaims costs it at most `u / (1 − u)` live bytes moved, 9 at `u = 0.9`, plus their spans restated, `c / L̄` per byte.
-That is the classic bound for log-structured cleaning (Rosenblum and Ousterhout, "The Design and Implementation of a Log-Structured File System", SOSP 1991), and uniformly random overwrites are its worst case; skewed workloads clean far more cheaply, which is what today's ripeness and survivor sorting exploit.
+In steady state, garbage arrives no faster than bytes are written, and a cleaner that takes the emptiest page first takes one at most `u` full, so each byte of garbage it reclaims costs it at most `u / (1 − u)` live bytes moved, 9 at `u = 0.9`, plus their spans restated, `c / L̄` per byte. @Claude: I think this assumes that the cleaner creates completely full pages. Unless I'm mistaken, redo the calculation, assuming that the cleaner leaves pages `θ` empty in the worst case.
+That is the classic bound for log-structured cleaning (Rosenblum and Ousterhout, "The Design and Implementation of a Log-Structured File System", SOSP 1991), and uniformly random overwrites are its worst case; skewed workloads clean far more cheaply, which is what today's ripeness and survivor sorting try to exploit, so far with questionable success.
+
+@Claude: Does this mean that, in the steady state in the worst-case scenario, as long as we clean 9 pages for every page of new data we write for the flush, we should be able to keep `G / N` below 11% (up to `θ` and boundary effects for the last page written)?
 
 **Everything else is constant or logarithmic.**
 A splice, an overwrite and a move state a constant number of spans; a moved byte restates its span and nothing else, since no key changes; the rope finds and edits spans in `O(log k)`; a guard is made from its parent's with one lookup in the parent's index, and a change of size updates one entry per level, which size-weighted indexes bound by `O(depth + log n)` for a whole chain from the root; victims come from bucket queues in `O(1)`, and their spans from a reverse index in `O(1)` each; and the table pages' directory changes `O(depth)` pages per leaf added or removed, amortized over the statements a leaf holds, as today.
@@ -320,16 +370,23 @@ In either case, it is the cleaner's target, and not the description, that decide
 | `f32`, `f64` | IEEE-754, little-endian | yes |
 | `char` | UTF-8 | no |
 | Struct | its fields' encodings, concatenated | if all its fields are |
-| Enum | the discriminant as LEB128, then the variant's fields | if every discriminant is below 128 and every variant encodes to the same size |
+| Enum | the discriminant as LEB128, then the variant's fields | if every discriminant is below 128 and every variant is fixed-size with the same total size; this includes C-style enums if every discriminant is below 128 |
 | `Array(T, n)` | `n` elements | if `T` is |
 | `Sequence(T)` | the number of elements as LEB128, then the elements | no |
 | `Text` | the number of bytes as LEB128, then UTF-8 | no |
 | Opaque | its bytes, prefixed with their number as LEB128 unless the type declares a fixed size | if it declares one |
 | `Fixed(T)` | `T`'s fixed encoding: integers at full width, little-endian, a `char` in 4 bytes, an enum padded with zeros to its largest variant, a struct as its fields' fixed encodings | yes |
 
+@Claude:
+- what do the table headers "packed encoding" and "when packed" mean? Are these terms taken from the variable-size proposal, where we had to distinguish between two types of encoding? If so, I think they are confusing here since, as far as I understand it, there's only one encoding for each type (with the understanding that `Fixed(T)` and `T` are different types).
+- I think I want to make `Text` sentinel-terminated instead of explicitly sized, so that splicing into `Text` requires only a single `Splice` and no separate size update. Thus, `Text` would be encoded as only the utf-8 sequence followed by maybe `0xFF` or some other end marker.
+  Are there any downsides to this?
+
 `Fixed(T)` is defined for every `T` without a `Sequence`, a `Text`, or a variable-size opaque type inside it, and it applies to all of `T`.
 A map is a `Sequence` of entries in the order its library keeps them, an `Option` an enum, and a recursive type nests inline, a tree as sequences of trees.
 The canonical form is the variable-size draft's: minimal varints, valid UTF-8, and zeros as padding.
+
+@Claude: do I understand correctly that `Fixed(MyStruct)` is allowed if `MyStruct` contains, say, a `u8` field and a `bool` field, but it is disallowed if `MyStruct` contains a `u32` field? (I'm not arguing against this, I just want to make sure I don't misunderstand anything.) Also, do I understand correctly that `Fixed(MyEnum)` is only allowed if every field of every variant of the enum is fixed-size (i.e., an `Option<u32>` could not be `Fixed`, but an `Option<Fixed<u32>>` could)?
 
 **The descriptors change accordingly.**
 `Sequence`, `Text` and `Fixed` are new kinds, the reserved `Array` kind takes the encoding above, and an opaque descriptor gains its size mode.
@@ -350,7 +407,11 @@ bytes   := length:varint byte{length}
 
 - `Write` overwrites `[position, position + length)`.
 - `Splice` replaces `removed` bytes at `position` with `bytes`, shifting what follows.
-- `Move` cuts `[from, from + length)` and inserts it at `to`, a position in the sequence without the cut bytes.
+- `Move` cuts `[from, from + length)` and inserts it at `to`, a position in the sequence without the cut bytes. @Claude: provide an example to clarify what "a position in the sequence without the cut bytes" means: what `from` and `to` values would be needed if I want to move `bc` between `d` and `e` in `abcde`, resulting in `adbce`?
+
+@Claude:
+- I think I want to introduce variants of each record type that use relative `position`, `from`, and `to` (zig-zag encoded, from the last one mentioned in the journal) because I expect to have long runs of edits that stay relatively local within the sequence. For `move` it would probably make sense to have 4 variants with all combinations of absolute or relative `from` and `to`. Alternatively, maybe all positions should be relative. What do you think?
+- Every move operation can be expressed in two equivalent ways: consider `A ++ B ++ C ++ D`, where `A`, `B`, `C`, and `D` are byte sequences. Moving `B` to between `C` and `D` is equivalent to moving `C` to between `A` and `B`. How would the writer decide which option to choose, and does it have an effect on how expensive the fold is or which statements will ultimately be written to the table?
 
 A record's positions refer to the sequence as the records before it left it.
 A record whose range does not lie inside the sequence is a writer's bug, and a reader refuses the file, as it refuses a transaction whose checksum matches but whose records do not decode; with one sequence there is nothing for a record to bring into existence, so no record needs a meaning outside it.
@@ -382,6 +443,7 @@ Zeros are rare in packed encodings, but `Fixed` values and large preallocated ar
 1. A span id's statement in the highest epoch is its description; an epoch holds at most one per id.
 2. Each chain runs from the span its header field names, following `next`, and holds its spans' content in that order; a header field of 0 names an empty chain.
 3. A file is invalid if a chain names an id that no statement describes, reaches a span twice, or shares a span with another chain.
+   A reader must in particular check if any span is reached twice to protect against an infinite loop during opening.
 
 **Rules for writers:**
 
@@ -430,11 +492,13 @@ The private chain keeps the rules of the [consolidator state](../spec/file-forma
 - **The span table** is an array indexed by span id: what the span shows — a page and an offset, an inline payload's place in a table page, or zeros — its length, its successor, and the table page that holds its live statement, about 16 bytes per span.
 - **The rope** is a counted B-tree over the sequence's spans in order, each entry a span id and its length, each node the total length below it.
   It finds the span that holds a position, splits one, and cuts and inserts runs, each in `O(log k)`.
-  The schema's and the private state's chains are short and written only by flushes, so a list serves them.
+  The schema's and the private state's chains are short and written only by flushes, so a list serves them (unless having a single, reused, chain implementation based on a B-tree is easier).
 - **The page table** is as today: kind, epoch, coverage, and buckets for victim selection.
   A data page's coverage counts the bytes reached spans show in it; a table page's, the live statements' bytes and their inline payloads.
 - **The reverse index** lists, for each data page, the spans that show bytes in it, for [evacuation](../impl/consolidation.md#finding-the-referrers-of-a-data-page).
 - **The span id allocator** hands out the lowest free id, and runs of consecutive free ids where a flush states consecutive spans.
+
+@Claude: should the span table and the page contain a free-list in their empty entries?
 
 The fragment map, the statement slab, the allocation map, the recyclable set, pins and `mentions` all go.
 A statement is live exactly while it is the span table's statement for a span the rope holds, so liveness needs no counter at all.
@@ -444,7 +508,7 @@ A statement is live exactly while it is the span table's statement for a span th
 1. Read the headers and take the governing one, as today.
 2. Read every table page the header reaches, and keep, for each span id, the statement of the highest epoch, in the span table; no sorting is needed.
 3. Walk each chain from its head, building the rope, and refuse the file on a missing id, a span reached twice, or a span two chains share; count each reached span's statement and data toward its pages' coverage.
-4. Read the data pages the reached spans show.
+4. Read the data pages the reached spans show. @Claude: is this really an extra step, i.e., do we really read the data explicitly first or is this part of Step 5 below?
 5. Decode the sequence through a cursor that follows the rope: the root type's `decode` reads front to back, and every container builds its index of children as it goes.
 6. Replay the journal.
 
@@ -494,7 +558,7 @@ pub trait Persistable: Sized {
     const FIXED_SIZE: Option<usize>;
 
     fn encoded_len(&self) -> usize;
-    fn encode(&self, out: &mut Vec<u8>);
+    fn encode(&self, out: &mut Vec<u8>); // @Claude: why does this take a &mut Vec<u8>? Does it append to it? Why the asymmetry to `decode`, which takes a dedicated `Decoder` type?
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Error>;
 
     type Guard<'r, B: WriteBackend>: Guard<Persistable = Self>;
@@ -504,7 +568,7 @@ pub trait Persistable: Sized {
 }
 ```
 
-A `Region` is the value's substring: `len()`, `write(at, bytes)`, `splice(at, removed, bytes)`, `move_bytes(from, len, to)`, and `child(at, len, node, index)`, which hands out a subregion whose changes of size are reported to `node`, the container's index, as the `variable-size` branch's `Link` and `Node` report them.
+A `Region` is the value's substring: `len()`, `write(at, bytes)`, `splice(at, removed, bytes)`, `move_bytes(from, len, to)`, and `child(at, len, node, index)`, which hands out a subregion whose changes of size are reported to `node`, the container's index, as the `variable-size` branch's `Link` and `Node` report them. @Claude: break this sentence into 2, and explain in different words what `child` does (I don't understand it as written).
 Every offset is relative to the region's start, and every method refuses one outside it.
 A child borrows its parent region mutably, so the parent cannot write while a child exists, and a sibling cannot move it.
 
@@ -519,7 +583,7 @@ pub fn push(&mut self, value: T) -> Result<(), Error> {
         r.splice(r.len(), 0, &element)?;
         r.splice(0, varint_len(n), &varint(n + 1))
     })?;
-    self.vec.sizes.push(element.len());
+    self.vec.sizes.push(element.len()); // @Claude: is this where the Fenwick tree update would happen (and a no-op for fixed-size `T`)?
     self.vec.items.push(value);
     Ok(())
 }
@@ -544,12 +608,15 @@ An application reaches a value one level at a time, `drawing.guard().shapes_mut(
 The start a guard holds stays right for as long as the guard lives: the guard borrows its parent mutably, so nothing before its value can change size meanwhile, and its value's own changes of size move only what lies behind it.
 Iterating needs no index at all: a guard that steps through a container's elements adds each element's size to the start of the one before.
 
+@Claude: **Important:** so can we still do `split_at_mut` on arrays and vectors, and destructure structs and enums like we can today with `guard.parts()`? How would this work? How would a mutation of an earlier part that changes its size followed by a mutation of a later part work out?
+
 **A change of size walks the same chain back up**, since it changes the encoded size of every value around the one that changed: each ancestor updates its cached total and its index's entry for the child the change came from.
 That is one update per level, at the index's cost, where today a slotted value never changes size and a change of an allocation's size concerns no other allocation.
 
 **So the depth is not a cost of the design, and the logarithm per level is a choice of index.**
 Every mutation walks the chain from the root to its value, here and today, so a constant per level adds nothing that grows with the file.
 What a level adds beyond a constant is its container's index: nothing for fields and for fixed-size elements, and for variable-size elements `O(1)` with an array of starts, at `O(m)` per change of size, or `O(log m)` with a Fenwick tree.
+@Claude: clarify, isn't the cost now *per mutation*, where it previously was only the cost to get the guard in the first place, and then every mutation on the guard was O(1)? Don't change the proposal for this, just tell me if I understood it correctly and clarify this paragraph accordingly.
 
 **Indexes that weigh elements by their encoded size make the whole chain cost `O(depth + log n)`, as one tree over every value's position would, with no such tree.**
 In a tree over a container's elements in which an element of `w` bytes, in a container of `W`, lies at depth `O(1 + log(W / w))` — a biased search tree (Bent, Sleator and Tarjan, "Biased Search Trees", SIAM Journal on Computing, 1985), or a splay tree, whose amortized cost of access is the same for any weights (Sleator and Tarjan, "Self-Adjusting Binary Search Trees", Journal of the ACM, 1985) — the lookups from the root, of `n` bytes, down to a value of `w` bytes cost `O(depth + log(n / w))` in all, since each level's `log(W / w)` cancels against the next level's.
@@ -560,14 +627,17 @@ That pays for deep nesting of large containers, a document tree whose nodes hold
 ### The built-in containers
 
 - **`PersistableVec<T>`**: the count, then the elements; in memory, a `Vec<T>`, and for variable-size `T` a Fenwick tree of the elements' sizes, [choice C](#c-what-a-container-keeps-to-find-its-children).
-  A push and an insertion are a splice and a count, a removal likewise, a reordering a `Move`, and a size change of an element a report that updates one entry of the tree.
+  A push and an insertion are a splice and a count, a removal likewise, a reordering a `Move`, and a size change of an element a report that updates one entry of the tree. @Claude: Are you talking about the Fenwick tree here? Doesn't a size change require updating O(log size_of_container) entries in a Fenwick tree?
 - **`PersistableString`**: the length in bytes, then UTF-8; in memory, a `String`, or a rope for long text, which then needs no container of its own, since the file already takes splices in long text at constant cost.
 - **`PersistableMap<K, V>`**: the count, then the entries in insertion order; in memory, a map from key to slot, slots in entry order with their sizes in a Fenwick tree, and removed slots kept as holes of size zero until the map compacts them, in memory only.
+  @Claude: why not a map `K → (u32, V)` plus the Fenwick tree, where the `u32` is the index into the serialized storage? I don't think a running kladde session ever needs the reverse mapping from on-file index to `(K, V)`. Also, since removals are now cheap but tombstones somewhat awkward, is there an efficient way to keep the map as a dense `Sequence((K, V))` on the file by splicing out a removed entry instead of overwriting it with a tombstone, and somehow efficiently maintain the in-memory key-to-index mapping?
 - **`PersistableBlob<T>`**: opaque, its serde payload prefixed with its length.
 
 ### Evolution
 
-**A change of schema is no more invasive here than today: reading a writer's schema works as it does, an upgrade writes again only the values whose encoding changed, and only the *retain* mode, writing in the writer's schema, gets dearer, because of packed encodings rather than of one sequence.**
+More detailed specification and implementation of schema evolution is deferred until an initial empirical evaluation reveals whether the proposal in this document should be kept in the first place.
+
+**A change of schema is no more invasive here than today: reading a writer's schema works as it does, an upgrade writes again only the values whose encoding changed, and only the *retain* mode, writing in the writer's schema, gets dearer, because of packed encodings rather than of one sequence.** @Claude: is "dearer" a common technical term in this context? If not, replace it with a more normal word, also below (I don't know what "dearer" means in this context; it can mean "something I like more" but also "more precious" in the sense of "more brittle", which would be something to avoid).
 
 **Reading is unchanged.**
 The schema chain holds the writer's descriptors and the header its root fingerprint; a reader whose fingerprint matches decodes natively, and one whose fingerprint differs resolves the writer's types against its own once, as [evolution](../spec/schema/evolution.md#what-is-settled) settles it, into a plan per type.
@@ -578,7 +648,7 @@ Today's header names one schema table and one root fingerprint, as this design's
 Until one is, the whole file decodes by one schema at every commit, here as there, so a session that opens a file with a different schema either upgrades everything whose layout changed before its first commit, or writes in the writer's schema all session.
 
 **Upgrading costs the same order here as there: the bytes of what changed.**
-Values whose type is unchanged keep their bytes, and so do values whose type changed in a way their bytes do not show, such as an enum that gained a variant they do not hold; the upgrade encodes the others again, compares, and splices the new encoding in wherever the bytes differ.
+Values whose type is unchanged keep their bytes, and so do values whose type changed in a way their bytes do not show, such as an enum that gained a variant they do not hold; the upgrade encodes the others again, compares, and splices the new encoding in wherever the bytes differ. @Claude: I don't understand what this is saying. Explain the scenario you are considering, then clarify what "the others" refers to and which two things the upgrade compares.
 Each splice states a constant number of spans besides its new bytes, and where changed values lie densely, as in a vector whose element type gained a field, [the span policy](#b-how-short-spans-may-stay) writes their container's region again as one span, as today's upgrade writes the vector's allocation again.
 Nothing behind a changed value is restated, although all of it moves, since no position is stored on file.
 The upgrade is a flush at open that folds these splices along with the new schema chain, before the application gets the file, and needs no journal: a crash before it commits leaves the old file, and the next open upgrades again.
@@ -613,6 +683,8 @@ Nothing in the span format or the journal changes: capsules are a matter of the 
 - **A tool decodes the whole file from the schema chain**: every container is structural, there is no pointer graph to follow, and nothing can leak, so the leak checker of [conformance](../spec/conformance.md#the-suite) has nothing to look for.
 - **A differential oracle becomes one comparison**: after every operation, the sequence must equal the canonical encoding of the in-memory root, byte for byte.
 - **The store can be tested on its own** against a plain `Vec<u8>`: any series of `Write`, `Splice` and `Move`, flushes, reopens and simulated power cuts must leave the chain holding the vector's bytes.
+- The specification should eventually also define a canonical textual representation of kladde files, as well as canonical conversions to and from common human readable serialization formats like json.
+  These text-based representations should only cover the content of the sequences, not how the sequences are split up into spans.
 
 ### Segments, later
 
@@ -654,9 +726,17 @@ The format already has three chains, so a fourth kind changes the header's field
 | parts of a file in different schema versions | not supported; a capsule would take an allocation | not supported; a capsule would be inline |
 | tooling | opaque containers, a pointer graph | a decode from the schema |
 
+@Claude: are all the terms we use still adequate in this new design? Make a list of terms that should no longer be used in a specification of the proposed design. Check if the following terms belong there and what we should call their replacements:
+- "address table"
+- "statement" — this was motivated in the old design because statements could partially shadow each other there. They can still shadow each other as a whole in the new design, but maybe "entry" would be better? I'm not sure.
+- You refer to entries in the journal as "records". Today's spec refers to them as "ops" or "operations". Which one is better? I'm open to either.
+- Is "span" a good term for what it is or is there a better established term for what it in the literature? The proposal uses "piece" for something else in the fold; is that a good distinction or should what we call "span" now be called "piece" and what we call "piece" now be renamed to something else? 
+
+
 ## How to get there
 
 kladde-rs is a testbed, so the way to judge this is to build it on a branch, in four stages, each tested before the next:
+@Claude: which of the active branches in `kladde-rs` would be the best starting point? I've been continuously updating several branches in parallel with cherry-picked commits from other branches to compare different consolidation strategies as their shared base system evolved. Which ones have the variable-size proposal already cherry-picked in and not too many other experimental ideas?
 
 1. **The store**: chains of spans, the three journal records, the fold, the flush, consolidation and open, behind a byte-sequence interface, tested against a `Vec<u8>` with reopens and simulated power cuts.
 2. **Persist**: `Region`, `Node`, `encode`, `decode`, `FIXED_SIZE`, `Fixed<T>`, and the derive.
@@ -671,7 +751,7 @@ The specification and the implementation documents would change only once those 
 - **Where to split and where to rewrite** on an overwrite, and whether shadowing statements earn their way back for some workload.
 - **The containers' indexes**: whether a Fenwick tree is the right default, what an application with millions of variable-size elements should use, and whether any data model nests deeply enough for size-weighted indexes to pay.
 - **Moving values between containers**: whether cut and paste is worth a scratch chain and a chain number in `Move`.
-- **Memory for very large files**: the rope costs about 16 bytes per span plus the span table's 16; for a file of a gigabyte that is cold, spans of a page keep that near 8 MB, but a file edited everywhere at once would not be.
+- **Memory for very large files**: the rope costs about 16 bytes per span plus the span table's 16; for a file of a gigabyte that is cold, spans of a page keep that near 8 MB, but a file edited everywhere at once would not be. @Claude: fix the grammar of this sentence.
 - **Opaque types**: whether declaring a fixed size is enough, or whether some want both modes.
 - **Capsules**: whether to bring back schema versions per subtree, [inline](#mixing-schemas-capsules), so that a large file whose element type changed can upgrade a part at a time rather than every element at the first open.
 - **Segments**: how a reference to another chain looks in the schema, in the journal, and in a transaction.
