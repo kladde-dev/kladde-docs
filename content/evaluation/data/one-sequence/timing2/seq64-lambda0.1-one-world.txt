@@ -1,0 +1,10 @@
+world-map: 1101801 bytes of SVG, 792547 live bytes in kladde, 2528 elements to edit (2316 without children), 2213 paths, 0 texts
+svg-world-map: 177 rows in 55.6 s
+177831 edits storing 12238132 bytes (68.8 per edit), 647 flushes, 177 of them at rows
+  mix: Drag 30.0 %, MoveNode 20.0 %, InsertNode 8.0 %, DeleteNode 7.0 %, Recolor 15.1 %, Duplicate 7.6 %, Delete 7.3 %, Restack 5.0 %, Text 0.0 %
+kladde wrote 110633581 bytes: 622 per edit, 9.04 per byte stored; the file is 1331200 bytes, 1.66 times its live size
+the file holds 2719 spans for 800361 bytes of sequence: 194 live data pages and 11 live table pages
+saving the canonical SVG (1005908 bytes before, 1069891 after) would write per edit: 1069891 after every edit, 10699 every 100, 1070 every 1000
+edits: 38428 per second in kladde's calls; flushes take 5.1 ms at the median
+closed: the file takes 1331200 bytes, 1.66 times the live size
+opening: parsing the SVG took 14.9 ms, reopening the closed kladde file 8.40 ms at the median of 21; writing the SVG took 34.7 ms

@@ -705,6 +705,117 @@ def text_tradeoff(runs, out):
     save(fig, out, "text-tradeoff", rect=(0, 0, 1, 0.9))
 
 
+# The one-sequence branch, by the bound `L` its span policy ran with, and
+# main's churn floor, by layout, which the one-sequence figures compare it
+# with: label, colour, marker, and whether the curve is drawn dashed.
+SEQ_CURVES = {
+    ("seq256", "one"): ("one sequence, L = 256", "#e8a33d", "o", False),
+    ("seq64", "one"): ("one sequence, L = 64", "#c4352b", "s", False),
+    ("seq32", "one"): ("one sequence, L = 32", "#6b1f5c", "D", False),
+    ("main", "base"): ("main, base", "#9cc3ec", "o", True),
+    ("main", "packed"): ("main, packed", "#4f8fd6", "^", True),
+    ("main", "small"): ("main, small", "#1d4f91", "v", True),
+}
+SEQ_TEXT_CURVES = {
+    ("seq256", "text"): SEQ_CURVES[("seq256", "one")],
+    ("seq64", "text"): SEQ_CURVES[("seq64", "one")],
+    ("seq32", "text"): SEQ_CURVES[("seq32", "one")],
+    ("main", "text"): ("main", "#4f8fd6", "^", True),
+}
+
+
+def seq_series(runs, prefix, layouts):
+    """{(policy, λ, layout): {name: rows}} for the runs labelled
+    `policy/lambda/value/layout`, of main's churn floor or of a span policy
+    of the one-sequence branch, whose tables start with `prefix`."""
+    out = {}
+    for label, run in runs.items():
+        parts = label.split("/")
+        if len(parts) != 4 or parts[1] != "lambda" or parts[3] not in layouts:
+            continue
+        if (parts[0], parts[3]) not in SEQ_CURVES and (parts[0], parts[3]) not in SEQ_TEXT_CURVES:
+            continue
+        tables = {name[len(prefix):]: next(iter(table.values()))
+                  for name, table in run.items() if name.startswith(prefix)}
+        if tables:
+            out[(parts[0], float(parts[2]), parts[3])] = tables
+    return out
+
+
+def seq_steady(rows, absolute):
+    """The bytes written per edit over the second half of a run, and the
+    live pages averaged over it: in KiB if `absolute`, else over the live
+    size."""
+    half = rows[len(rows) // 2:]
+    mid, end = rows[len(rows) // 2 - 1], rows[-1]
+    if absolute:
+        live = statistics.mean((r["data_pages"] + r["table_pages"]) * PAGE for r in half) / 1024
+    else:
+        live = statistics.mean((r["data_pages"] + r["table_pages"]) * PAGE / r["alloc_bytes"] for r in half)
+    return (written(end) - written(mid)) / (end["ops"] - mid["ops"]), live
+
+
+def seq_curves(ax, series, table, curves, absolute=False):
+    """A curve per entry of `curves` through its runs' settings of λ, from
+    λ = 1, hollow, down to 0.1; main's dashed."""
+    for (policy, layout), (label, color, marker, dashed) in curves.items():
+        settings = sorted((-v, tables[table]) for (p, v, l), tables in series.items()
+                          if p == policy and l == layout and table in tables)
+        points = [seq_steady(rows, absolute) for _, rows in settings]
+        if not points:
+            continue
+        xs, ys = [x for x, _ in points], [y for _, y in points]
+        ax.plot(xs, ys, "--" if dashed else "-", color=color, lw=1.2, marker=marker, ms=4,
+                mec="white", mew=0.8, label=label)
+        ax.plot(*points[0], marker=marker, ms=4.5, color=color, mfc="white", mew=1.0)
+
+
+def seq_svg_tradeoff(runs, out):
+    """The one-sequence branch's trade-off between space and writes on the
+    drawings, against main's churn floor in its three layouts: a column per
+    drawing, live pages over the live size above, and live pages in KiB
+    below, against the bytes written per edit."""
+    series = seq_series(runs, "svg-", {"base", "packed", "small", "one"})
+    if not any(p != "main" for p, _, _ in series):
+        return
+    fig, axes = plt.subplots(2, 3, figsize=(7.5, 5.6), squeeze=False)
+    for j, (drawing, name) in enumerate(DRAWINGS.items()):
+        for i, absolute in enumerate((False, True)):
+            ax = axes[i][j]
+            seq_curves(ax, series, drawing, SEQ_CURVES, absolute)
+            if i == 0:
+                ax.set_title(name, fontsize=8.5)
+            else:
+                ax.set_xlabel("bytes written per edit")
+        axes[0][j].set_ylim(bottom=1.0)
+    axes[0][0].set_ylabel("live pages / live size")
+    axes[1][0].set_ylabel("live pages, KiB")
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3, fontsize=7.5, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+    save(fig, out, "seq-svg-tradeoff", rect=(0, 0, 1, 0.92))
+
+
+def seq_text_tradeoff(runs, out):
+    """As `seq_svg_tradeoff`, for text-bench's typing: a panel per text, live
+    pages over the live size against the bytes written per keystroke."""
+    series = seq_series(runs, "text-", {"text"})
+    if not any(p != "main" for p, _, _ in series):
+        return
+    texts = sorted({t for tables in series.values() for t in tables}, key=lambda t: int(t.rstrip("k")))
+    fig, axes = plt.subplots(1, len(texts), figsize=(7.5, 3.0), squeeze=False)
+    for ax, text in zip(axes[0], texts):
+        seq_curves(ax, series, text, SEQ_TEXT_CURVES)
+        ax.set_title(f"a text of {text[:-1]} KiB at the start", fontsize=8.5)
+        ax.set_xlabel("bytes written per keystroke")
+        ax.set_ylim(bottom=1.0)
+    axes[0][0].set_ylabel("live pages / live size")
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=len(labels), fontsize=7.5, frameon=False,
+               bbox_to_anchor=(0.5, 1.0))
+    save(fig, out, "seq-text-tradeoff", rect=(0, 0, 1, 0.9))
+
+
 def svg_pages(runs, out):
     """What a file holds, averaged over the second half of each run, in
     multiples of the live size: data pages, leaves, free pages, and the
@@ -785,7 +896,8 @@ def main():
         label, _, directory = spec.partition("=")
         runs[label] = load(directory)
     figures = [space_amplification, mixed, live_fraction, write_breakdown, budget, shrink, description, flush_latency,
-               throughput, tradeoff, defrag_share, kappa, svg, svg_tradeoff, svg_pages, text_tradeoff]
+               throughput, tradeoff, defrag_share, kappa, svg, svg_tradeoff, svg_pages, text_tradeoff,
+               seq_svg_tradeoff, seq_text_tradeoff]
     only = set(args.only.split(",")) if args.only else None
     for figure in figures:
         if only is None or figure.__name__.replace("_", "-") in only:

@@ -1,0 +1,6 @@
+text-512k: 100 rows in 4.3 s
+100000 keystrokes on a text of 524288 bytes, now 700340: 84838 typed, 10186 deleted, 4469 moves, 507 pastes, storing 186238 bytes; 100 flushes, 100 of them at rows
+kladde wrote 4814828 bytes, 48.1 per keystroke: journal 9.6, data pages 25.7, table pages 8.7, headers 4.1
+per keystroke: 0.71 entries stated, 0.044 spans split, 0.1 bytes of short spans written again, 0.4 bytes merged as entries left the header, 9.5 by the walk
+the file holds 1802 spans, 7 table pages and 181 data pages; flushes take 6.7 ms at the median
+closed: the file takes 917504 bytes, 1.31 times the text; reopening it takes 7.14 ms at the median of 21

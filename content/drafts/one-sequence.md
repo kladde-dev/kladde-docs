@@ -609,7 +609,7 @@ A splice that lands in content the same flush wrote costs nothing beyond it, as 
 Consolidation, placement, [the header as write buffer](../impl/flush.md#the-header-as-write-buffer) and the commit follow as today, with heat kept per span, and evicted runs of spans contiguous in id and merged to the bound as they leave the header.
 
 kladde-rs's flush makes a run of 32 zeros or more among the new bytes a `Zero` span, and merges evicted spans that are contiguous in the sequence rather than in id, extending each run while a neighbour whose entry also goes to a leaf makes a pair shorter than the bound.
-Its span policy has five constants: the bound `L`, `Options::span_min`, 64 bytes; the length below which a `Ref` cut by an edit is written again rather than split, `Options::rewrite_below`, 64 bytes; the inline threshold, 64 bytes; the flushes after which a span counts as cold for the walk, 16; and `μ`, 0.02.
+Its span policy has five constants, whose defaults [measurements](../evaluation/one-sequence.md#the-span-policy) chose: the bound `L`, `Options::span_min`, 64 bytes; the length below which a `Ref` cut by an edit is written again rather than split, `Options::rewrite_below`, 64 bytes; the inline threshold, 64 bytes; the flushes after which a span counts as cold for the walk, 16; and `μ`, 0.02.
 
 ### Consolidation
 
@@ -999,6 +999,7 @@ The three `*-svg` branches have the same base, each with a ripeness policy on to
 **kladde-rs's branch `one-sequence` builds the four stages on `b1a7f90`, in eight commits from `cbb1617` to `b2d0649`**, which the sections above annotate where the implementation differs from the proposal.
 Stage 2 is two commits, the schema's descriptors and persist, and the derive arrives with the facade; stage 4 ports `text-bench` too, and the last commit sets the span policy's defaults to what the measurements found.
 Two things went that measured what this design removes: kladde-svg's packed and small layouts, since every list and string is inline in one sequence, which leaves one layout; and kladde-bench's synthetic scenarios, which allocated, resized and freed.
+[The file as one sequence, measured](../evaluation/one-sequence.md) compares the branch with main's churn floor on the drawings and texts of [Cleaning edited drawings and texts](../evaluation/cleaning-edits.md).
 
 ## Open questions
 
