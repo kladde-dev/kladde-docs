@@ -589,7 +589,8 @@ That is `O(entries + n)`, as today, and simpler: no sweep resolving bytes across
 **kladde-rs differs in three steps.**
 
 - It writes a span table of two levels, the header and the leaves it names, and refuses at step 2 a leaf that names table pages of its own.
-  The header's room for references to leaves bounds a file to about a thousand leaves, some half a million spans: a sequence of about 100 MB in spans of the length the measurements find, and enough for every workload measured.
+  The header's room for references to leaves, one or two bytes each, bounds a file to some 2,000 to 4,000 leaves, one to two million spans: a sequence of a few hundred MB in spans of the length the measurements find, and far more than any workload measured, the largest of which takes 21 to 26 leaves.
+  ⚠️ Beyond the bound, a flush fails, and since opening flushes the replayed journal, the file no longer opens; kladde-rs's `later.md` records the fix, interior table pages.
 - Its decode recurses without a limit on its depth.
 - It replays the journal before the decode, by folding the recovered transactions in a flush at open, so that the decode reads the state after the last of them; the decode then needs no replay of its own.
 
@@ -996,8 +997,8 @@ It holds main's seven newest commits, ported, the whole `variable-size` branch, 
 The first is a store change that this redesign replaces anyway, and the second is what stage 4's measurements want.
 The three `*-svg` branches have the same base, each with a ripeness policy on top, and `variable-size` and `text-bench` lack main's seven newest commits.
 
-**kladde-rs's branch `one-sequence` builds the four stages on `b1a7f90`, in eight commits from `cbb1617` to `b2d0649`**, which the sections above annotate where the implementation differs from the proposal.
-Stage 2 is two commits, the schema's descriptors and persist, and the derive arrives with the facade; stage 4 ports `text-bench` too, and the last commit sets the span policy's defaults to what the measurements found.
+**kladde-rs's branch `one-sequence` builds the four stages on `b1a7f90`, in nine commits from `cbb1617` to `0792da3`**, which the sections above annotate where the implementation differs from the proposal.
+Stage 2 is two commits, the schema's descriptors and persist, and the derive arrives with the facade; stage 4 ports `text-bench` too; `b2d0649` sets the span policy's defaults to what the measurements found, and `0792da3` makes a span table that outgrows its header fail the flush rather than loop.
 Two things went that measured what this design removes: kladde-svg's packed and small layouts, since every list and string is inline in one sequence, which leaves one layout; and kladde-bench's synthetic scenarios, which allocated, resized and freed.
 [The file as one sequence, measured](../evaluation/one-sequence.md) compares the branch with main's churn floor on the drawings and texts of [Cleaning edited drawings and texts](../evaluation/cleaning-edits.md).
 
