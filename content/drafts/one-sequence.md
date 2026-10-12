@@ -305,9 +305,10 @@ The price is that the fold and the replay keep every cut of a transaction until 
 **The fold resolves a cut and its paste as a move**: the cut is the list of pieces that its splice removed from the fold's piece table, and the paste inserts that list, so the flush states three to six spans for the two, however large the value, and writes none of its bytes.
 Replay at open does the same.
 
-**In kladde-rs**, a container's `cut(i)` splices element `i` out as `remove(i)` does, and returns a `Cut<'s, T>`: the in-memory value, and the cut's number in the store's open transaction, which the `Cut` holds open, nested in any the application opened, for as long as it lives.
+**In kladde-rs**, a container's `cut(i)` splices element `i` out as `remove(i)` does, and returns a `Cut<T, B>`, with `B` the guards' handle on the store, `&Store`: the in-memory value, and the cut's number in the store's open transaction, which the `Cut` holds open, nested in any the application opened, for as long as it lives.
 
-- Methods that take a value — `push`, `insert`, a field's `set` — take a `Cut<T>` too, record a `Paste` instead of the value's encoding, and move the value into memory.
+- Methods that take a value — `push`, `insert`, a field's `set` — take a `Cut<T, B>` too, record a `Paste` instead of the value's encoding, and move the value into memory.
+  kladde-rs gives them methods of their own, `push_cut` and `insert_cut`, since one method taking either a value or a cut would need a conversion trait whose two impls Rust's coherence rules make fragile.
 - A `Cut` dereferences to its value but gives no mutable access, since its bytes must stay the value's encoding until they are pasted.
 - It is neither `Copy` nor `Clone`, and typed by its value's type, so it is pasted at most once, and a `Cut<Fixed<Shape>>` cannot go where a `Shape` goes.
 - It borrows the store, not the guard it came from, so the application can drop the source's guard and make the destination's while it holds the cut.
@@ -315,6 +316,8 @@ Replay at open does the same.
   A drop cannot return the failure of its append, so it poisons the store instead, and the next call reports it, rather than panicking in `drop`.
 - `remove` stays, for a value the application wants as a value, outside any transaction.
 - Any guard method that splices a value out can return it as a cut: a field's `replace`, an `Option`'s `take`, or a change of an enum's variant, for the fields of the old variant.
+
+kladde-rs implements cuts on the vector only, `PersistableVec`'s `cut`, `insert_cut` and `push_cut`; the map, fields, `Option` and enums neither make nor take them yet.
 
 **What it costs:**
 
@@ -435,6 +438,8 @@ A terminator has to be a byte that the content cannot hold, so only text has one
 
 **The descriptors change accordingly.**
 `Sequence`, `Text` and `Fixed` are new kinds, the reserved `Array` kind takes the encoding above, and an opaque descriptor gains its size mode.
+kladde-rs gives the new kinds the tags 133, 134 and 135, leaves the pointer's 132 unused, writes the size mode as one varint, 0 for a length prefix and one more than the size otherwise, and keeps the enum descriptor's discriminant width, which only the fixed form uses.
+Its rules of nesting are two: a `Fixed` wrapper holds a type that has a fixed form, and a type reaches itself only through an enum or a sequence, whose discriminant or count can end the recursion; a struct that holds itself through structs and arrays alone has no finite value.
 The reserved `Pointer` kind is not needed, nor are the variable-size draft's `Small`, `Packed` and `Slotted`: with nothing to spill into, every short string and short list is inline, as a small value's content is there, and so is every long one.
 Containers are described structurally, which settles [the container problem](../spec/tooling.md#the-container-problem) by its first option, and the fixed-size property is derived from the descriptors, so a reader and a tool compute it as a writer does.
 
@@ -553,15 +558,20 @@ The private chain keeps the rules of the [consolidator state](../spec/file-forma
 - **The rope** is a counted B-tree over the sequence's spans in order, each entry a span id and its length, each node the total length below it.
   It finds the span that holds a position, splits one, and cuts and inserts runs, each in `O(log k)`.
   The schema's and the private state's chains are short and written only by flushes, so a list serves them (unless having a single, reused, chain implementation based on a B-tree is easier).
+  kladde-rs keeps the rope as an implicit treap instead, a randomized binary tree whose nodes know their parent and the total length below them, in the same arena type as the fold's piece table; it costs `O(log k)` expected steps, and a node of 40 bytes per span.
 - **The page table** is as today: kind, epoch, coverage, and buckets for victim selection.
   A data page's coverage counts the bytes reached spans show in it; a table page's, the live entries' bytes and their inline payloads.
 - **The reverse index** lists, for each data page, the spans that show bytes in it, for [evacuation](../impl/consolidation.md#finding-the-referrers-of-a-data-page).
 - **The span id allocator** hands out the lowest free id, and runs of consecutive free ids where a flush states consecutive spans, from a bitmap of free ids with a summary bit per word, which finds either in a few scans of words.
   A free list threaded through the span table's empty entries would cost no memory of its own, but would hand ids out in the order they were freed, which scatters them, while low, consecutive ids are what keep id deltas short and successors implicit.
   The page table hands out reusable pages lowest first from an ordered set, as today, for a reason of the same kind: it keeps the file's live pages low, where truncation can follow.
+  kladde-rs hands out the id after the predecessor's, if it is free, and the lowest free id otherwise, which keeps the spans a flush makes one after another consecutive without looking for a run.
 
 The fragment map, the statement slab, the allocation map, the recyclable set, pins and `mentions` all go.
 An entry is live exactly while it is the span table's entry for a span the rope holds, so liveness needs no counter at all.
+
+**kladde-rs's span table takes 48 bytes per span, not 16**, since each record also holds the span's chain, its rope node, its heat, its entry's size and place in its table page, and its place in its data page's reverse list, which the store keeps in the span table rather than beside it.
+With the rope's node, a span costs about 90 bytes in memory, against the 32 [the open questions](#open-questions) assume.
 
 ### Opening a file
 
@@ -575,6 +585,13 @@ An entry is live exactly while it is the span table's entry for a span the rope 
 6. Replay the journal.
 
 That is `O(entries + n)`, as today, and simpler: no sweep resolving bytes across epochs, no clipping at sizes, no tombstones.
+
+**kladde-rs differs in three steps.**
+
+- It writes a span table of two levels, the header and the leaves it names, and refuses at step 2 a leaf that names table pages of its own.
+  The header's room for references to leaves bounds a file to about a thousand leaves, some half a million spans: a sequence of about 100 MB in spans of the length the measurements find, and enough for every workload measured.
+- Its decode recurses without a limit on its depth.
+- It replays the journal before the decode, by folding the recovered transactions in a flush at open, so that the decode reads the state after the last of them; the decode then needs no replay of its own.
 
 ### The flush
 
@@ -591,6 +608,9 @@ A splice that lands in content the same flush wrote costs nothing beyond it, as 
 **Around each edited place, the span policy then merges what it wants merged**, [choice B](#b-how-short-spans-may-stay), reading the bytes of committed spans from their data pages.
 Consolidation, placement, [the header as write buffer](../impl/flush.md#the-header-as-write-buffer) and the commit follow as today, with heat kept per span, and evicted runs of spans contiguous in id and merged to the bound as they leave the header.
 
+kladde-rs's flush makes a run of 32 zeros or more among the new bytes a `Zero` span, and merges evicted spans that are contiguous in the sequence rather than in id, extending each run while a neighbour whose entry also goes to a leaf makes a pair shorter than the bound.
+Its span policy has five constants: the bound `L`, `Options::span_min`, 64 bytes; the length below which a `Ref` cut by an edit is written again rather than split, `Options::rewrite_below`, 64 bytes; the inline threshold, 64 bytes; the flushes after which a span counts as cold for the walk, 16; and `μ`, 0.02.
+
 ### Consolidation
 
 **The three debts of [today's picture](../impl/consolidation.md#the-high-level-picture) remain, and each gets simpler.**
@@ -603,12 +623,16 @@ Consolidation, placement, [the header as write buffer](../impl/flush.md#the-head
   The walk can also give a run of spans consecutive ids, so that their successors become implicit, which plays the part today's window plays for delta encoding.
 - **Outer fragmentation**, truncation, [compaction mode](../impl/consolidation.md#compaction-mode) and [pacing](../impl/consolidation.md#pacing) stay as they are.
 
+kladde-rs implements none of the three refinements: its evacuation writes a victim's spans as they are, splitting the one that crosses the end of the page it fills rather than leaving the rest of the page empty; its walk merges runs of cold spans and renumbers nothing; and it keeps main's churn floor, budget controller and free filling unchanged, over pages of spans.
+
 ### The API for application authors
 
 **Unchanged in shape: `Kladde<T>`, guards, the derive, transactions and batches.**
 What changes is the menu of containers.
 There is one vector, one string and one map, with no small, slotted or packed variants beside them; an author who wants a fixed-size element or field writes `Fixed<u32>` or `Fixed<Shape>`.
 A `Box<T>` is persisted as the `T` it holds, with `T`'s encoding, descriptor and fingerprint, so boxing a field changes nothing on file; it is how a recursive type, such as a tree whose nodes hold their children inline, gets a size in Rust.
+In kladde-rs a box's `FIXED_SIZE` is `None` whatever `T`'s, since a type that holds itself through a box would otherwise ask its own size of itself while the compiler evaluates it; a vector of boxes then keeps an index it could do without, and nothing on file changes.
+The guard of a `Fixed<T>` in kladde-rs replaces the value whole, an overwrite of its fixed size, since a guard of one of `T`'s fields would have to write that field in its fixed form, which takes a second guard for every type.
 Vectors gain `move_element`, which reorders without writing an element's bytes.
 `remove` still returns the value, and `delete` is `remove` that drops it: both splice its bytes out of the file, and neither has anything to free.
 
@@ -620,23 +644,34 @@ Vectors gain `move_element`, which reorders without writing an element's bytes.
 pub trait Persistable: Sized {
     /// `Some(n)` if every value encodes to `n` bytes.
     const FIXED_SIZE: Option<usize>;
+    /// The size of the fixed form that `Fixed<Self>` holds, if there is one.
+    const FIXED_FORM_SIZE: Option<usize> = None;
 
     fn encoded_len(&self) -> usize;
     fn encode(&self, out: &mut Encoder<'_>);
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Error>;
+    fn encode_fixed(&self, out: &mut Encoder<'_>) { unreachable!() }
+    fn decode_fixed(input: &mut Decoder<'_>) -> Result<Self, Error> { /* fails */ }
 
-    type Guard<'r, B: WriteBackend>: Guard<Persistable = Self>;
-    fn guard<'r, B: WriteBackend>(&'r mut self, region: Region<'r, B>) -> Self::Guard<'r, B>;
+    type Guard<'r, B: Backend + 'r>: Guard where Self: 'r;
+    fn guard<'r, B: Backend + 'r>(&'r mut self, region: Region<'r, B>) -> Self::Guard<'r, B>;
 
-    fn describe(builder: &mut SchemaBuilder) -> TypeDescriptor;
+    fn describe_local(builder: &mut SchemaBuilder) -> TypeDescriptor;
 }
 ```
 
+That is the trait as kladde-rs implements it, which differs from the sketch in three places.
+`Fixed<T>` needs `T`'s fixed form, so every type that has one encodes and decodes it, and states its size, which the derive adds up as it adds up `FIXED_SIZE`.
+`Backend` is any `WriteBackend` that is `Copy`, such as `&Store`, so that a guard hands its backend to its children and to a cut by value.
+And a guard's `Persistable` need not be `Self`, since a `Box<T>` uses `T`'s guard.
+
 `encode` appends the value's encoding to an `Encoder`, and `decode` reads it from a `Decoder`; they differ because writing goes into one buffer, while reading crosses spans.
 An `Encoder` appends to a buffer it borrows, which is the payload of the journal record being written, whose length `encoded_len` has already given, so a value is encoded once, straight into its transaction, and it offers varints, zigzag and UTF-8 with its terminator.
+In kladde-rs, the buffer is one of the value's own, which the store then copies into the record, a copy of the value's bytes that a store method taking an encoding closure would save.
 A `Decoder` reads the sequence from the mirror through the rope, across span boundaries, without copying, and says where a decode failed.
 
 A `Region` is the value's substring, with `len()`, `write(at, bytes)`, `splice(at, removed, bytes)`, `splice_value(at, removed, &value)`, which encodes the value into the record and returns its encoded length, and `move_bytes(from, len, to)`.
+kladde-rs adds `replace_at(at, old, bytes)`, which writes in place where the lengths agree and splices otherwise, `paste(at, removed, cut)`, and `transaction(f)`, which poisons the store if `f` fails, since the regions around may have heard of a size change by then; a guard checks what can fail before it opens one.
 `splice_value` asks the value for `encoded_len` once, since the record states the length before the bytes, and its caller learns the length from its result rather than asking again.
 Its method `child(at, len, node, index)` makes the region of one of the value's children: the `len` bytes at `at`, together with a note that they are the value's child number `index`, so that when the child changes size, its region tells `node`, the value's index of its children, which updates where the children behind it start and passes the change on to the value's own region.
 The `variable-size` branch's `Link` and `Node` do this for packed values.
@@ -687,6 +722,9 @@ The index keeps those sizes in cells, so that a sibling's report of a change of 
 A write to an earlier part that changes its size, followed by a write to a later part, then works out by itself: the first write's report updates the parent's index, and the second write computes its start from the updated index, so that its record names the shifted position.
 Such a guard pays a lookup at every write rather than once; a count of changes kept in the index, compared with the count the guard saw last, would let it reuse its start until a sibling's size has changed.
 
+kladde-rs implements `parts`, for derived structs and enums and for tuples, and not `split_at_mut`, nor the count of changes.
+Its `parts` gives a field whose predecessors are all fixed-size a constant start, as an accessor would, since no sibling's change of size can move it; only the fields after the first variable-size one look their start up when they write.
+
 **A guard made on its own below a guard made together holds its start relative to that guard, since that guard's own start can move while it lives.**
 Between the two, every guard borrows the one above it mutably, so nothing between them can change size before it, and the relative start stays right; above them, a sibling's write can shift everything.
 A write then computes its absolute start by climbing only the guards made together: at each, one lookup in the index of the parent it was made from, plus the relative starts of the guards made on their own in between, which are constants.
@@ -695,6 +733,7 @@ Unit tests in kladde-rs should test this behavior in nested setups: a tree where
 A write in one of the remote cousins finds its start by climbing only the guards made by `parts`, up to the root, and adds the relative starts of the guards in between, into which the test descended without `parts`, as constants.
 A write that changes its value's size, though, updates every level up to the root, the guards in between included, since each of their values grew or shrank with it; those reports pass through guards that the guards below them borrow, so every level keeps its cached total and its index in cells, as the indexes of guards made together do.
 The tests should check both: that each cousin writes at the right position after other cousins have changed size, and that afterwards the indexes at every level, the ones in between included, match the in-memory values.
+kladde-derive's test `remote_cousins_write_where_they_start_after_each_other_grows` builds this setup from structs, and checks that the file then holds the value's encoding, and reopens to it; kladde-types' randomized test checks every vector's index against its elements after edits through `parts` of nested vectors.
 
 **A change of size walks the same chain back up**, since it changes the encoded size of every value around the one that changed: each ancestor updates its cached total and its index's entry for the child the change came from.
 That is one update per level, at the index's cost, where today a slotted value never changes size and a change of an allocation's size concerns no other allocation.
@@ -716,15 +755,19 @@ That pays for deep nesting of large containers, a document tree whose nodes hold
 
 - **`PersistableVec<T>`**: the count, then the elements; in memory, a `Vec<T>`, and for variable-size `T` a Fenwick tree of the elements' sizes, [choice C](#c-what-a-container-keeps-to-find-its-children).
   A push and an insertion are a splice and a count, a removal likewise, a reordering a `Move`, and a size change of an element a report that updates the element's size in the tree, `O(log m)` of its entries.
+  kladde-rs keeps the tree's sums in 32-bit cells, appends to it and pops from it in `O(log m)`, and builds it again in `O(m)` after an insertion, a removal or a reordering elsewhere.
 - **`PersistableString`**: UTF-8, then `0xFF`; in memory, a `String`, or a rope for long text, which then needs no container of its own, since the file already takes splices in long text at constant cost.
+  kladde-rs keeps a `String`.
 - **`PersistableMap<K, V>`**: the count, then the entries; in memory, an index map, as Rust's `indexmap` keeps one — the entries in a vector, in their order on file, and a hash table of their indices, so that each key is stored once — and for variable-size entries a Fenwick tree of their sizes.
   Removal swaps: the last entry moves into the removed one's place, by a `Move` that writes no bytes, the removed entry is spliced out, and the count goes down, so the file stays dense, with no tombstones, and the only index that changes in memory is the moved entry's.
   An insertion appends, and a lookup is a hash and an index.
+  kladde-rs's hash table is its own, open addressing over 32-bit positions, probed linearly and at most half full, and describes an entry as a struct of a key and a value.
 - **`PersistableBlob<T>`**: opaque, its serde payload prefixed with its length.
 
 ### Evolution
 
 More detailed specification and implementation of schema evolution is deferred until an initial empirical evaluation reveals whether the proposal in this document should be kept in the first place.
+kladde-rs writes the schema chain and the root fingerprint, and refuses to open a file whose fingerprint differs from the application's root type's.
 
 **A change of schema is no more invasive here than today: reading a writer's schema works as it does, an upgrade writes again only the values whose encoding changed, and only the *retain* mode, writing in the writer's schema, gets more expensive, because of variable-size encodings rather than of one sequence.**
 
@@ -953,6 +996,10 @@ It holds main's seven newest commits, ported, the whole `variable-size` branch, 
 The first is a store change that this redesign replaces anyway, and the second is what stage 4's measurements want.
 The three `*-svg` branches have the same base, each with a ripeness policy on top, and `variable-size` and `text-bench` lack main's seven newest commits.
 
+**kladde-rs's branch `one-sequence` builds the four stages on `b1a7f90`, in eight commits from `cbb1617` to `b2d0649`**, which the sections above annotate where the implementation differs from the proposal.
+Stage 2 is two commits, the schema's descriptors and persist, and the derive arrives with the facade; stage 4 ports `text-bench` too, and the last commit sets the span policy's defaults to what the measurements found.
+Two things went that measured what this design removes: kladde-svg's packed and small layouts, since every list and string is inline in one sequence, which leaves one layout; and kladde-bench's synthetic scenarios, which allocated, resized and freed.
+
 ## Open questions
 
 - **The span policy's constants**: `L`, what counts as cold, and how hot spans and the header share the span table's room.
@@ -960,6 +1007,7 @@ The three `*-svg` branches have the same base, each with a ripeness policy on to
 - **The containers' indexes**: whether a Fenwick tree is the right default, what an application with millions of variable-size elements should use, and whether any data model nests deeply enough for size-weighted indexes to pay.
 - **Moving values between containers**: whether a cut should ever outlive its transaction, which would need a scratch chain and a chain number in `Move`.
 - **Memory for very large files**: the rope and the span table take about 32 bytes per span together; a cold gigabyte in spans of a page needs about 8 MB of them, but a gigabyte edited everywhere at once, in short spans, would need far more.
+  kladde-rs takes about 90 bytes per span, [In memory](#in-memory) says why.
 - **Opaque types**: whether declaring a fixed size is enough, or whether some want both modes.
 - **Capsules**: whether to bring back schema versions per subtree, [inline](#mixing-schemas-capsules), so that a large file whose element type changed can upgrade a part at a time rather than every element at the first open.
 - **Segments**: how a reference to another chain looks in the schema, in the journal, and in a transaction.
