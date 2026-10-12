@@ -1037,6 +1037,7 @@ def preamble(title, subtitle=None, documentclass="report", toc=True,
         # idiom: natural size, capped at the text width.
         "  \\usepackage{graphicx}",
         "  \\usepackage[export]{adjustbox}",
+        "  \\renewcommand{\\arraystretch}{1.2}",
         "  \\DefineVerbatimEnvironment{kladdediagram}{Verbatim}"
                 f"{{baselinestretch={DIAGRAM_LEADING},samepage=true}}",
         # A class with a separate title page (`report`) ends `titlepage` with
