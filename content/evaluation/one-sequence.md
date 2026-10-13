@@ -47,7 +47,9 @@ The store flushed whenever the journal outgrew four pages, `--journal-budget 4`,
 | `L` = 32 | 32 | 32 | as above |
 
 The bound is [choice B](../drafts/one-sequence.md#b-how-short-spans-may-stay)'s: two neighbouring spans whose entries leave the header for a leaf are merged if they are shorter than `L` together.
-`rewrite_below` is [choice A](../drafts/one-sequence.md#a-overwrites-split-rewrite-or-shadow)'s threshold: a span of a data page shorter than it is written again where an edit cuts into it, rather than split.
+`rewrite_below` is [choice A](../drafts/one-sequence.md#a-overwrites-split-rewrite-or-shadow)'s threshold: where an edit cuts into a `Ref` span shorter than it, the flush writes the span's bytes again, with the edit's, rather than split it.
+It applies to the span being cut, not to the parts a cut leaves, so shorter `Ref`s still arise, from splits of longer spans and from evacuation, as do short inline spans of new bytes; the bound merges those as their entries leave the header, 0.5 to 9.3 bytes per edit at `L` = 64 in [the span policy's table](#the-span-policy), so the two constants matter even where they are equal.
+The sweep ties them to keep its grid small, after tuning runs at λ = 1, which `data/` does not keep, had varied them apart: over four workloads, `rewrite_below` moved the bytes written per edit by at most 7 %, and `L` by up to 21 %.
 The span policy's other constants kept their defaults: inline spans up to 64 bytes, 16 flushes to count as cold for the rotating walk, which looks at 256 spans per flush, and `μ` = 0.02.
 The cleaner is main's churn floor, with its budget controller aiming the file at a fill of 0.8, its free filling, its compaction mode and truncation, over pages of spans.
 
@@ -116,7 +118,7 @@ On the texts, a panel per text gives the live pages over the live size:
 **One sequence's live size is the small layout's, within 0.4 %, and 1.3 to 2.4 % below the packed layout's: what the small layout kept inline is everything here, and what it described with statements and pointers costs nothing.**
 The live size is averaged over the second half of the runs; it does not depend on the bound or on λ:
 
-| workload | edited SVG or text, KiB | main, base | main, packed | main, small | one sequence |
+| workload | edited SVG or text at the end, KiB | main, base | main, packed | main, small | one sequence |
 | --- | --- | --- | --- | --- | --- |
 | tiger | 58 | 92 | 47 | 46 | 46.3 |
 | coat of arms | 180 | 252 | 131 | 128 | 127.9 |
@@ -277,8 +279,24 @@ Each cell gives the edits per second in kladde's calls, in thousands, or on the 
   This page has not traced where a keystroke's extra time goes.
 - **Reopening takes 0.9 ms on the tiger, 1.8 to 2.3 on the coat of arms, 7.3 to 7.7 on the world map, and 0.8 and 1.5 to 1.8 on the texts**, as in main's small layout within half a millisecond: it reads the span table, walks the chain, and decodes the sequence into the drawing.
 
-**The benchmarks' processes peak at 10.3 MB of resident memory on every workload but the world map, which takes 15.6 MB**, at λ = 0.25.
-The store's span table and rope take about 90 bytes per span, 0.3 MB for the world map's 3,660 spans; the rest is the drawing in memory, the store's other tables, and the process itself, which this page has not taken apart, nor measured on main.
+**The benchmarks' processes peak at 3.9 to 6.1 MB of resident memory on every workload but the world map, which takes 15.7 MB**, at λ = 0.25, sampled from `/proc` every 10 ms.
+Of those peaks, 2.6 to 3.0 MB are the binary and its libraries, mapped from disk, and 1.3 to 3.0 MB anonymous memory, which holds at 1.2 to 2.7 MB over the second half of the runs.
+The world map's anonymous memory grows from 7.5 MB once the file is created to 10.4 MB, where it holds over the second half; valgrind's massif finds 8.3 MB of heap there, at 90,000 edits, a fifth of it the store's, and the allocator's overhead and the freed memory it keeps make the rest:
+
+| owner | MB | what |
+| --- | --- | --- |
+| the drawing in memory | 4.7 | the children's vectors, 1.9 MB, since a `Node` holds an `Element` inline and takes 328 bytes; the path segments, 1.7 MB; the elements' other vectors; and every vector's spare capacity |
+| the store | 1.7 | the journal's byte arena, 0.79 MB, still at the capacity of the splice that created the file; the span table, 0.39 MB, and the rope, 0.33 MB, both doubled to 8,192 slots for 3,660 spans; resident table pages and the flush's page cache, 0.1 to 0.2 MB |
+| svg-bench | 1.5 | the SVG's text, 1.1 MB, kept for its summary, and its index of elements and paths, 0.4 MB |
+| below massif's threshold | 0.4 | |
+
+The peak comes in svg-bench's epilogue, which writes the edited drawing's canonical SVG into a string of 2.1 MB and then reopens the file, decoding a second drawing: 10.6 MB of heap, which with the allocator's overhead and the mapped binary makes the 15.7 MB.
+
+**Most of it could go, and little of it is the store's.**
+A `Box<Element>` in kladde-svg's `Node` would shrink each node from 328 bytes to 48, and vectors built at their final length would lose their spare capacity.
+kladde-types' vector spends 40 bytes on its index of sizes even where it is empty or its elements are fixed-size, 0.86 MB over the world map's 13,385 vectors: the tree's cached total and the count's length need no fields, which leaves the 24 bytes of an empty `Vec`, or 8 with a thin one; and a Fenwick tree over blocks of 32 elements, scanning up to 31 elements' sizes within a block, would cost an eighth of a byte per element rather than four.
+The store's journal arena should shrink to the journal's budget after a flush, and its span table and rope could grow in smaller steps, or [become a B-tree](../drafts/one-sequence.md#in-memory), which would bring the store's share to about half a megabyte for this drawing; and svg-bench could drop its copy of the SVG after parsing.
+main's memory was not measured, so this page cannot say how one sequence compares with it.
 
 **Identical runs differed by more than on the cleaning page.**
 The two timing passes differed in the edit rate by 8 % at the median and 32 % at most, in the median flush by 5 % and 26 %, and in the reopen times by 16 % and 33 %, the largest on the 512 KiB text's rates and on the coat of arms' reopens, which take about two milliseconds.
