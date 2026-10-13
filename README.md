@@ -5,7 +5,10 @@
 The specification, reference algorithms, and design documentation of **kladde**: durable data structures that you mutate in memory, and it's on disk.
 Kladde is becoming a cross-language file format and durability protocol with crash-safety guarantees, and libraries for building durable data types on top of it (the first of which is [kladde-rs](https://github.com/kladde-dev/kladde-rs)).
 
+A kladde file holds its root value's encoding as one byte sequence, kept on copy-on-write pages as a chain of spans, with a journal of edits to that sequence that a flush periodically folds into new pages.
+
 Read these docs at **<https://kladde-dev.github.io/>**, or as [one PDF](https://kladde-dev.github.io/kladde.pdf).
+To implement kladde in another language, start with the [specification](content/spec/), which says what a file is byte for byte, and the [reference algorithms](content/impl/), which say how to keep one in memory and write it; [kladde-rs](content/rust/) is one implementation of both.
 
 ## Editing
 

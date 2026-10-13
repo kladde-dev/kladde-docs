@@ -5,7 +5,7 @@ title: The file as one sequence, measured
 ## Executive summary
 
 **On the drawings and texts of [Cleaning edited drawings and texts](cleaning-edits.md), under the same edits, the one-sequence branch keeps as few live pages as main's best layout at equal writes, or fewer, and its churn floor reaches further.**
-kladde-rs's branch `one-sequence` implements [the proposal](../drafts/one-sequence.md) in all four of its stages, and ran svg-bench and text-bench at the six settings of the churn floor that main ran, with three bounds `L` of its span policy.
+kladde-rs's branch `one-sequence` implements [the design of one sequence](../spec/sequence.md), which was a proposal when this page was written, in all four of its stages, and ran svg-bench and text-bench at the six settings of the churn floor that main ran, with three bounds `L` of its span policy.
 With its default bound, `L` = 64 bytes, it keeps 1 to 10 % fewer live pages than main's small layout at equal writes on the tiger, 1 to 2 % fewer on the world map, and as many, within 1 %, on the coat of arms; 2 to 17 % fewer than the packed layout, but for the world map at λ = 1, and 35 to 61 % fewer than the base layout.
 On the texts, it keeps 2 to 3 % fewer than main where their curves overlap on the 64 KiB text, and as many on the 512 KiB text, where main's controller had cut its budget to a page.
 At λ = 0.1, it keeps 1.06 to 1.11 times the drawings' live size and 1.07 and 1.05 times the texts', where main reached 1.08 to 1.09 in the small layout, 1.13 to 1.19 in the packed one, and 1.13 and 1.09 on the texts.
@@ -15,7 +15,7 @@ The drawings' live size, the sequence's bytes with the schema chain's, is 46, 12
 So the ratios of live pages to live size compare one sequence with main's small layout byte for byte, and its live pages compare with main's other layouts on the same drawing without a ratio.
 
 **The journal writes 14 to 27 % less, and splices restate nothing behind them.**
-Relative positions shorten a drawing edit's journal bytes from 37 to 51 per edit in main's small layout to 31 to 43, and a keystroke's from 13.2 to 9.6, as [the proposal's arithmetic](../drafts/one-sequence.md#the-journal) expected.
+Relative positions shorten a drawing edit's journal bytes from 37 to 51 per edit in main's small layout to 31 to 43, and a keystroke's from 13.2 to 9.6, as [the journal's arithmetic](../spec/journal.md#records) expected.
 On the texts, the leaves take 6 to 18 bytes of each keystroke's writes where main's took 15 to 30, since a splice states one to three entries rather than every statement behind it.
 
 **The span policy's bound decides much of the writes: a merge costs the bytes it writes again, and the garbage it leaves for the cleaner.**
@@ -26,12 +26,12 @@ At `L` = 64, the leaves take 8 to 26 % of the drawings' live pages and 4 to 10 %
 At the default bound, kladde's calls take 39,000 to 123,000 edits per second on the drawings, as many as in main's small layout or up to 1.6 times as many, with median flushes of 2.2 to 5.0 ms, against 2.6 to 10.8; on the texts, 691,000 to 837,000 keystrokes per second, 14 to 30 % fewer than main, with flushes of 1.9 to 2.8 ms, against 6.8 to 9.2.
 Reopening an edited file takes 0.8 to 7.7 ms, as on main.
 
-**Where it falls short of the proposal:** the span table holds two levels only, a span costs about 90 bytes of memory rather than 32, and the cleaner, the evacuation and the walk are main's, without the refinements the proposal names; [the proposal](../drafts/one-sequence.md#how-to-get-there) records every deviation.
+**Where it falls short of the proposal:** the span table holds two levels only, a span costs about 90 bytes of memory rather than 32, and the cleaner, the evacuation and the walk are main's, without the refinements the proposal names; [kladde-rs's implementation notes](../impl/implementation-notes.md) record every deviation.
 
 ## What was measured
 
 **kladde-rs's branch `one-sequence`, at `b2d0649`, ran the benchmarks of [Cleaning edited drawings and texts](cleaning-edits.md#what-was-measured) unchanged but for what one sequence removes.**
-The branch starts from `defrag-shifts` at `b1a7f90`, as [the proposal](../drafts/one-sequence.md#how-to-get-there) asked, and takes eight commits: seven that implement the store, the schema, persist, the derive and the facade, the containers, `text-bench`, and kladde-svg, and one, `b2d0649`, that sets the span policy's defaults to what this page measured.
+The branch starts from `defrag-shifts` at `b1a7f90`, as the proposal asked, and takes eight commits: seven that implement the store, the schema, persist, the derive and the facade, the containers, `text-bench`, and kladde-svg, and one, `b2d0649`, that sets the span policy's defaults to what this page measured.
 kladde-svg has one layout, since every list is a `PersistableVec` and every string a `PersistableString`, inline in its parent; `text-bench` splices the store's sequence itself, as it spliced one allocation on main.
 
 **The edits are the same, edit for edit.**
@@ -46,8 +46,8 @@ The store flushed whenever the journal outgrew four pages, `--journal-budget 4`,
 | `L` = 64, the default | 64 | 64 | as above |
 | `L` = 32 | 32 | 32 | as above |
 
-The bound is [choice B](../drafts/one-sequence.md#b-how-short-spans-may-stay)'s: two neighbouring spans whose entries leave the header for a leaf are merged if they are shorter than `L` together.
-`rewrite_below` is [choice A](../drafts/one-sequence.md#a-overwrites-split-rewrite-or-shadow)'s threshold: where an edit cuts into a `Ref` span shorter than it, the flush writes the span's bytes again, with the edit's, rather than split it.
+The bound is [the span policy](../impl/flush.md#the-span-policy)'s: two neighbouring spans whose entries leave the header for a leaf are merged if they are shorter than `L` together.
+`rewrite_below` is [the threshold for overwrites](../impl/flush.md#overwrites-split-or-rewrite): where an edit cuts into a `Ref` span shorter than it, the flush writes the span's bytes again, with the edit's, rather than split it.
 It applies to the span being cut, not to the parts a cut leaves, so shorter `Ref`s still arise, from splits of longer spans and from evacuation, as do short inline spans of new bytes; the bound merges those as their entries leave the header, 0.5 to 9.3 bytes per edit at `L` = 64 in [the span policy's table](#the-span-policy), so the two constants matter even where they are equal.
 The sweep ties them to keep its grid small, after tuning runs at λ = 1, which `data/` does not keep, had varied them apart: over four workloads, `rewrite_below` moved the bytes written per edit by at most 7 %, and `L` by up to 21 %.
 The span policy's other constants kept their defaults: inline spans up to 64 bytes, 16 flushes to count as cold for the rotating walk, which looks at 256 spans per flush, and `μ` = 0.02.
@@ -167,7 +167,7 @@ Each cell gives the fill of the data pages, of the leaves, and of all live pages
 | text, 64 KiB | 80 / 71 / 79 | 92 / 85 / 92 | 96 / 87 / 95 |
 | text, 512 KiB | 89 / 71 / 88 | 96 / 86 / 95 | 97 / 90 / 97 |
 
-The proposal's [worked example](../drafts/one-sequence.md#a-worked-example) put a large file's live pages at about 1.12 times its sequence with pages 90 % live; the world map, at 93 % live, comes to 1.10, and the 512 KiB text, at 95 %, to 1.07.
+The proposal's [worked example](../impl/index.md#a-worked-example) put a large file's live pages at about 1.12 times its sequence with pages 90 % live; the world map, at 93 % live, comes to 1.10, and the 512 KiB text, at 95 %, to 1.07.
 The tiger and the coat of arms, with pages 86 and 91 % live, come to 1.16 and 1.14, since their leaves, a quarter and a fifth of their live pages, are only 80 and 86 % full.
 
 ## The span policy
@@ -295,7 +295,7 @@ The peak comes in svg-bench's epilogue, which writes the edited drawing's canoni
 **Most of it could go, and little of it is the store's.**
 A `Box<Element>` in kladde-svg's `Node` would shrink each node from 328 bytes to 48, and vectors built at their final length would lose their spare capacity.
 kladde-types' vector spends 40 bytes on its index of sizes even where it is empty or its elements are fixed-size, 0.86 MB over the world map's 13,385 vectors: the tree's cached total and the count's length need no fields, which leaves the 24 bytes of an empty `Vec`, or 8 with a thin one; and a Fenwick tree over blocks of 32 elements, scanning up to 31 elements' sizes within a block, would cost an eighth of a byte per element rather than four.
-The store's journal arena should shrink to the journal's budget after a flush, and its span table and rope could grow in smaller steps, or [become a B-tree](../drafts/one-sequence.md#in-memory), which would bring the store's share to about half a megabyte for this drawing; and svg-bench could drop its copy of the SVG after parsing.
+The store's journal arena should shrink to the journal's budget after a flush, and its span table and rope could grow in smaller steps, or [become a B-tree](../impl/in-memory-state.md#2-the-rope), which would bring the store's share to about half a megabyte for this drawing; and svg-bench could drop its copy of the SVG after parsing.
 main's memory was not measured, so this page cannot say how one sequence compares with it.
 
 **Identical runs differed by more than on the cleaning page.**

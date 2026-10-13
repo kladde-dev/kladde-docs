@@ -5,11 +5,11 @@ title: Sparse leaves, and consolidation from the statements up
 **Status: a finding, resolved, and a direction for a redesign.**
 The consolidation policy of [Consolidation](../impl/consolidation.md), as kladde-rs implemented it, kept address-table leaves far emptier than data pages, so that 4 to 33 % of a file's live pages were leaves it would not have needed had they been as full as its data pages.
 Three causes did it, and each is gone.
-[The newest size rule](../spec/address-table.md#conflict-resolution-across-epochs) let the statements that kept nearly empty leaves alive die, and removed the reason the cut refused them; that left leaves half empty, so that fuller ones would have saved 2 to 15 % of the live pages.
+[The newest size rule](../superseded/allocations.md#what-it-was) let the statements that kept nearly empty leaves alive die, and removed the reason the cut refused them; that left leaves half empty, so that fuller ones would have saved 2 to 15 % of the live pages.
 A fill floor on retiring leaves kept them so, and [the budget loop](../impl/consolidation.md#the-budget-loop) no longer holds leaves to it, since retiring a leaf opens no page; leaves as full as the data pages would then have saved 0.4 to 6 % of the live pages.
 Since kladde-rs also prices a leaf at its coverage, where it priced it at 1.25 times, the leaves come out about as full as the data pages under main's churn floor, and fuller ones would save at most 2.8 %.
 The three causes had one root, which is not a tuning constant but the way the policy interleaves three decisions, which page to retire, which statements to write, and where to put them, so that each constrains the others.
-The second half of this draft starts over from [the logical level of the address table](../spec/address-table.md#logical-level) and keeps the three apart.
+The second half of this draft starts over from [the logical level of the address table](../superseded/allocations.md#what-it-was) and keeps the three apart.
 
 ## The finding
 
@@ -94,7 +94,7 @@ Three causes kept leaves nearly empty until the newest size won, and one of them
 kladde-rs' `implementation-notes.md` recorded it: "a budgeted page rewrite opens no page of its own … the budget counts it as a page all the same, and holds it to the fill floor like a data offer."
 
 For a data page the floor has a reason: evacuating victims into a page the flush opens for them costs that page, and a page that closes half empty is a page wasted.
-For a table page it has none: a page rewrite opens no page, since what it restates joins the flush's dirty set and [the cut](../impl/consolidation.md#one-dirty-set-and-why-statements-are-derived-last) lays it out among everything else the flush states.
+For a table page it has none: a page rewrite opens no page, since what it restates joins the flush's dirty set and [the cut](../superseded/allocations.md#what-it-was) lays it out among everything else the flush states.
 Its cost is the restatements' bytes, which [the churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) already weighs against the page it frees.
 
 The floor turned the cheapest victims into the hardest to take: an offer was made of whole leaves at most half live, best score first, and needed 95 % of a leaf in restatements.
@@ -137,22 +137,22 @@ The next two sections show both.
 
 ### What the check guarded against
 
-**A filler's victim can hold the size statement of an id the cut has already laid out statements for, and the cut must then state that id's size again, while [one epoch holds at most one size statement per id](../spec/address-table.md#no-conflicts-within-each-epoch).**
+**A filler's victim can hold the size statement of an id the cut has already laid out statements for, and the cut must then state that id's size again, while [one epoch holds at most one size statement per id](../superseded/allocations.md#what-it-was).**
 Content restatements cannot conflict, since a filler restates only fragments its victim still owns, which the flush has not taken.
-And the size statement need not: the cut decides which of its statements states each id's size only once the fillers are known, since [the sizing bit](../impl/address-table-operations.md#what-the-cut-states-for-a-touched-id) changes no statement's encoded length, and adds a `Size` to the last page only for an id none of whose content statements ends at its size.
+And the size statement need not: the cut decides which of its statements states each id's size only once the fillers are known, since [the sizing bit](../superseded/allocations.md#what-it-was) changes no statement's encoded length, and adds a `Size` to the last page only for an id none of whose content statements ends at its size.
 So the cut can take any leaf as a filler, and kladde-rs dropped the check in `def217a`, once it had moved to these rules.
 Under the old size rule, the check had a reason: the statement an id needed depended on which pages survived, a `Grow` if its anchor stayed and a `Shrink` to replace the anchor if a filler retired it, and one epoch could not hold both, so a filler chosen after the layout could change a statement laid out already.
 
 ### Dead statements cannot block a rewrite
 
 **Dropping a dead statement never changes what the file resolves to; it only releases pins that newer statements hold on its account.**
-A statement is dead when no fragment resolves through it and it is not its id's size statement, [`pins == 0`](../impl/liveness.md#the-droppability-rule), and the droppability rule is exactly that dropping such a statement leaves the resolution unchanged.
+A statement is dead when no fragment resolves through it and it is not its id's size statement, [`pins == 0`](../superseded/allocations.md#what-it-was), and the droppability rule is exactly that dropping such a statement leaves the resolution unchanged.
 What a dead statement can still do is keep a newer statement alive, as an example shows:
 
 - At epoch 4, allocation 8 holds 40 bytes, stated by `Ref*(8, 0, 40, c)` in leaf `L3`.
 - At epoch 6, the application freed it: `Tombstone(8)`, in leaf `L4`.
 
-`Ref*@4` is now dead, but physically present, and so it holds the tombstone: `mentions(8)` counts both statements, and [a tombstone keeps its pin](../impl/liveness.md#the-last-tombstone) until `mentions` falls to 1, since without it `Ref*@4` would be 8's newest statement, and 8 would exist again with its old 40 bytes.
+`Ref*@4` is now dead, but physically present, and so it holds the tombstone: `mentions(8)` counts both statements, and [a tombstone keeps its pin](../superseded/allocations.md#what-it-was) until `mentions` falls to 1, since without it `Ref*@4` would be 8's newest statement, and 8 would exist again with its old 40 bytes.
 Dropping `L3` drops `Ref*@4`, `mentions(8)` falls to 1, and the tombstone may retire: nothing resurfaces, which is the order the pins enforce, the denied statement first and its denier after.
 
 **Where the flush touched the id, a dead statement can at most make one of the flush's own statements unnecessary.**
@@ -199,9 +199,9 @@ This section ignores how consolidation and the flush after its fold work today, 
 
 ### What a writer must guarantee
 
-**A file's address table is the set of statements in its live table pages, each at its page's epoch, and [their resolution](../spec/address-table.md#conflict-resolution-across-epochs) defines the fragment map: each id's existence, its size, and for each byte, the statement that wins it and so its content.**
+**A file's address table is the set of statements in its live table pages, each at its page's epoch, and [their resolution](../superseded/allocations.md#what-it-was) defines the fragment map: each id's existence, its size, and for each byte, the statement that wins it and so its content.**
 Call the statements `S`, and the fragment map they resolve to `R(S)`.
-Statements may contradict each other across epochs, since the newest wins at every probe; within one epoch, [they may not](../spec/address-table.md#no-conflicts-within-each-epoch).
+Statements may contradict each other across epochs, since the newest wins at every probe; within one epoch, [they may not](../superseded/allocations.md#what-it-was).
 
 A flush at epoch `e` starts from the file's statements `S` and from the map `M` that the application's writes since the last flush define: `R(S)` updated by the fold.
 It ends with a new set of live pages, whose statements `S'` must satisfy `R(S') = M`, and whose data pages hold every byte `M` resolves into the file.
@@ -255,7 +255,7 @@ For each id:
 
 **Such an `N` always exists, and never breaks the rules of one epoch.**
 The plain solution states, for every id whose resolution under `S_keep` differs from `M` at all, `Tombstone(id)` if it no longer exists, and otherwise content statements covering all of `[0, size)`, the last one sizing: it states the size, and the content statements win every probe below it.
-Those are one size statement per id and content statements on disjoint ranges below the size, which is all that [one epoch's rules](../spec/address-table.md#no-conflicts-within-each-epoch) ask.
+Those are one size statement per id and content statements on disjoint ranges below the size, which is all that [one epoch's rules](../superseded/allocations.md#what-it-was) ask.
 The inference above only leaves out of that solution what `S_keep` already says, so it obeys the rules too, and no choice of victims can make the vocabulary fall short.
 
 **Inferring the smallest `N` needs nothing beyond the fragment map and each id's size statement.**
@@ -269,11 +269,11 @@ The room the last page has left is not filled by choosing more victims after the
 ### A spec change that would make it simpler still: statements keep their epoch
 
 **Let each statement carry its own epoch, so that consolidation can move a statement to a new page without changing what it means.**
-Today a statement's epoch is [its page's](../spec/address-table.md#the-idea), so a statement moved to a new page is re-stamped as newest: it now outranks everything it used to lie beneath, and the writer must work out what else to state so that the rest still resolves the same way.
+Today a statement's epoch is [its page's](../superseded/allocations.md#what-it-was), so a statement moved to a new page is re-stamped as newest: it now outranks everything it used to lie beneath, and the writer must work out what else to state so that the rest still resolves the same way.
 That re-stamping is why retiring a table page means deriving its restatements rather than copying them: a restated statement changes its rank, so the cut must state content as resolved truth, merged with whatever else the flush states, and state the size and the tombstone again where the victim held them.
 
 With an epoch per statement, retiring a table page is copying its live statements, unchanged, into the flush's pages.
-They resolve exactly as before, since no two statements change their order, and the dead ones are left behind, which by [the droppability rule](../impl/liveness.md#the-droppability-rule) changes nothing either.
+They resolve exactly as before, since no two statements change their order, and the dead ones are left behind, which by [the droppability rule](../superseded/allocations.md#what-it-was) changes nothing either.
 Evacuating a data page copies its referrers the same way, each with its new address and its old epoch, since the bytes it points to are the same.
 Only the flush's own changes are stated at its epoch, so task 3's inference is needed only for the ids the application touched, against a state the writer knows in full, and the size statements in the header stop moving every flush.
 
@@ -281,8 +281,8 @@ What it would cost and change:
 
 - **Bytes.**
   A page would hold one or more runs, each of one epoch, given as a varint below the page's own, and each sorted by `(id, offset)`, as a page is now; a page the flush writes from its own changes alone is one run, as today, and a page of copied statements has a run per epoch it copies from.
-- **The rule of one epoch**, [no conflicts within it](../spec/address-table.md#no-conflicts-within-each-epoch), would speak of statements of one epoch wherever they lie; a writer keeps it by retiring the page it copies from in the same commit, so that the copy and the original never both count.
-- **Open's merge** would merge runs instead of pages; it [already relies](../impl/address-table-operations.md#three-facts-about-the-physical-format-that-decide-the-algorithm) on each run having one epoch and being sorted by key, and only the number of runs grows.
+- **The rule of one epoch**, [no conflicts within it](../superseded/allocations.md#what-it-was), would speak of statements of one epoch wherever they lie; a writer keeps it by retiring the page it copies from in the same commit, so that the copy and the original never both count.
+- **Open's merge** would merge runs instead of pages; it [already relies](../superseded/allocations.md#what-it-was) on each run having one epoch and being sorted by key, and only the number of runs grows.
 - **Validation** would add that no statement's epoch exceeds its page's.
 - **What estimates read from a page's epoch**, the age of its content, would come from its statements instead, which is finer than today.
 

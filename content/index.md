@@ -22,6 +22,9 @@ A durable data structure keeps a full, natively-typed in-memory representation, 
 Writes go two places at once: into that in-memory representation, and into an append-only on-disk journal that is durable by the time the mutating call returns.
 Whenever the journal reaches a threshold size, it is folded into the bulk part of the file, in a way that minimizes I/O and guarantees [durability under application crashes and consistency even under power outages](spec/durability.md).
 
+The bulk part holds the root value's encoding as [one byte sequence](spec/sequence.md), kept on copy-on-write pages as a chain of spans that each show a run of its bytes and name the span that follows.
+An edit anywhere — a keystroke in a long text, a shape moved to another group — restates the few spans where it cuts the chain and nothing behind them, so the file stays within a constant factor of its content at a constant cost per edit, however large it grows.
+
 The name is German: a *Kladde* is a merchant's rough day-book, where transactions are scribbled down in order as they happen and later transcribed into the clean *Hauptbuch*.
 The file format has exactly that shape.
 
@@ -60,7 +63,8 @@ For example, the Rust implementation of kladde needs an explicit `Guard` type to
 ## Language-independent tooling
 
 A file format that several languages can read is also a file format that *tools* can read, without knowing anything about the application that wrote it.
-A generic tool can enumerate allocations and measure fragmentation without interpreting a byte of application data, read the file's embedded type descriptors to report what types it contains, and walk the value graph from the root to render it as text.
+A kladde file's content is one byte sequence, the encoding of the application's root value with every value inline in its parent, and the file carries the descriptors of its types.
+So a generic tool can measure the file's garbage and compact it without interpreting a byte of application data, report what types the file contains, and decode its whole content from those descriptors to render it as text.
 See [Tooling](spec/tooling.md) for how far each of those goes.
 
 ## The sections

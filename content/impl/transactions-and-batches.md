@@ -23,7 +23,7 @@ A departure — a second buffer, copying between spans, another trigger — is a
 | **bare operation** | recorded as its own transaction | **simplicity**: changes persist immediately | single mutations, prototyping |
 
 **Transactions enforce correctness.**
-In complex data types, one semantic operation often produces several journal records — appending to a vector grows it and then writes the element — and interrupting between them leaves an invalid state: uninitialized data, or a leak.
+In complex data types, one semantic operation often produces several journal records — appending to a vector splices the element in and rewrites the count — and interrupting between them leaves a sequence that does not decode.
 The same happens in application code, where a transition between two valid states sometimes passes through invalid ones.
 
 **Batches are an optimization, and a necessary one.**
@@ -39,7 +39,7 @@ A batch is the middle ground: the backend decides how to divide the sequence, re
   But remember that **batches delay persistence**: they are only guaranteed committed when ended, so holding one open for a long time defeats the point of immediate persistence.
 - Use **transactions** when application logic requires atomicity, and keep them short.
   Needing a very long transaction almost always means either that the application's state transitions pass through too many invalid intermediate states, or that the wrong data type was chosen — a vector where a rope or an ordered tree belongs.
-  When atomicity is genuinely required for a large mutation, it can usually be imposed at the application level instead: import into a structure that is not yet user-facing, then publish a pointer to it in one operation.
+  When atomicity is genuinely required for a large mutation, it can usually be imposed at the application level instead: build the value in memory, outside any guard, then insert it in one operation, which encodes it into one buffer and splices it in.
 - For a long sequence where *some parts* need atomicity, use a **batch with a few smaller transactions inside**.
   This is the pattern the design is arranged around.
 
@@ -70,7 +70,7 @@ Recovery decodes the journal's complete transactions into the buffer, and `open`
 
 **In kladde-rs, the buffer is a `VecDeque` of records, beside a byte arena, also a `VecDeque`, that holds their payloads.**
 Positions in both are counted from the start of the session rather than from the buffer's front, so that discarding the folded prefix after a flush moves the front and nothing else: no record moves, and every position held elsewhere — a record's payload, a pending fragment of the flush pointing into the arena — stays valid.
-The flush also appends the bytes it hoists from elsewhere to the end of the arena, past every buffered payload, and drops them again once it has committed.
+A transaction's cuts are positions in it too: a paste names its cut by distance among the records of its own transaction, so no cursor moves them.
 
 Three cursors, `front <= committed_cursor <= ready_cursor <= end`, divide the buffer into three spans:
 
@@ -189,13 +189,12 @@ A flush folds only `committed`, so `X` waits in the buffer past `committed_curso
 **The budget bounds the file, not memory.**
 An open transaction is held in memory in full, whatever the budget, because nothing can [fold an unfinished transaction](../spec/journal.md#checkpoint-versus-commit); a huge transaction costs memory in proportion to its size, and journal pages in proportion too once it is appended.
 
-### Consequence for write-phase geometry
+### Consequence for write-phase state
 
 **A flush may run while operations are still in the buffer past `committed_cursor`**: the `X` that step 2 holds back, or, at an explicit `flush()`, an open transaction.
-The write-phase geometry describes them as well, so after every flush it is **rebuilt** from the operations the buffer still holds, rather than cleared.
-They are few: at most one transaction's operations.
+The [write-phase state](write-phase-state.md) — the sequence's length and the open transaction's cuts — describes them as well, so a flush leaves it as it was, and the flush folds only the records before `committed_cursor`, whose positions refer to the sequence as it stood before the held-back ones.
 
-Discarding operations rebuilds the geometry the same way, from what the buffer holds after `end` has moved back.
+Discarding operations moves the length and the cuts back to what they were where the discarded operations began.
 
 ## Checkpoint versus commit
 
@@ -211,7 +210,7 @@ Two consequences follow:
 
 **Flush needs only shared access to the backend.**
 The auto-checkpoint fires from inside a mutating call, which holds no exclusive reference to the whole structure.
-This is safe — callers hold ids and offsets, never addresses, and writes resolve locations at write time, so relocation under a live mutation is transparent.
+This is safe: guards hold positions in the sequence, which a flush does not change, since it rewrites only where the sequence's bytes lie on file.
 Note that it is a *reentrant* call, so no write path may hold an interior borrow across a callback.
 
 **The trigger belongs at operation boundaries**, not at append time.

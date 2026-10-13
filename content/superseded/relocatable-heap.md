@@ -2,7 +2,7 @@
 title: The relocatable heap
 ---
 
-**Superseded.** Replaced by [pages and the address table](../spec/address-table.md).
+**Superseded.** Replaced by [pages and the address table](allocations.md).
 
 A partition of a flat address space over stable ids, which could close its own gaps one bounded step at a time.
 Implemented, measured, and tuned; the description below is of a system that no longer exists.
@@ -48,7 +48,7 @@ Split them and the compactor has to interrogate its caller in a loop, or keep a 
 
 A bad id was therefore the *heap's* error, which it would not be for a free-space-only allocator.
 
-**This argument survives the supersession**, in changed form: the [fragment map](../impl/in-memory-state.md#1-the-fragment-map) is still the single structure that both resolution and consolidation read, for the same reason.
+**This argument survives the supersession**, in changed form: the [fragment map](allocations.md#what-it-was) is still the single structure that both resolution and consolidation read, for the same reason.
 
 ### Ids came from outside
 
@@ -125,7 +125,7 @@ Best-fit by **address**, not by size: filling from the bottom keeps the compact 
 The journaled backend deferred placement to flush time rather than assigning an address when the allocation was minted, because a flush knows the *whole* batch of pending allocations and can sort them **first-fit-decreasing** — serving the large ones while the large gaps are still intact.
 Sorting also made the layout independent of hash-map iteration order, which would otherwise make the layout, and therefore how much work compaction later had to do, unreproducible from run to run.
 
-**Both of these survive the supersession**, in the [flush's placement phase](../impl/flush.md#phase-b--placement): first-fit-decreasing over the whole batch, and the same caveat that it becomes best-effort over the ready set once dependencies block.
+**Both of these survive the supersession**, in the [flush's placement phase](../impl/flush.md#placement): first-fit-decreasing over the whole batch, and the same caveat that it becomes best-effort over the ready set once dependencies block.
 
 ## `resize` could ask for two moves
 

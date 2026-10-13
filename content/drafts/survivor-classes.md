@@ -7,7 +7,7 @@ It would change where [consolidation](../impl/consolidation.md) puts the survivo
 
 **Sort each survivor into one of three classes by what has happened to it since its page was written, and pack each class onto pages of its own.**
 A survivor is *hot* if its own chunk has lost bytes since it was placed, *warm* if not but its allocation has been written since, and *cold* if its allocation has not been written since.
-The evidence is the allocation's [`last_written`](../impl/in-memory-state.md#3-the-allocation-map), which kladde already keeps and carries across sessions, and one bit per statement, set when a `Ref` loses part of its payload.
+The evidence is the allocation's [`last_written`](../superseded/allocations.md#what-it-was), which kladde already keeps and carries across sessions, and one bit per statement, set when a `Ref` loses part of its payload.
 Hot survivors join the flush's own content, warm and cold ones fill pages of their own class, and within a class they keep key order.
 Today, a victim's survivors move together, so a page that held cold content next to content that still dies hands both on to the same new page, and [the mixed workload](../evaluation/ripeness.md#hot-cool-and-cold-allocations-on-shared-pages) keeps nine tenths of its cold data on pages that mix classes under every policy measured.
 
@@ -49,13 +49,13 @@ A hot survivor whose allocation has not been written for more than $T$ epochs co
 ### The evidence
 
 **`last_written` exists and costs nothing new.**
-The allocation map keeps it for every id, moves it whenever the application's writes reach the id, and the [consolidator state](../impl/consolidator-state.md#content-ages) carries it from one session to the next.
+The allocation map keeps it for every id, moves it whenever the application's writes reach the id, and the [consolidator state](../impl/consolidator-state.md#what-it-would-hold) carries it from one session to the next.
 It measures content age, so moving a survivor does not reset it, as it does a page's epoch.
 Comparing it with $E_v$ is one lookup per survivor, which evacuation does anyway to find the survivor's allocation.
 
 **Whether a chunk has lost bytes needs one bit per statement, which the slab record can hold.**
 The fragment map no longer says where a chunk ended, and the slab record holds only a statement's page and its pins; the `Ref`'s stated extent lives in the encoding in its table page, which only open decodes.
-So the bit is kept as it goes, as [the Bayesian draft proposes](bayesian-ripeness.md#what-a-page-keeps-and-what-a-loss-costs), in the [statement slab's record](../impl/in-memory-state.md#2-the-statement-slab), whose 32 bits of pins leave room for it:
+So the bit is kept as it goes, as [the Bayesian draft proposes](bayesian-ripeness.md#what-a-page-keeps-and-what-a-loss-costs), in the [statement slab's record](../superseded/allocations.md#what-it-was), whose 32 bits of pins leave room for it:
 
 - **It is set** when a natural loss, the fold's or the consolidator state's own rewrite, releases bytes of a `Ref`'s fragments and leaves the statement live.
   A loss that takes the statement's last fragment kills the statement, and the bit with it.
@@ -99,8 +99,8 @@ They are cold by selection, and today share pages with the flush's fresh content
 
 ### Within a class, key order
 
-**Each class is packed in `(id, offset)` order, as [the flush's chunks are](../impl/consolidation.md#packing-in-id-order-with-look-ahead).**
-Key order keeps the [reverse index](../impl/consolidation.md#finding-the-referrers-of-a-data-page) small and lets the cut merge fragments of one allocation that land side by side into one `Ref`.
+**Each class is packed in `(id, offset)` order, as [the flush's chunks are](../impl/consolidation.md#packing-in-sequence-order-with-look-ahead).**
+Key order keeps the [reverse index](../impl/in-memory-state.md#4-the-reverse-index) small and lets the cut merge fragments of one allocation that land side by side into one `Ref`.
 Sorting survivors by age within a class would mix allocations further for a distinction the classes already draw.
 
 ### What it costs
@@ -157,7 +157,7 @@ These follow from the workloads' parameters, not from runs.
 
 - [Consolidation](../impl/consolidation.md): the budget loop would choose its victims before `pack`, keep an open page per class, and leave small victims to free filling; free filling would sort the survivors it takes; description defragmentation's rewrites would go to the cold page.
 - [In-memory state](../impl/in-memory-state.md): the statement slab's record would gain the bit, and the pending entry a flag carried through restatements.
-- [Opening a file](../impl/address-table-operations.md#opening-a-file) would set the bit for every `Ref` whose live fragments cover less than it states.
+- [Opening a file](../impl/opening.md) would set the bit for every `Ref` whose live fragments cover less than it states.
 - The [ripeness draft](ripeness.md#where-survivors-go) would split "survivors of ripe pages" in its table by class, and its starting estimates could take the class into account.
 
 ## Open questions

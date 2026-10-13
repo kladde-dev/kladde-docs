@@ -6,6 +6,12 @@ The Rust-specific half of the [storage layer](../impl/): interior mutability, fi
 
 None of this changes what the structures *mean*; it is about realising them in Rust without making them awkward.
 
+## The interface
+
+`kladde-store` is a persistent store of one byte sequence, usable on its own: `Store` implements `WriteBackend`, whose methods are the journal's records — `write`, `splice`, `move_range` and `paste` — and the transaction calls, plus `len`.
+`write` and `splice` return the cut of what they removed, an `Option<CutId>`, inside a transaction, and `splice` records a `Write` wherever the lengths agree.
+`Store::flush`, `read_all`, `schema` and `set_schema`, `private` and `set_private`, and `stats` complete it; the schema and private chains are byte strings the next flush writes.
+
 ## Interior mutability
 
 **`Store` keeps all of its state behind one `RefCell`, and borrows it for the length of one call.**
@@ -28,46 +34,42 @@ It also keeps the image as of the last sync apart from the writes since, so a te
 
 ## The mirror
 
-Address-table pages stay resident as the [implementation notes recommend](../impl/index.md#the-mirror), each a boxed page-sized array keyed by page number.
-Data pages are read through a small cache while a file is loaded, and dropped afterwards; a flush that needs their bytes again, to relocate survivors or to fold a `Copy`, reads them from the file.
+Table pages stay resident as the [reference algorithms recommend](../impl/index.md#the-mirror), each a boxed page-sized array keyed by page number.
+Data pages are read into a mirror while a file is opened, in page order, and dropped once the sequence is decoded; a flush that needs a span's bytes again, to move, merge or rewrite it, reads them from the file through a small cache.
 
 ## The in-memory structures
 
-### Keys
+### The span table
 
-An `(id, offset)` key is packed into one `u64`, id in the high half, so the fragment map is a `BTreeMap<u64, Fragment>` whose order is exactly the `(id, offset)` order the format needs, and a range over one id is a range of integers.
+A `Vec<Span>` indexed by span id, of **48 bytes per span** rather than the 16 the reference algorithms count, since each record also holds what the store keeps beside the span table in the language-agnostic design: the span's chain, its rope node, its heat, its entry's size and its place in its table page, and its place in its data page's reverse list.
+A bitmap of used ids beside it serves the [id allocator](../impl/in-memory-state.md#5-the-span-id-allocator), which hands out the id after the predecessor's, if it is free, and the lowest free id otherwise — which keeps the spans a flush makes one after another consecutive without looking for a run.
 
-### Fragments
+### The treap
 
-`Fragment` is an ordinary Rust enum of twelve bytes, with a pending fragment carrying an index into the flush's table of pending entries.
-
-A packed ten-byte representation is available if memory ever matters: the discriminant can be stolen from the page-offset field, using two values that a real offset can never take because [the page framing](../spec/file-format.md#page-framing) puts a CRC there.
-It is not used, because it costs `unsafe` reads of `MaybeUninit` fields on every access for two bytes per fragment.
-
-### The statement slab
-
-The language-agnostic shape is a slab of `{ page_or_next, pins }` plus framing lengths.
-Rust realises it as **two parallel arrays**, `Vec<StatementRecord>` of eight-byte records and `Vec<u8>` of framing lengths, rather than one packed record.
-A nine-byte packed record would need `#[repr(packed)]`, where taking a reference to `pins` — the field touched on every fragment gained or lost — is undefined behaviour; splitting gets the same nine bytes per slot with natural alignment, and reads `framing_len` only when a statement dies.
-
-`StatementRef` is a `NonZeroU32`, and slot 0 is never handed out, so `Option<StatementRef>` is four bytes rather than eight: that saves four bytes per allocation in the allocation map's `size_statement`, and four per recyclable id in the recyclable set's `tombstone`.
-
-`pins` is `u32` rather than `u16`, because a long content statement wins the gaps *between* newer statements anywhere in its range, so its fragment pins are bounded by the allocation's fragment count and nothing smaller.
+**The rope is an implicit treap, not a counted B-tree**: a randomized binary tree in an arena of nodes, each knowing its parent and the total length below it, `O(log k)` expected steps per operation and 40 bytes per node.
+It is there for ease of implementation: a split at a position and a join of two trees are all that the rope, the fold's piece table and a transaction's cuts need, so one arena type of under 400 lines serves all three, while splitting and joining whole B-trees at a position is the intricate part of a counted B-tree.
+Its priorities come from a seeded generator, so runs reproduce.
+With the treap's node, a span costs about 90 bytes in memory, against the 32 of the reference algorithms; for the files measured that is a fraction of a megabyte, and a B-tree is the better choice once memory per span matters.
 
 ### Maps keyed by id or page
 
-The allocation map is a `HashMap<u32, AllocationMeta>` with a multiplicative hasher rather than `std`'s SipHash, whose protection against HashDoS an id-keyed map built from the file does not need.
-The page table is a `Vec<PageInfo>` indexed by page number, since [lowest-first placement](../impl/consolidation.md#lowest-page-first) keeps page numbers dense.
+Sets and maps keyed by span id or page number use a multiplicative hasher rather than `std`'s SipHash, whose protection against HashDoS a map built from the file does not need.
+The page table is a `Vec` of an enum over the page states, indexed by page number, since [lowest-first placement](../impl/consolidation.md#lowest-page-first) keeps page numbers dense; only a live page has an epoch and a victim bucket.
+
+### The journal buffer
+
+Every record since the last flush lives in one `VecDeque<Record>` beside a byte arena, also a `VecDeque`, that holds their payloads, with positions counted from the start of the session ([one buffer and three cursors](../impl/transactions-and-batches.md#one-buffer-and-three-cursors)).
+A record holds absolute positions in memory and is delta-encoded only when it is appended.
 
 ## Where the integer widths come from
 
-Every width below is forced by [the specification's bounds](../spec/address-table.md#bounds), not chosen:
+Every width below is forced by [the specification's bounds](../spec/span-table.md#bounds), not chosen:
 
-| type | width | because |
+| quantity | width | because |
 | --- | --- | --- |
-| `Pointer` | `NonZeroU32` | allocation ids are 32 bit; zero is reserved so `Option<Pointer>` is free |
+| span id | `u32` | span ids are 32-bit, and 0 means none |
+| span length | `u32` | a `Zero` span may be up to `2^32 − 1` bytes |
 | page offset | `u16` | page sizes are at most 64 KiB |
-| allocation offset | `u32` | allocation sizes are below `2^32` |
-| page number | `u32` | page numbers are 32 bit |
-| `StatementRef` | `NonZeroU32` | at most `2^32 - 1` statements in a file, and zero is the free niche |
-| framing length | `u8` | a statement's framing is at most 21 bytes |
+| page number | `u32` | page numbers are 32-bit |
+| position in the sequence | `u64` | the sequence is shorter than `2^48` bytes |
+| a size in a container's index | `u32` | four bytes per element; a sum of 4 GiB or more panics today, where it should fail cleanly ([implementation notes](../impl/implementation-notes.md)) |

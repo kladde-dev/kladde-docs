@@ -6,38 +6,64 @@ What `#[derive(Persistable)]` generates, and why.
 
 ## What it generates
 
-For a struct or enum, three things:
+For a struct or enum, four things:
 
-1. a `Persistable` implementation — `INLINE_SIZE`, `store`, `load`, `free`, and the schema descriptor;
-2. a **guard type**, `MyTypeGuard`, with a `_mut()` accessor per field and a whole-value `set`;
-3. a `Deref` implementation on the guard, so read-only methods stay available — and no `DerefMut`, which would hand out a `&mut` whose changes no journal record describes.
+1. a `Persistable` implementation — `FIXED_SIZE`, `encoded_len`, `encode`, `decode`, and the schema descriptor;
+2. a **guard type**, `MyTypeGuard`, with a `_mut()` accessor per field, a `parts()` method handing out a guard for every field at once, and a whole-value `set`;
+3. a `Deref` implementation on the guard, so read-only methods stay available — and no `DerefMut`, which would hand out a `&mut` whose changes no journal record describes;
+4. with `#[kladde(bounded)]`, a `Bounded` implementation: the fixed form.
 
 ```rust
 #[derive(Persistable)]
-struct Point { x: i32, y: PersistableString }
+struct Point { x: f32, label: PersistableString, n: u32 }
 ```
 
 generates, in essence:
 
 ```rust
-impl<'s, B: WriteBackend> PointGuard<'s, B> {
-    fn x_mut(&mut self) -> I32Guard<'_, B> {
-        self.inner.x.guard(self.backend, self.location)
+impl Persistable for Point {
+    const FIXED_SIZE: Option<usize> = sum_sizes(&[f32::FIXED_SIZE, PersistableString::FIXED_SIZE, u32::FIXED_SIZE]);
+    fn encoded_len(&self) -> usize { self.x.encoded_len() + self.label.encoded_len() + self.n.encoded_len() }
+    fn encode(&self, out: &mut Encoder<'_>) { self.x.encode(out); self.label.encode(out); self.n.encode(out) }
+    fn decode(input: &mut Decoder<'_>) -> Result<Self, Error> {
+        Ok(Point { x: f32::decode(input)?, label: PersistableString::decode(input)?, n: u32::decode(input)? })
     }
-    fn y_mut(&mut self) -> PersistableStringGuard<'_, B> {
-        self.inner.y.guard(self.backend, self.location + 4)
+    // ...
+}
+
+impl<'r, B: Backend> PointGuard<'r, B> {
+    fn label_mut(&mut self) -> PersistableStringGuard<'_, B> {
+        let offset = 4;                                  // after `x`, whose size is fixed
+        let len = self.inner.label.encoded_len();
+        self.inner.label.guard(self.region.child(offset, len, None, 1))
+    }
+    fn n_mut(&mut self) -> SetGuard<'_, u32, B> {
+        let offset = 4 + self.inner.label.encoded_len(); // after a field whose size varies
+        let len = self.inner.n.encoded_len();
+        self.inner.n.guard(self.region.child(offset, len, None, 2))
     }
 }
 ```
 
-Each accessor reborrows the **same** backend and extends the location by that field's static offset — the sum of every earlier field's `INLINE_SIZE`.
-`y`'s offset is 4 regardless of how long its string currently is, because a string's inline representation is a fixed header.
+**A field's accessor makes a child region at the sum of the sizes of the fields before it**: a constant up to the first field whose `FIXED_SIZE` is `None`, folded by the compiler, and after that the sum of the earlier fields' encoded sizes, which the in-memory values give in constant time.
+The child region reports a change of the field's size to the struct's region, which passes it on up.
+
+**`parts()` makes every field's guard at once**, from a `FieldSizes` node it fills with the fields' sizes: a field after the first variable-size one is *indexed*, and looks its start up in the node at every write, so that a sibling before it may change size meanwhile ([guards made together](../impl/values.md#guards-made-together)).
 
 ## The aggregate records nothing of its own
 
-A struct owns no storage beyond its fields, so its guard has nothing to write.
-Every accessor just reborrows into the field's own guard, recursively, and `free` recurses into every field.
+A struct is its fields' encodings back to back, so its guard has nothing of its own to write beyond `set`.
+Every accessor just makes a child region and the field's own guard, recursively.
 This is why the macro is small: it computes offsets and forwards; all the actual work is in the leaf types.
+
+## Fixed forms
+
+**`#[kladde(bounded)]` implements `Bounded`**, the fixed form that `Fixed<T>` holds: every field's fixed form, back to back, and for an enum the discriminant at a fixed width and its variant padded with zeros to the largest.
+It requires every field's type to be `Bounded`, failing at the type's definition otherwise, with the message `#[diagnostic::on_unimplemented]` gives, and bounds each type parameter by `Bounded`, so that a generic type such as `Tagged<T>` is `Bounded` where its parameter is.
+
+**The derive cannot implement `Bounded` unasked, exactly where the fields' types allow it**: for a type without parameters, rustc refuses an impl whose where-clause names a concrete type that lacks the trait (E0277) rather than dropping the impl, short of the unstable `trivial_bounds`.
+So the author opts in.
+Opting in marks only the types that `Fixed` wraps and those inside them, none in kladde-svg; opting out would mark every type that holds text, a container or itself, 6 of kladde-svg's 15 derived types.
 
 ## Primitives are `Persistable` too
 
@@ -46,15 +72,15 @@ Those implementations must live in the crate that *defines* `Persistable`, becau
 
 ## Enums
 
-An enum is a discriminant followed by the selected variant's fields, each variant laid out like a struct in its own right, based past the discriminant.
-So, like a struct, an enum owns no allocation, and its `INLINE_SIZE` is the discriminant plus the largest variant's field sum.
+An enum is its discriminant as a varint, followed by the selected variant's fields, each variant encoded like a struct in its own right.
+It is fixed-size if every discriminant is below 128 and every variant takes the same fixed size.
 Positional fields are named by position — `"0"`, `"1"` — which keeps the schema model uniform.
+The discriminant is Rust's own: the explicit value where the author wrote one, otherwise one more than the previous variant's.
 
-**The discriminant is as wide as its values need, unless an integer `#[repr]` fixes its width.**
+**The discriminant's width in the fixed form is as wide as its values need, unless an integer `#[repr]` fixes it.**
 `#[repr(u8)]`, `u16`, `u32` or `u64` sets the width; without one, it is the smallest of 1, 2, 4 and 8 bytes that holds the largest discriminant value, the widths the [Enum descriptor](../spec/schema/type-descriptors.md#enum) allows.
 A signed or pointer-sized `repr`, and a negative discriminant, do not compile, since descriptors store discriminants unsigned and `usize` has no fixed width.
-Without a `repr`, the width is a layout cliff: a 257th variant, or a discriminant of 256 or more, widens every value of the type and moves every field behind it in the structs that contain it.
-A type whose layout has to stay put pins the width with a `repr`.
+Without a `repr`, the width is a cliff: a 257th variant, or a discriminant of 256 or more, widens every `Fixed` value of the type; a `repr` keeps the fixed form's size when variants are added.
 
 **The guard's `parts()` hands out the guards of the current variant's fields**, as a generated enum `{Enum}Parts` with the same variants, so a field is mutated in place by matching:
 
@@ -66,9 +92,10 @@ match guard.parts() {
 }
 ```
 
-Each field guard is based at the field's offset past the discriminant and writes inside its field only, so the discriminant cannot change underneath it.
+Each field guard is based at the field's offset past the discriminant's varint and writes inside its field only, so the discriminant cannot change underneath it.
 And `parts()` borrows the guard, so `set` cannot switch the variant while a field guard is alive.
-`set` is how the variant changes: it stores the new value, then frees the old one.
+`set` is how the variant changes: it splices the new value's encoding over the old one's.
+`parts()` on a temporary guard works in a `match` but not in a `let … else`, which drops the temporary at the end of the statement; a consuming `into_parts(self)` would make the `let` form work too, and is proposed rather than built.
 An enum without any fields gets no `parts()`, since it has nothing to mutate in place.
 
 ## Generics and transparency

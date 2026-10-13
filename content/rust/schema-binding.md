@@ -31,16 +31,17 @@ A struct declares a `Struct` descriptor with its fields in declaration order; an
 A hand-written implementation declares **whatever descriptor matches the bytes it actually reads and writes** — which is the rule that most often trips people up.
 A hand-written implementation of a plain field-sum declares `Struct`, not `Opaque`; "hand-written" and "opaque" are different axes, see [the guiding principle](../spec/schema/index.md#the-guiding-principle).
 
-The containers declare `Opaque`, carrying their library name, type name, version, inline size, and element types as parameters.
-Whether they *should* — as opposed to declaring structural descriptors so that tools can walk them — is [an open format question](../spec/tooling.md#the-container-problem).
+The containers declare structural descriptors, so that a tool can decode them: a vector a `Sequence` of its element type, a string `Text`, a map a `Sequence` of a struct `Entry` with fields `key` and `value`.
+`Option<T>` declares an enum `Option` with a one-byte discriminant width, `None` = 0 and `Some` = 1 with a field `"0"`; a tuple a struct `TupleN` with positional fields; `Fixed<T>` a `Fixed` of `T`'s descriptor; and `Box<T>` is *schema-transparent*, reusing `T`'s descriptor, as `#[kladde(transparent)]` types do.
+Only `PersistableBlob` declares `Opaque`, without a fixed size, since its serde payload is not decomposable.
 
 ## At create and at open
 
-`Kladde::create` encodes the root type's descriptor table into an allocation that the header's `schema_table` names, and writes the root's fingerprint into the header.
+`Kladde::create` encodes the root type's descriptor table into the schema chain, which the header's `schema_head` names, and writes the root's fingerprint into the header.
 `Kladde::open` compares the header's fingerprint with the application's and **fails closed** on a mismatch, with an error carrying both fingerprints.
 It never parses the descriptor table on the matching path, which is the [fast path](../spec/schema/fingerprints.md#as-a-fast-path) the fingerprint exists for.
 
-Resolution — reading at a writer's offsets — does not exist yet, so a mismatch cannot be bridged; see [Evolution](../spec/schema/evolution.md).
+Resolution — decoding by the writer's descriptors — does not exist yet, so a mismatch cannot be bridged; see [Evolution](../spec/schema/evolution.md).
 
 ## Design invariants
 

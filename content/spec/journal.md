@@ -8,70 +8,65 @@ What a mutation records, how records are grouped into transactions, how transact
 
 ## What the journal is
 
-An append-only sequence of **transactions**, each a sequence of **records** describing byte-level effects on allocations.
+An append-only sequence of **transactions**, each a sequence of **records** describing byte-level effects on the [sequence](sequence.md).
 Every transaction is appended before the call that completes it returns, so an application crash loses no transaction that has been reported as complete.
 Appends are not fsynced; what a power cut can take is stated in [Durability](durability.md#what-is-guaranteed).
 
-The journal is kept in **segments**, one per epoch.
-Segment `E` collects the transactions issued between flush `E − 1` and flush `E`, in a chain of pages whose first page the header of epoch `E − 1` names.
-Flush `E` folds segment `E` into address-table and data pages, and the header it commits names the first page of segment `E + 1`.
+Each epoch has a journal of its own.
+The journal of epoch `E` collects the transactions issued between flush `E − 1` and flush `E`, in a chain of journal pages whose first page the header of epoch `E − 1` names.
+Flush `E` folds it into table and data pages, and the header it commits names the first page of the journal of epoch `E + 1`.
+
+A *record* is what the journal holds; an *operation* is what an application's call does, which may take several records, as a push onto a vector takes two, the element and the count.
 
 The journal is deliberately **type-agnostic**.
-It records effects on allocations, not application-level operations.
-There is no "push element", no "insert key" — only resize, free, write, and three records that move content around.
+It records effects on bytes of the sequence, not application-level operations: there is no "push element", no "insert key", only overwrites, splices, and moves of bytes.
 
 *Why.* Replay never dispatches on an application type, never needs a type registry, and never calls back into a container implementation.
 That is exactly what makes a file readable by an implementation that has never heard of the container that wrote it.
-What it gives up is the ability to collapse operations that cancel only at the semantic level: a rope that applies a hundred edits which cancel out still records a hundred edits' worth of byte changes, because nothing in the log knows they were edits.
+What it gives up is the ability to collapse operations that cancel only at the semantic level: a hundred edits that cancel out still record a hundred edits' worth of byte changes, because nothing in the log knows they were edits.
 
 ## Record kinds
 
+**Four records, on positions in the sequence:**
+
 | record | effect |
 | --- | --- |
-| `Free(id)` | ends `id`'s existence |
-| `Resize(id, size)` | sets `id`'s size, preserving `min(old, size)` bytes |
-| `Write(id, offset, bytes)` | overwrites `bytes.len()` bytes at `offset` within `id` |
-| `Splice(id, offset, old_len, bytes)` | replaces `old_len` bytes at `offset` with `bytes`, shifting the tail and resizing |
-| `Copy(src, src_offset, len, dst, dst_offset)` | copies a byte range between, or within, allocations |
-| `Move(src, src_offset, len, dst, dst_offset)` | copies like `Copy`, then leaves the vacated source bytes zero |
+| `Write(position, bytes)` | overwrites `[position, position + bytes.len())` |
+| `Splice(position, removed, bytes)` | replaces the `removed` bytes at `position` with `bytes`, shifting what follows |
+| `Move(from, length, to)` | cuts `[from, from + length)` and inserts it at `to`, a position in the sequence without the cut bytes |
+| `Paste(position, removed, cut)` | replaces the `removed` bytes at `position` with the bytes of a cut that an earlier record of the same transaction made |
 
-Records take effect in the order they were recorded.
-Every record is defined on every state, so no record needs an earlier one to be meaningful, and replay never fails on a record that decodes.
+Records take effect in the order they were recorded, and a record's positions refer to the sequence as the records before it left it.
+To move `bc` between `d` and `e` in `abcde`, giving `adbce`, `from` is 1 and `length` 2, which leaves `ade`, and `to` is 2, between `d` and `e` there: `Move(1, 2, 2)`.
 
-### Every record but `Free` brings its allocation into existence
+**A record whose range does not lie inside the sequence makes the file invalid**, as a transaction whose checksum matches but whose records do not decode does: it is a writer's bug, never a torn write, and a reader refuses the file.
+With one sequence, there is nothing for a record to bring into existence, so no record needs a meaning outside it.
 
-**A record that writes to an allocation asserts that the allocation exists and is large enough to hold what the record writes.**
-If the allocation does not exist, the record creates it with size zero before taking effect; if the written range reaches past the allocation's end, the record first grows the allocation to that end.
-Bytes that growth exposes read as zero, like all [unwritten content](allocations.md#content-semantics).
+**A move of `B` behind `C` in `A B C D` is also a move of `C` in front of `B`, and which one a writer records changes nothing on file**: the resulting sequence is the same, cut at the same three places.
+A container records the move of the element it was asked to move.
 
-The written range is `[offset, offset + bytes.len())` for `Write`, `[offset, offset + old_len)` for `Splice`, and `[dst_offset, dst_offset + len)` for `Copy` and `Move`.
-`Resize` sets the size exactly, and creates the allocation just the same.
-The rules hold for zero lengths too: `Write(id, n, [])` asserts that `id` exists with at least `n` bytes, and changes no content.
+There is no record to allocate, free, resize or copy.
+Duplicating a value writes its encoding: the flush would have to write a copy's bytes again anyway, to keep every data byte shown by one span, so a copy record would save journal bytes only.
 
-So there is no `Alloc` record.
-`Resize(id, n)` on an id that does not exist allocates `n` zero bytes, and `Resize(id, 0)` states an existing zero-sized allocation — just as the [address table](address-table.md#statement-types) has no statement for allocating, and every statement but `Tombstone` asserts existence.
+### Cuts
 
-`Free(id)` ends `id`'s existence; afterwards `id` reads as size zero with no content, and on an id that does not exist `Free` has no effect.
-A later record that brings `id` into existence again begins a new incarnation, whose bytes read as zero wherever that record and its successors do not write.
+**Every record that removes bytes — a `Write`, and a `Splice` that removes some — makes a *cut* of them, which a later `Paste` of the same transaction may insert elsewhere, once, and which is gone when the transaction ends.**
 
-### Records that read
+- A `Paste` names its cut by how many cuts of the transaction were made after it: 0 for the latest.
+  With `removed` equal to the cut's length it overwrites, and with 0 it inserts.
+- A cut is pasted at most once, so that no data byte is shown twice.
+  A reader refuses a `Paste` that names a cut already pasted, or one its transaction did not make.
+- A cut that nothing pastes is removed bytes, as after any splice: nothing frees it, and nothing can leak.
+- A `Write` is a `Splice` that removes as many bytes as it inserts, a byte shorter in the journal, so a writer records a `Write` wherever the lengths agree; that its overwritten bytes make a cut too keeps that choice from deciding whether the old value can be pasted elsewhere.
+- A `Write` of no bytes makes no cut, and neither does a `Splice` that removes nothing.
+- Cuts belong to the journal's transaction, which an implementation's [nesting and batching](../impl/transactions-and-batches.md#nesting) may make larger than any the application opened; naming them by distance keeps that invisible to the records.
+- `Move(from, length, to)` is `Splice(from, length, [])` followed by `Paste(to, 0, 0)`, and stays as the shorter way to write it.
 
-`Splice`, `Copy`, and `Move` read existing content; the others only write.
-That distinction matters to an implementation's flush, and is not visible in the file.
-
-A record reads its whole source range before it writes anything, so a `Copy` or `Move` between overlapping ranges of one allocation behaves like `memmove`.
-Source bytes at or past the end of their allocation, or in an allocation that does not exist, read as zero, and reading them changes nothing about the source.
-
-### `Move`
-
-**`Move` is a `Copy` that then zeroes the source range, except where the destination has just overwritten it.**
-The source keeps its size and its existence; only its content changes.
-With `src == dst`, `Move(a, 0, 8, a, 4)` leaves `[0, 4)` zero and `[4, 12)` holding what `[0, 8)` held.
-
-*Why a separate record.*
-After a `Copy`, source and destination both hold the bytes, so a flush may not describe the destination by `Ref`s to where the bytes already lie: those data-page bytes would then be referenced twice, which the [byte-referenced-once writer invariant](address-table.md#design-directions) rules out, and the flush has to write the bytes again.
-After a `Move`, the source no longer holds them, so the flush can hand the source's `Ref`s to the destination and state the vacated range as `Zero`, and [data-page coverage](../impl/liveness.md#coverage) stays a plain counter.
-Rope- and tree-like containers shift ranges between neighbouring nodes constantly, and `Move` makes each such shift a statement edit rather than a byte copy; [the draft](../drafts/move-op.md) sketches how a flush states one.
+*Why cuts.*
+Every value is its bytes, so moving a value from one container to another would otherwise mean writing its encoding again, and the journal and the flush would carry all of its bytes.
+A cut and its paste carry none: the flush resolves them as a move, which states three to six spans however large the value is.
+Naming cuts by distance rather than popping them off a stack lets a transaction paste its cuts in any order, so two values that swap containers need no care about which is pasted first.
+The price is that a reader keeps the length of every cut of the open transaction, to check the positions after it, and an implementation keeps the cut bytes until the transaction ends.
 
 ## Transactions
 
@@ -85,25 +80,18 @@ How operations are grouped is free, but every record belongs to exactly one tran
 A record that occurs outside any transaction the application opened is recorded as a transaction of its own, so a lone operation can never be torn.
 
 Atomicity hides intermediate states; it does not erase order.
-Records take effect in sequence within a transaction just as across transactions, so a `Copy` recorded after a `Write` copies what was written.
+Records take effect in sequence within a transaction just as across transactions.
 
 ## Ordering
 
-The journal's most important invariant is not about any single record.
+> **Every transaction takes a sequence that decodes to one that decodes.**
 
-> **Every transaction must take a valid state to a valid state.**
+Replay stops only at transaction boundaries, so the states inside a transaction are never observed and may be anything, while the state at every boundary is one that recovery can land on, and must be a [valid sequence](sequence.md#what-a-valid-sequence-is).
+A container whose edit changes two places — the element and its count, for a push — makes both in one transaction.
 
-Replay stops only at transaction boundaries, so the states inside a transaction are never observed and may be invalid, while the state at every boundary is one that recovery can land on.
-"Valid" permits stale, and permits slightly leaky.
-It does not permit dangling: nothing may become reachable before everything it depends on is already earlier in the sequence, and nothing may be freed before whatever superseded it is already published.
-
-In practice this means every mutation decomposes as **prepare** new, unreachable state → one **publishing** write → **clean up** what it replaced, with the steps in one transaction or spread over several.
-Growing a container, removing from the middle of one, and replacing a map entry all fit this shape.
-A vector push that must grow, for instance, resizes and writes the new element *before* bumping the stored length, because the length is what makes the element reachable.
-A mutation that cannot be ordered this way belongs in a single transaction, which is the format's only atomic-group mechanism and the only one it needs.
-
-This is a discipline every container implementation must follow, and **no type system enforces it**.
-It is the single largest source of latent correctness risk in the design, which is why [the conformance suite](conformance.md#the-suite) makes it a mechanical check: truncate at every byte offset, replay, assert validity.
+That is the whole discipline.
+Nothing in the sequence points at anything else, so nothing can dangle, and nothing can become unreachable, so nothing can leak.
+[The conformance suite](conformance.md#the-suite) checks it mechanically: truncate the journal at every byte, replay, and decode.
 
 ## Encoding
 
@@ -111,21 +99,35 @@ Integers are unsigned LEB128 varints and fixed-width fields are little-endian, a
 
 ### Records
 
+**Each position is written as its distance from where the record before it left off, and the record's kind rides in the low two bits of the same varint:**
+
 ```
-record  := free | resize | write | splice | copy | move
-free    := 1:byte id:varint
-resize  := 2:byte id:varint size:varint
-write   := 3:byte id:varint offset:varint bytes
-splice  := 4:byte id:varint offset:varint old_len:varint bytes
-copy    := 5:byte src:varint src_offset:varint len:varint dst:varint dst_offset:varint
-move    := 6:byte src:varint src_offset:varint len:varint dst:varint dst_offset:varint
-bytes   := len:varint byte{len}
+record  := head:varint (write | splice | move | paste)
+; x := unzigzag(head), a signed integer
+; kind := x & 3, and delta := x >> 2, shifting arithmetically
+write   := bytes                          ; kind 0; position := cursor + delta
+splice  := removed:varint bytes           ; kind 1; position := cursor + delta
+move    := length:varint to_delta:varint  ; kind 2; from := cursor + delta,
+                                          ;   to := from + unzigzag(to_delta)
+paste   := removed:varint cut:varint      ; kind 3; position := cursor + delta
+bytes   := length:varint byte{length}
 ```
 
-Tags `0` and `7` through `255` are reserved.
-Ids and offsets are absolute rather than delta-encoded as in the address table, since records, unlike statements, are not sorted.
+So a writer computes `head = zigzag((delta << 2) | kind)`, with `zigzag` as in [the span table](span-table.md#physical-format).
 
-Every record respects the [bounds](address-table.md#bounds): ids are non-zero and fit in 32 bits, and every sum of an offset and a length that a record implies is at most `2^32 − 1`, so that no record, growth included, can make an allocation larger than the bound allows.
+**The cursor is where the record before left off**: the end of what a `Write`, `Splice` or `Paste` put in place — `position` plus the bytes it inserted — and the end of the moved run at its destination, `to + length`, for a `Move`.
+It starts at 0 at the start of each epoch's journal, which is always replayed from its start, and carries over from one transaction to the next.
+
+**A `Write` of no bytes is reserved as the escape to a fifth kind of record**, since it changes nothing; a reader refuses it until a revision defines one.
+
+Every position, `removed` count, `length` and `to` is below `2^48` ([bounds](span-table.md#bounds)), and a record's range must lie inside the sequence.
+A `Paste`'s `cut` must name a cut of its own transaction that is not pasted yet; its length is the cut's.
+
+*Why relative positions.*
+Edits mostly land near the one before, so a delta from −16 to 15 fits in the head's one byte with the kind, where an absolute position takes three bytes in a sequence of 50 KB and four in one of 100 MB, besides a byte for the kind.
+A jump across most of the sequence costs at most one byte more than an absolute position would, since zigzag adds one bit.
+A keystroke is then a `Splice` of four bytes — the head, nothing removed, a length of one, and the character — and a transaction of nine with its length and checksum.
+A `Move`'s `to` counts from its `from`, since restacking moves bytes a short way.
 
 ### Framing
 
@@ -133,55 +135,55 @@ Every record respects the [bounds](address-table.md#bounds): ids are non-zero an
 transaction := length:varint record* crc:byte{4}
 ```
 
-`length` counts the bytes of the records, and `crc` is the value of the segment's [CRC chain](#the-crc-chain) just after them.
+`length` counts the bytes of the records, and `crc` is the value of the journal's [CRC chain](#the-crc-chain) just after them.
 A transaction is complete — committed — once its `crc` is in the journal; a transaction whose `crc` is missing or does not match never happened.
-`length` is at most `2^32 − 1` ([bounds](address-table.md#bounds)).
+`length` is at most `2^32 − 1` ([bounds](span-table.md#bounds)).
 
 *Why a length prefix.*
 It tells a reader where the `crc` is before the reader decodes a single record, so nothing unvalidated is ever parsed.
 It also means a writer must know a transaction's size before appending its first byte, and so encodes the transaction whole — which costs nothing, since an unfinished transaction [cannot be folded](#checkpoint-versus-commit) and is held in memory until it ends anyway.
 
-A transaction whose `crc` matches but whose records do not decode to exactly `length` bytes, or break a bound, is not a torn tail — a torn write cannot produce a matching CRC — but a writer's bug.
+A transaction whose `crc` matches but whose records do not decode to exactly `length` bytes, break a bound, reach outside the sequence, or paste a cut they may not, is not a torn tail — a torn write cannot produce a matching CRC — but a writer's bug.
 A reader must refuse the file, as it would refuse any other damage, rather than stop replay there and silently drop every transaction after it.
 
 ### Pages
 
-**A segment is a singly linked chain of pages**, starting at the page the header's [`journal_pointer`](file-format.md#the-journal-pointer) names.
+**An epoch's journal is a singly linked chain of journal pages**, starting at the page the header's [`journal_pointer`](file-format.md#the-journal-pointer) names.
 Journal pages carry neither the [page framing](file-format.md#page-framing) nor a header of their own; each page reserves only its last 8 bytes, for a **trailer**:
 
 ```
 journal_page := stream:byte{page_size − 8} next:byte{4} crc:byte{4}
 ```
 
-The segment's transactions form one byte **stream**, laid out across the `stream` areas of its pages in chain order.
+The journal's transactions form one byte **stream**, laid out across the `stream` areas of its pages in chain order.
 Where a page's `stream` area ends, the stream continues at the start of the next page — in the middle of a transaction, a record, or a field if it must, which is what lets a record carry a payload larger than a page.
 A transaction's `crc` is no exception: it splits like any other field, and its two parts are checked together once both have been read.
 
 The trailer is written when, and only when, the stream continues past its page: `next` is the number of the page the stream continues on, and `crc` is the value of the CRC chain just after `next`.
-So the writer chooses each next page only once it needs one, and the last page of a segment has no valid trailer, only stale bytes where a trailer would go.
-`next` names a reusable page, or a new page added at the end of the file, as [the reuse rule](durability.md#the-reuse-rule) allows, and never a page already in the segment.
+So the writer chooses each next page only once it needs one, and the last page of a journal has no valid trailer, only stale bytes where a trailer would go.
+`next` names a reusable page, or a new page added at the end of the file, as [the reuse rule](durability.md#the-reuse-rule) allows, and never a page already in the journal.
 
 A reader follows `next` only once the trailer's `crc` has matched, so it never trusts a pointer that no checksum covers.
 The trailer also means that every byte a page holds is covered by a checksum as soon as the stream has moved past the page, including the first part of a transaction that continues on the next one.
 
 ### The CRC chain
 
-**Every checksum in a segment is a value of one running CRC-32C over the segment's chain input**, using the CRC-32C [specified for the file](file-format.md#integer-encodings-and-crcs).
-The chain input is the segment's epoch as 8 little-endian bytes — one more than the epoch of the header that names the segment — followed by every stream byte and every `next` field in order, but not the checksum fields themselves.
+**Every checksum in an epoch's journal is a value of one running CRC-32C over the journal's chain input**, using the CRC-32C [specified for the file](file-format.md#integer-encodings-and-crcs).
+The chain input is the journal's epoch as 8 little-endian bytes — one more than the epoch of the header that names the journal — followed by every stream byte and every `next` field in order, but not the checksum fields themselves.
 Each checksum field stores the CRC-32C of the chain input up to that field: a transaction's `crc` covers everything up to its last record, and a trailer's `crc` everything up to its `next`.
 
 - *Chained*, so that recovery keeps the longest valid **prefix** rather than the longest valid set: a hole cannot be skipped, even if the bytes past it are intact.
   This matters because operating-system write-back is not ordered, so a later journal page can reach disk while an earlier one does not.
 - *Epoch-salted*, so that stale bytes left in a reused page do not validate as journal content.
-  The epoch is not stored in the journal, because the header that names the segment implies it.
-  This is what lets a flush hand journal segment `E + 1` a reusable page without writing anything to it first — with [one exception](#the-start-of-a-session).
+  The epoch is not stored in the journal, because the header that names the journal implies it.
+  This is what lets a flush hand the journal of epoch `E + 1` a reusable page without writing anything to it first — with [one exception](#the-start-of-a-session).
 - *Blind to its own checksums*, because CRC-32C, fed a message followed by that message's own CRC, always ends in the same state.
-  Feeding each stored checksum back in would restart the chain from a constant after every transaction, and a stale transaction from any earlier segment that happened to start where a valid one ended would validate.
+  Feeding each stored checksum back in would restart the chain from a constant after every transaction, and a stale transaction from any earlier journal that happened to start where a valid one ended would validate.
 
 ## Recovery
 
 1. Read and validate the [header](file-format.md#header-pages), taking the CRC-valid slot with the highest epoch, and bulk-load its world.
-2. Walk the segment from the header's `journal_pointer`, feeding the chain as it goes: check each transaction's `crc` once its records have been read, and each trailer's `crc` before following its `next`.
+2. Walk the journal from the header's `journal_pointer`, feeding the chain as it goes: check each transaction's `crc` once its records have been read, and each trailer's `crc` before following its `next`.
 3. Stop at the first check that fails, or at a `journal_pointer` or `next` that points past the end of the file.
    The complete transactions before that point are the journal; whatever follows them is the torn tail.
 4. Replay the complete transactions in order.
@@ -195,26 +197,25 @@ Each costs at most one flush or one page write per session.
 
 **A session appends only to a recovered journal that is empty; a non-empty one it folds with a flush first.**
 Appending would rewrite the page holding the recovered journal's end, and a power cut during that write can corrupt the transactions already on it.
-Those can be durable: when a crash loses header `E`, recovery lands on header `E − 1` and replays journal segment `E`, which flush `E`'s `fsync` made durable — so damaging it would lose transactions that a completed flush had covered, which [Durability](durability.md#what-is-guaranteed) promises cannot happen.
+Those can be durable: when a crash loses header `E`, recovery lands on header `E − 1` and replays the journal of epoch `E`, which flush `E`'s `fsync` made durable — so damaging it would lose transactions that a completed flush had covered, which [Durability](durability.md#what-is-guaranteed) promises cannot happen.
 
-**A session's first flush writes the first page of the journal segment it names**, for which zeros suffice, unless that page lies past the end of the file.
-The epoch salt tells every segment apart except in one situation.
-When a crash loses header `E` after transactions were appended to the segment it named, recovery lands on header `E − 1`, and the recovering session's first flush issues epoch `E` again.
-If the page it named still held the lost segment's first transactions, they would validate — same epoch, same starting offset — although the session committing the header knows nothing of them; its later headers would describe states without them, and after a second lost header, recovery could replay stale transactions on top of a state they were never appended to.
+**A session's first flush writes the first page of the journal it names**, for which zeros suffice, unless that page lies past the end of the file.
+The epoch salt tells every journal apart except in one situation.
+When a crash loses header `E` after transactions were appended to the journal it named, recovery lands on header `E − 1`, and the recovering session's first flush issues epoch `E` again.
+If the page it named still held the lost journal's first transactions, they would validate — same epoch, same starting offset — although the session committing the header knows nothing of them; its later headers would describe states without them, and after a second lost header, recovery could replay stale transactions on top of a state they were never appended to.
 Only a session's first flush can re-issue an epoch, because writing header `E` required the `fsync` that made header `E − 1` durable, so a lost header `E` never leaves recovery further back than `E − 1`.
-And only the first page of a segment is exposed, since every later page validates only as the continuation of the exact bytes before it.
+And only the first page of a journal is exposed, since every later page validates only as the continuation of the exact bytes before it.
 
 ## Folding
 
-Periodically the journal is **folded**: its records are applied, the on-file state is brought up to date, and a fresh journal segment is started.
+Periodically the journal is **folded**: its records are applied, the on-file state is brought up to date, and a fresh journal is started.
 The protocol that commits this is in [Durability](durability.md#the-flush-protocol).
 
-**A flush folds its whole segment, which holds complete transactions only**, so every header describes the state at a transaction boundary.
+**A flush folds its whole journal, which holds complete transactions only**, so every header describes the state at a transaction boundary.
 
 An implementation has wide latitude in *what* it writes.
-It may apply records naively in order, or it may optimize — cancelling the creation and freeing of an allocation that never escaped, dropping a write that a later write fully supersedes, eliding a grow-then-shrink that returns to the original size with nothing written in between.
-It may reorder freely, so long as the result is indistinguishable from an in-order replay.
-"Indistinguishable" is measured against [content semantics](allocations.md#content-semantics): every byte has one right answer, so a fold's freedom is to reach that answer by any route rather than to choose among answers.
+It may apply records naively in order, or it may optimize — dropping a write that a later write fully supersedes, resolving a cut and its paste as a move, stating bytes a splice shifted without writing them again.
+It may reorder freely, so long as the resulting sequence is the one an in-order replay produces: every byte of the sequence has one right answer, so a fold's freedom is to reach that answer by any route, and to cut it into spans however it likes.
 
 ### Checkpoint versus commit
 

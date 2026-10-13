@@ -66,11 +66,9 @@ A Python implementation should use property hooks and have no guards at all.
 | document | contents |
 | --- | --- |
 | [Crate layout](crates.md) | the workspace, the dependency direction, and where the seam falls |
-| [Pointers](pointers.md) | the two handle types, and the ownership discipline they enforce |
-| [Persistable and guards](persistable-and-guards.md) | the central traits, why mutation needs a guard, and why it returns a `Result` |
-| [Containers](containers.md) | how the built-in containers are laid out and why |
-| [The derive macro](derive-macro.md) | what it generates, and why guards are generated per type |
-| [Freeing](freeing.md) | the `free` hook, and where ownership ends |
+| [Persistable and guards](persistable-and-guards.md) | the central traits, regions, `Fixed`, why mutation needs a guard, and why it returns a `Result` |
+| [Containers](containers.md) | how the built-in containers are encoded and indexed, and cuts |
+| [The derive macro](derive-macro.md) | what it generates, fixed forms, and why guards are generated per type |
 | [Transactions](transactions.md) | the RAII types, and what happens on unwind |
 | [Schema binding](schema-binding.md) | how a Rust type declares its descriptor, and the check at open |
 | [The store](store.md) | the Rust-specific half of the storage layer: interior mutability, I/O, and the in-memory structures |
@@ -78,16 +76,16 @@ A Python implementation should use property hooks and have no guards at all.
 
 ## Status
 
-A first prototype of the whole design exists; nothing is frozen.
-Where the implementation departs from the [implementation notes](../impl/), or found them unclear, `implementation-notes.md` in the kladde-rs repository says so.
+A prototype of the whole design exists; nothing is frozen.
+Where the implementation departs from the [reference algorithms](../impl/), or found them unclear, its [implementation notes](../impl/implementation-notes.md) say so.
 
 | area | status |
 | --- | --- |
-| Schema descriptors, encoding, fingerprints | implemented and specified |
-| Schema binding to Rust types, fingerprint check at open | implemented |
-| Containers, derive macro, guards | implemented |
-| File format, address table, journal, recovery | implemented |
-| Flush and consolidation | implemented |
-| Transactions and batches | implemented, with the [behaviour on unwind](transactions.md#behaviour-on-unwind) |
-| Freeing | implemented as a type-driven hook |
+| Schema descriptors, encoding, fingerprints, rules of nesting | implemented and specified |
+| The encoding of values; schema binding to Rust types; fingerprint check at open | implemented |
+| Containers, derive macro, guards, regions, `Fixed` | implemented |
+| File format, span table, journal, recovery | implemented, with a span table of [two levels](../impl/implementation-notes.md) |
+| Flush, span policy and consolidation | implemented |
+| Transactions, batches, and cuts | implemented; cuts on the vector only |
+| The private chain | written and read, but nothing kept in it |
 | Schema evolution | designed, not built |

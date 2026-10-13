@@ -28,11 +28,16 @@ The descriptor has no further content.
 | --- | --- | --- |
 | 128 | Struct | `string(name) varint(field_count)`, then per field `string(field_name) reference(type)` |
 | 129 | Enum | `string(name) byte(discriminant_width) varint(variant_count)`, then per variant `varint(discriminant_value) string(variant_name) varint(field_count)`, then per field `string(field_name) reference(type)` |
-| 130 | Opaque | `string(library_name) string(type_name) varint(major) varint(minor) varint(patch) varint(inline_size) varint(param_count)`, then per parameter `reference(type)` |
-| 131 | Array *(reserved)* | `reference(element) varint(count)` |
-| 132 | Pointer *(reserved)* | content undefined |
+| 130 | Opaque | `string(library_name) string(type_name) varint(major) varint(minor) varint(patch) varint(size_mode) varint(param_count)`, then per parameter `reference(type)` |
+| 131 | Array | `reference(element) varint(len)` |
+| 133 | Sequence | `reference(element)` |
+| 134 | Text | nothing |
+| 135 | Fixed | `reference(target)` |
 
-Tags `133..=255` are unassigned and reserved for future kinds.
+An Opaque's `size_mode` is `0` for a value prefixed with its length, and one more than the size for a type with a fixed size: `n + 1` for `n` bytes.
+Tag `132` is unassigned, as are tags `136..=255`; all are reserved for future kinds, and a reader refuses a table that uses one.
+
+A decoded table must also keep the [rules of nesting](type-descriptors.md#rules-of-nesting), and every enum's discriminant values must fit its `discriminant_width`; a reader refuses one that does not.
 
 ## Canonical order
 
@@ -45,14 +50,16 @@ A field's position determines its byte offset, so this order is part of the repr
 A variant's position does not affect any value's layout, so declaration order is discarded in favour of this canonical order.
 Two enums differing only in the source order of their variants encode identically.
 
-**Opaque parameters** and an **Array's element** keep their given order, being positional type arguments.
+**Opaque parameters** keep their given order, being positional type arguments; an Array, a Sequence and a `Fixed` have one reference each.
 
 ## Table encoding
 
 `varint(descriptor_count)`, followed by each descriptor in index order, root first.
 
-This is the canonical on-file encoding of a schema.
-Its placement, framing, alignment, and checksumming within a kladde file are a [container-layer](../file-format.md) matter.
+This is the canonical on-file encoding of a schema, and the content of a file's [schema chain](../sequence.md#three-chains).
+A table holds at least one descriptor, every reference lies inside it, and no byte follows its last descriptor.
+
+A table of a vector of text, `Sequence(Text)`, is the four bytes `02 85 01 86`: two descriptors, a Sequence (133) of descriptor 1, and Text (134).
 
 ## Worked example
 

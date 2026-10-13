@@ -2,7 +2,11 @@
 title: Evaluation
 ---
 
-Measurements of [kladde-rs](../rust/) under realistic workloads, and what they say about the design in [Implementation](../impl/).
+Measurements of [kladde-rs](../rust/) under realistic workloads, and what they say about the design.
+
+**Every page but the last measured the design that the present one replaced**, of [allocations and an address table](../superseded/allocations.md): "main" in them is kladde-rs's main branch as it stood then, which holds that design and is kept as the branch `address-table`.
+Their findings about consolidation's policies — the churn floor, the budget, free filling, compaction mode — carry over to pages of spans, since the present design keeps those policies; their findings about statements, allocations and layouts do not.
+The last page, [the file as one sequence, measured](one-sequence.md), compares the present design with that main.
 
 Each page names the commit it measured and the commands that reproduce it.
 Its figures are drawn by `tools/plot-evaluation.py` from the tables in `data/`, which are kept, gzipped, so that a figure can be redrawn without rerunning the benchmark.
@@ -21,4 +25,4 @@ Ratios, such as the file's size over its live size or the bytes written per byte
 | [Bayesian ripeness](bayesian-ripeness.md) | the [Bayesian draft](../drafts/bayesian-ripeness.md)'s posterior per chunk, started from the file's empirical prior and decided by the expected gain or by the option to wait, against both estimates above: what it finds static, how it cleans, how its prior fares, and what it costs to keep and to rank |
 | [Cleaning edited drawings and texts](cleaning-edits.md) | main's churn floor and the three ripeness estimates, under the newest size rule, on three edited SVG drawings in three layouts and on two typed texts, cleaning until the live pages are about nine tenths full: live pages, data pages and leaves, their fill, which policy lies lowest, the files' free pages and closed sizes, writes, free filling, and times |
 | [Ripeness with main's free filling](ripeness-free-filling.md) | the three ripeness branches of the page above with main's free filling in place of the draft's: how often free filling cleans, the pages the branches open and the bytes they write for it, how far each branch's curve moves toward the churn floor's, and the live pages, fill, files and writes at each target |
-| [The file as one sequence, measured](one-sequence.md) | the [one-sequence draft](../drafts/one-sequence.md), implemented on a branch of kladde-rs, on the drawings and texts of the cleaning page under the churn floor, against main in its three layouts: the trade-off between space and writes, the encoding's size, live pages and their fill, the span policy's bound, files, writes, and times |
+| [The file as one sequence, measured](one-sequence.md) | the [present design](../spec/sequence.md), implemented on a branch of kladde-rs while it was a proposal, on the drawings and texts of the cleaning page under the churn floor, against main in its three layouts: the trade-off between space and writes, the encoding's size, live pages and their fill, the span policy's bound, files, writes, and times |

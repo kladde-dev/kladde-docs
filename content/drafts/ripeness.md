@@ -292,7 +292,7 @@ which is the byte-weighted mean when the parts drain alike, and calls a part sta
 But what makes content static for ripeness is draining slowly against $\kappa$, not against other content: at $\kappa = 0.01$, a part that drains at 0.02 has a threshold of 0.23, however much faster its neighbour drains.
 [In simulation](#checking-the-fit-in-simulation), the page of the example above cost 9.0 % more than cleaning at its true index from that start, against 7.6 % from the byte-weighted one, and a page mixed from parts at 0.2 and 0.002 cost 2.4 % against 2.5 %, so the draft keeps the byte-weighted mean.
 
-**Open restores each page's estimate from the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add), and seeds a page the state cannot vouch for from its fill and its age.**
+**Open restores each page's estimate from the [consolidator state](../impl/consolidator-state.md#what-it-would-hold), and seeds a page the state cannot vouch for from its fill and its age.**
 The seed assumes that the page has drained at one rate since it was written, from the fill its framing records, `content_size`, to its current coverage, at $\hat r = \ln(\texttt{content\_size} / \mathrm{coverage}) / \mathrm{age}$.
 It enters the sums as the page's whole past, watched and seen to lose what that rate predicts, and as the pseudo-observations of a start with all of `content_size` draining.
 So all of its content is draining, `fast` is the coverage, `rate` is $\hat r$, and `at` is the current epoch.
@@ -479,8 +479,8 @@ On kladde-svg's drawings, that would clean 0.01 to 0.15 victims per flush free w
   The budget would take its victims from the two ordered sets, at $O(\log P)$ rather than $O(1)$ a victim; the bucket queues and their sampling would stay, for free filling's choice of the sparsest data victim.
 - [The churn floor](../impl/consolidation.md#the-churn-floor-is-a-parameter-not-an-identity) would give way to ripeness, and $\lambda$ to $\kappa$; the controller would move $\kappa$ toward $\tau$, and the budget would remain a cap.
 - [Free filling](../impl/consolidation.md#victims-are-pulled-one-at-a-time) would stay as it is, and its victims would not count as cleaning when the controller decides whether $\kappa$ holds.
-- [The page table](../impl/in-memory-state.md#4-the-page-table) would gain `Drain`, 18 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-the-ripeness-draft-would-add) would carry it, with $\kappa$, from one session to the next.
-- [The constants still to be chosen](../impl/consolidation.md#constants-still-to-be-chosen) would lose $\lambda$ and gain $\kappa$'s controller, $\beta$, $n_0$, $c$, and $R_\text{min}$.
+- [The page table](../impl/in-memory-state.md#3-the-page-table) would gain `Drain`, 18 bytes per page, and the [consolidator state](../impl/consolidator-state.md#what-it-would-hold) would carry it, with $\kappa$, from one session to the next.
+- [The constants still to be chosen](../impl/consolidation.md#constants) would lose $\lambda$ and gain $\kappa$'s controller, $\beta$, $n_0$, $c$, and $R_\text{min}$.
 
 ## Ablation: without the logarithm
 
@@ -531,7 +531,7 @@ Running the evaluation with $h$ replaced by $g$ would measure how much of a real
   A clock that counts the bytes the application writes would measure drain per unit of work, but pages record only their epoch, so the seed at open would still have to use epochs.
 - **The flush's own content.**
   Packed in key order, it mixes allocations the application keeps rewriting with ones it has just created, which, with free filling's survivors, is a source of mixed pages this draft leaves in place.
-  [`last_written`](../impl/in-memory-state.md#3-the-allocation-map) could split a flush's chunks by whether their allocation was also written recently, at the price of key order; whether that pays is a question for measurement.
+  [`last_written`](../superseded/allocations.md#what-it-was) could split a flush's chunks by whether their allocation was also written recently, at the price of key order; whether that pays is a question for measurement.
 - **Where keeping survivors apart would pay.**
   On kladde-svg's drawings and text-bench's texts, the victims free filling frees outweigh what its survivors cost the pages they join; a workload whose survivors make a larger share of the room, or freeze their hosts above their thresholds more often, could tip the balance the other way, which only measurement can say.
 - **Description defragmentation's rewrites** are cold by selection and today share pages with the flush's fresh content.

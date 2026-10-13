@@ -19,7 +19,7 @@ With a root, "load only this subtree" becomes a question about which pages to fo
 
 ## What has already been decided with segments in mind
 
-- **Allocation ids are 32 bit**, and the [bounds](../spec/address-table.md#bounds) note that each segment will likely get its own id space, so a file may eventually hold more than `2^32` allocations without widening the id.
+- **Allocation ids are 32 bit**, and the [bounds](../spec/span-table.md#bounds) note that each segment will likely get its own id space, so a file may eventually hold more than `2^32` allocations without widening the id.
 - **The header reserves space for future roots**, or should — the exact field list is explicitly [left open](../spec/file-format.md#header-pages) partly for this.
 - **Whether address-table child references should carry each page's id range** is an open question: it costs a few bytes per reference now and buys partial loading later.
   This is the one decision that would be expensive to retrofit, since it changes bytes that files already contain.
@@ -29,7 +29,7 @@ With a root, "load only this subtree" becomes a question about which pages to fo
 Essentially everything else:
 
 - How a segment is named, and whether one segment may point into another.
-- Whether the ownership tree may cross a segment boundary, and what that means for [freeing](../rust/freeing.md).
+- Whether the ownership tree may cross a segment boundary, and what that means for [freeing](../superseded/allocations.md#what-it-was).
 - Whether segments share a journal or each carry their own, and what a transaction spanning two segments means for atomicity.
 - Whether a segment can be loaded read-only while another is being written.
 - How the [schema table](../spec/schema/) is shared or duplicated.

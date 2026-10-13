@@ -67,7 +67,7 @@ It ran on texts of 64 and 512 KiB of random words, which the typing grows to 241
 
 **The store flushes whenever the journal outgrows four pages**, `Options::journal_budget_pages = 4`, and at every row: on the drawings every 230 to 372 edits on average, on the texts every 1000 keystrokes, the journal never filling between rows; otherwise it runs with its defaults.
 
-**Four branches of kladde-rs ran, each with the [newest size rule](../spec/address-table.md#conflict-resolution-across-epochs):**
+**Four branches of kladde-rs ran, each with the [newest size rule](../superseded/allocations.md#what-it-was):**
 
 | branch | commit | policy | knob, default | settings run |
 | --- | --- | --- | --- | --- |

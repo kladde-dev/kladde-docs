@@ -37,7 +37,8 @@ The fingerprint of a type is computed from **the type graph reachable from that 
 - primitive codes;
 - discriminant widths and discriminant values;
 - field names and variant names;
-- field order and canonical variant order.
+- field order and canonical variant order;
+- an Array's length, and an Opaque's library name, type name and size mode.
 
 **Excluded:**
 
@@ -61,6 +62,35 @@ Memoization on black nodes keeps the traversal linear in the number of distinct 
 
 The same cycle-awareness is needed for descriptor *equality* on recursive types, so this is shared machinery rather than fingerprint-specific work.
 
+## The computation, exactly
+
+Every descriptor starts white.
+`visit(node, depth)` colours `node` grey, records its `depth`, feeds a fresh SHA-256 the node's **hash input**, colours it black, remembers the first 16 bytes of the digest as its fingerprint, and returns them.
+The file's root fingerprint is `visit(0, 0)`.
+
+A node's hash input is its [canonical encoding](canonical-encoding.md#descriptor-encoding), with three changes:
+
+- a Struct's and an Enum's `string(name)` is left out;
+- an Opaque's `varint(major) varint(minor) varint(patch)` becomes `byte(stable) varint(leading)`, with `stable` 1 if `major > 0` and 0 otherwise, and `leading` the major version if `major > 0` and the minor version otherwise;
+- every `reference(child)` becomes a **token**, emitted in the order the encoding emits references, variants in ascending discriminant order:
+  - if `child` is white, `byte(0)` followed by the 16 bytes of `visit(child, depth + 1)`;
+  - if `child` is black, `byte(0)` followed by its remembered 16 bytes;
+  - if `child` is grey, which makes the edge a back edge, `byte(1)` followed by `varint(depth − depth[child])`.
+
+So the token for a child is computed in the middle of its parent's input, which is why the hash state of every node on the stack stays open until its own input is complete.
+A memoized fingerprint is reused wherever its node is met again; for a node inside a cycle that depends on where the traversal first met it, so it is not that node's identity as a root, and only root fingerprints are compared.
+
+### Vectors
+
+| type graph, root first | fingerprint |
+| --- | --- |
+| `[0] Struct "Point" { x: [1], y: [1] }`, `[1] i32` | `0d91791f5827efadfa8150af9812fad6` |
+| `[0] Enum "List"`, width 4, `{ 0 "Nil" {}, 1 "Cons" { "0": [1], "1": [0] } }`, `[1] i32` | `af12af0167771e03506952fff8a274fd` |
+| `[0] Opaque "lib" "T"`, version 1.2.3, fixed size 8, no parameters | `81a2a3d8b939f4f216a344cf10758953` |
+
+Hex, byte 0 first.
+The Point's hash input, for instance, is `80 02 01 78 00 <16 bytes of i32's fingerprint> 01 79 00 <the same 16 bytes>`, and `i32`'s is the single byte `06`.
+
 ## Determinism
 
 The fingerprint must be a pure function of the type graph.
@@ -77,7 +107,7 @@ An implementation that cannot demonstrate this on the conformance vectors is not
 The [file header](../file-format.md#header-pages) stores the root type's fingerprint.
 
 This makes the overwhelmingly common case — an application opening a file it wrote itself, with an unchanged schema — a single 16-byte comparison.
-If it matches, the reader knows its own compile-time layout is exactly the writer's, and can read at static offsets without parsing the descriptor table at all.
+If it matches, the reader knows its own types encode exactly as the writer's did, and decodes the sequence natively without parsing the descriptor table at all.
 
 Only when it *differs* does the reader parse the writer's descriptors and attempt [resolution](evolution.md).
 So the fast path costs one comparison and the slow path costs one graph reconciliation per open — never per value.

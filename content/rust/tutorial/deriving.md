@@ -72,13 +72,51 @@ contact.phones_mut().push(number)?;
 It also generates a `ContactParts` struct, and a `parts()` method on the guard that returns the guards of all fields at once, for when you need more than one at a time.
 A tuple struct's accessors are named by position — `field_0_mut()`, `field_1_mut()` — and its `parts()` returns a tuple struct.
 
-**A struct owns no allocation of its own.**
-Its fields are laid out consecutively in whatever allocation contains it, so its inline size is just the sum of its fields' inline sizes, and each field's offset is the sum of the earlier ones'.
-Those offsets are compile-time constants, which is why field access costs nothing at runtime.
+**A struct is its fields' encodings, back to back**, inline in whatever contains it.
+A field's guard finds where the field starts: at a constant offset up to the first field whose size depends on its value — a varint, text, a container — and after that at the sum of the encoded sizes of the fields before it, which the in-memory values know.
+Integers wider than a byte are varints, so a `u32` takes one byte below 128 and up to five above.
 
 That includes primitive fields.
 `bool`, `i32`, `char` and friends all implement `Persistable`, specifically so the macro can treat every field uniformly rather than special-casing leaves.
-So do tuples of up to twelve `Persistable` types, laid out like a tuple struct.
+So do tuples of up to twelve `Persistable` types, encoded like a tuple struct, `Option<T>`, and `Box<T>`, which is persisted as the `T` it holds.
+
+## Fixed-size values
+
+**`Fixed<T>` keeps a value at the same size whatever it is**: every integer at its full width, every `char` in four bytes, and every enum with its discriminant at a fixed width and its variant padded with zeros to the largest.
+Use it for a field that changes often, such as a counter, which would otherwise change size whenever it crosses a power of 128, and for the elements of a large vector, which then finds element `i` by multiplication and keeps no index of where its elements start.
+
+A derived type can be wrapped in `Fixed` only if it is marked `#[kladde(bounded)]`, which requires every field's type to have a fixed form too:
+
+<!-- kladde-example: name=fixed file=src/lib.rs deps=kladde,kladde-types
+before:
+  use kladde::{Fixed, Persistable};
+  use kladde_types::PersistableVec;
+  #[derive(Persistable)]
+  #[kladde(bounded)]
+  enum ShapeKind {
+      Circle,
+      Square,
+  }
+-->
+```rust
+#[derive(Persistable)]
+#[kladde(bounded)]
+struct Shape {
+    x: u32,
+    y: u32,
+    kind: ShapeKind,       // also #[kladde(bounded)]
+}
+
+#[derive(Persistable)]
+struct Drawing {
+    shapes: PersistableVec<Fixed<Shape>>,   // eight bytes per shape, plus the kind's
+    revision: Fixed<u64>,
+}
+```
+
+`Fixed<T>`'s guard replaces the value whole, with `set(Fixed(...))`: changing one field means building the whole value, and writing all of it, which for a fixed-size value is an overwrite in place.
+Types holding text, a container, or themselves have no fixed form, and wrapping one in `Fixed` fails to compile with an error that says so.
+A generic type marked `#[kladde(bounded)]` has a fixed form wherever its parameters do.
 
 ## Newtypes
 
@@ -102,8 +140,8 @@ Its guard's `get_mut()` returns the field's guard.
 
 ## Enums
 
-An enum is a discriminant followed by the selected variant's fields, each variant laid out like a struct in its own right.
-Its inline size is the discriminant width plus the largest variant's field sum — so, like a struct, it owns no allocation.
+An enum is its discriminant, as a varint, followed by the selected variant's fields, each variant encoded like a struct in its own right.
+So a value takes the size of its own variant, not of the largest.
 Positional fields are named by their position: `Mobile(PersistableString)` has a field called `"0"`.
 
 **To mutate the current variant in place, match on the guard's `parts()`.**
@@ -137,12 +175,13 @@ fn main() -> kladde::Result<()> {
 ```
 
 Each field guard writes inside its field, so the variant stays what it was.
-`set` replaces the whole value, which is how the variant changes: it stores the new value, then frees whatever the old one owned.
+`set` replaces the whole value, which is how the variant changes: it splices the new value's encoding over the old one's.
 `parts()` borrows the guard, so the compiler stops you from calling `set` while you still hold a field's guard.
 
-**The discriminant is Rust's own**: the one you write (`Mobile = 1`), or else one more than the previous variant's, counting from 0.
-On file it takes the smallest of 1, 2, 4 or 8 bytes that holds the largest discriminant, unless an integer `#[repr]` such as `#[repr(u16)]` fixes the width; negative discriminants and signed or pointer-sized `repr`s are not supported.
-Explicit values on variants with fields need a `#[repr]` anyway, as Rust requires, and this one also makes the discriminant 4 bytes wide where 1 would do:
+**The discriminant is Rust's own**: the one you write (`Mobile = 1`), or else one more than the previous variant's, counting from 0; negative discriminants and signed or pointer-sized `repr`s are not supported.
+The file holds it as a varint, so discriminants below 128 take one byte.
+Inside a `Fixed` value it takes a fixed width: the smallest of 1, 2, 4 or 8 bytes that holds the largest discriminant, unless an integer `#[repr]` such as `#[repr(u16)]` fixes it.
+Explicit values on variants with fields need a `#[repr]` anyway, as Rust requires:
 
 <!-- kladde-example: name=pinned-discriminants file=src/lib.rs deps=kladde,kladde-types
 before:
@@ -182,31 +221,31 @@ In practice that means:
 - your own derived types — fine, and they nest arbitrarily;
 - `String`, `Vec<T>`, `HashMap<K, V>` — **not** `Persistable`.
   Use the kladde equivalents.
-  This is deliberate: the compile error is the mechanism that stops you from silently persisting nothing.
+  This is deliberate: a field's type says whether it is durable, and the compile error tells you which type to use.
 
 ## Non-persisted fields
 
 Sometimes a struct has a field that should not be stored — a cache, a handle, something derived.
-The derive macro has no attribute for this yet; the workaround is a [hand-written implementation](custom-persistable.md) that reads and writes only the fields you want persisted.
+The derive macro has no attribute for this yet; the workaround is a [hand-written implementation](custom-persistable.md) that encodes only the fields you want persisted.
 
 Doing so does **not** make your type opaque to the format.
-A hand-written implementation that writes exactly the bytes of a struct with two fields *has* that struct's [descriptor](../../spec/schema/type-descriptors.md).
+A hand-written implementation that encodes exactly the bytes of a struct with two fields *has* that struct's [descriptor](../../spec/schema/type-descriptors.md).
 The presence of a third, non-persisted field in your Rust source is invisible.
 
-## Layout stability
+## Encoding stability
 
 A few things you should know before you ship a file format built on a derived type.
 
-**Field order is layout.**
-Reordering fields in the source changes every subsequent field's offset, and therefore changes the type's [fingerprint](../../spec/schema/fingerprints.md), and `Kladde::open` refuses a file whose fingerprint differs from your type's.
+**Field order is encoding.**
+Reordering fields in the source changes the order of their encodings, and therefore changes the type's [fingerprint](../../spec/schema/fingerprints.md), and `Kladde::open` refuses a file whose fingerprint differs from your type's.
 Once [evolution](../../spec/schema/evolution.md) lands, reordering will be non-breaking, because fields are identified by name.
 
-**Variant order is layout only through implicit discriminants.**
+**Variant order is encoding only through implicit discriminants.**
 A variant without an explicit discriminant takes the next number, so inserting or reordering variants renumbers the ones after them, and changes the fingerprint.
 With [explicit discriminants](#enums), reordering changes nothing, since enum variants are canonicalized by discriminant value.
 
-**The discriminant's width is layout too, unless you pin it.**
-Without a `#[repr]`, adding a 257th variant, or giving one a discriminant of 256 or more, widens the discriminant of every value of the type, which moves every field behind it in every struct that contains it, and changes the fingerprint.
+**The discriminant's width in a `Fixed` value is encoding too, unless you pin it.**
+Without a `#[repr]`, adding a 257th variant, or giving one a discriminant of 256 or more, widens the discriminant of every `Fixed` value of the type, and changes the fingerprint.
 An integer `#[repr]`, such as `#[repr(u16)]`, fixes the width up front.
 
 **Renaming a type is free.**

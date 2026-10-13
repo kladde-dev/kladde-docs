@@ -8,15 +8,17 @@ The workspace, what depends on what, and where the language-neutral half ends.
 
 | crate | role |
 | --- | --- |
-| `kladde-store` | the storage layer: the file, pages, the address table, the journal, the flush, and consolidation, behind the `Backend` traits. Type-agnostic; knows nothing about serialization. |
-| `kladde-persist` | the serialization layer: `Persistable`, `Guard`, `Location`, the scalar guards, and the schema binding. |
-| `kladde-schema` | type descriptors, their canonical encoding, and fingerprints. Depends on nothing but `kladde-varint`. |
-| `kladde-varint` | LEB128 varints. |
-| `kladde-types` | the built-in containers: vector, hash map, string, blob. The default collection, not a layer — it uses only the public API any library could. |
+| `kladde-store` | the storage layer: the file, pages, the span table, the journal, the flush, and consolidation, behind the `WriteBackend` trait. Type-agnostic; knows nothing about serialization. |
+| `kladde-persist` | the serialization layer: `Persistable`, `Bounded`, `Guard`, `Region`, `Encoder` and `Decoder`, the scalars, tuples, `Option`, `Box` and `Fixed`, cuts, and the schema binding. |
+| `kladde-schema` | type descriptors, their canonical encoding, fingerprints, and the rules of nesting. Depends on nothing but `kladde-varint`. |
+| `kladde-varint` | LEB128 varints and zigzag. |
+| `kladde-types` | the built-in containers: vector, map, string, blob. The default collection, not a layer — it uses only the public API any library could. |
 | `kladde-derive` | the `#[derive(Persistable)]` macro. Reached through `kladde`'s `derive` feature; applications do not depend on it directly. |
 | `kladde` | the application-facing entry point: creating and opening files, the root value, transactions and batches. Re-exports the derive macro and everything a `Persistable` impl names, so an application needs this crate and nothing below it. |
 
-The dependency direction is strictly downward, and `kladde-store` deliberately depends on nothing but `kladde-varint` — it is usable on its own as a persistent store of byte allocations, independently of anything above it.
+Two more crates sit beside them, used by the measurements and nothing else: `kladde-svg`, an SVG drawing held as a durable value, with `svg-bench` among its binaries, and `kladde-bench`, with `text-bench`; together they drive the [evaluation](../evaluation/tools.md).
+
+The dependency direction is strictly downward, and `kladde-store` deliberately depends on nothing but `kladde-varint` — it is usable on its own as a persistent store of one byte sequence, independently of anything above it.
 
 ```mermaid
 graph TD
@@ -24,10 +26,10 @@ graph TD
   K["<strong>kladde</strong><br/>Kladde, Transaction, Batch"]
   T["<strong>kladde-types</strong><br/>containers"]
   D["<strong>kladde-derive</strong><br/>derive macro"]
-  P["<strong>kladde-persist</strong><br/>Persistable, Guard, Location"]
+  P["<strong>kladde-persist</strong><br/>Persistable, Guard, Region"]
   S["<strong>kladde-schema</strong><br/>descriptors, encoding, fingerprints"]
   V["<strong>kladde-varint</strong><br/>LEB128"]
-  H["<strong>kladde-store</strong><br/>Store, Pointer, journal, pages,<br/>Backend / ReadBackend / WriteBackend"]
+  H["<strong>kladde-store</strong><br/>Store, journal, span table, pages,<br/>WriteBackend"]
   APP --> K
   APP -. optional but common .-> T
   K --> H
@@ -52,8 +54,8 @@ See [The store](store.md) for the Rust-specific half.
 ### `kladde-persist` — the serialization layer
 
 Where types meet bytes.
-`Persistable`, its `Guard` counterpart, `Location`, and the guards of the scalar types.
-Knows about the store's traits; knows nothing about any particular container or derived type.
+`Persistable` and `Bounded`, the `Guard` counterpart, `Region` and the `Node` a container keeps for its children, the `Encoder` and `Decoder`, `Cut`, and the implementations for scalars, tuples, `Option`, `Box` and `Fixed`.
+Knows about the store's `WriteBackend`; knows nothing about any particular container or derived type.
 
 ### `kladde-schema` — type descriptors
 
@@ -78,23 +80,22 @@ It writes the root's descriptor table and fingerprint into the file at creation,
 For anyone porting kladde, one boundary matters more than the rest.
 
 **Below `kladde-persist`, the design is language-neutral.**
-The address table, the journal, the flush, the consolidation policy, and the schema model all translate more or less directly; they are documented in [Specification](../spec/) and [Implementation](../impl/) rather than here.
+The span table, the journal, the flush, the consolidation policy, the schema model, and the encoding of values all translate more or less directly; they are documented in [Specification](../spec/) and [Implementation](../impl/) rather than here, and so are the regions and the containers' indexes that [Values and their positions](../impl/values.md) describes.
 
 **At and above `kladde-persist`, the design is Rust-specific and should be redone.**
 
 - `Persistable`/`Guard` exists because Rust cannot intercept a field assignment.
-- The `&self` write / `&mut self` read split exists because Rust's borrow checker can then enforce "no reading stale data mid-write" for free.
-- `INLINE_SIZE` as an associated constant exists because Rust can compute field offsets at compile time.
-  A language without compile-time constant folding will compute offsets some other way — probably once per type at startup, which is fine, but it changes the shape of the code.
+- `WriteBackend` takes `&self` because sibling guards share one backend by reborrow, which Rust's borrow checker otherwise forbids.
+- `FIXED_SIZE` as an associated constant exists because Rust can compute field offsets at compile time.
+  A language without compile-time constant folding will compute them some other way — probably once per type at startup, which is fine, but it changes the shape of the code.
+- `Bounded` is a subtrait so that `Fixed<T>` fails to compile for a `T` without a fixed form; another language checks it however its type system allows.
 
-A Python port should keep the storage layer almost verbatim and throw away the guards entirely.
+A Python port should keep the storage layer almost verbatim and throw away the guards entirely, intercepting assignments with property hooks.
 A C++ one might use proxy objects with `operator=`; a Java one might use bytecode enhancement, which is what db4o did.
 
 ## Cross-cutting concerns
 
-**Crash consistency** is a property of the journal and the flush, but every container must uphold the [ordering discipline](../spec/journal.md#ordering) for it to hold, and no type system enforces it.
+**Crash consistency** is a property of the journal and the flush, and of the one rule a container must keep: every edit it makes, such as an element and its count, goes into one transaction ([ordering](../spec/journal.md#ordering)); the guards wrap every mutation in one.
 
-**Freeing** is a type-driven hook that spans the persistence layer and the store; see [Freeing](freeing.md).
-
-**Schema evolution** touches the load path, the mutation path, and the flush, because a value read at a foreign layout must not then be mutated at native offsets; see [the specification](../spec/schema/evolution.md).
+**Schema evolution** touches the load path, the mutation path, and the flush, because a value read in a foreign schema must not then be written in the native one unless the file is upgraded; see [the specification](../spec/schema/evolution.md).
 Until it exists, a file whose root fingerprint differs from the application's is refused at open.

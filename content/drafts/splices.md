@@ -2,7 +2,7 @@
 title: Splices without restating the tail
 ---
 
-**Status: a proposal for [the address table](../spec/address-table.md), comparing seven designs; it recommends linked spans over backings, with their compaction policy as the open question.**
+**Status: a proposal for [the address table](../superseded/allocations.md), comparing seven designs; it recommends linked spans over backings, with their compaction policy as the open question.**
 Today a splice restates every statement behind its point, because statements are keyed by their offset in the allocation, and a splice changes the offsets behind it.
 A design that states a splice in a constant number of statements must keep content statements at keys that no splice changes, and say elsewhere in which order their ranges follow each other.
 
@@ -90,7 +90,7 @@ In memory, every splice re-keys the fragment map's entries behind its point, `O(
 
 **A container that may grow long stores its elements in chunks of bounded size, each an allocation of its own, under an index of the chunks; a splice shifts only the tail of one chunk.**
 It needs no change to the format, and it bounds the cost of a splice by the chunk's size rather than the container's, in the table and in memory alike.
-It is a rope at the level of the data type, which [the specification's design directions](../spec/address-table.md#design-directions) already consider for clones.
+It is a rope at the level of the data type, which [the specification's design directions](../superseded/allocations.md#what-it-was) already consider for clones.
 
 **It bounds the cost rather than removing it, and it puts the work into every container instead of into the store once.**
 Packed vectors, small vectors, strings and maps would each need chunking, the derive macro would need to know about it, and the [type descriptors](../spec/schema/type-descriptors.md) would have to describe chunked layouts for readers in other languages.
@@ -112,7 +112,7 @@ It is rejected.
 
 **Content statements move to backings as in C, and each span names the span after it instead of stating its offset; a splice restates the span it lands in and states the new ones, two or three statements wherever it lands.**
 That is a piece table, kept in the file: the spans are its pieces, and the backings its buffers.
-It is the per-allocation indirection that [the specification's design directions](../spec/address-table.md#design-directions) name as the open path for splice-heavy containers, with the order kept as links where they sketch a rope.
+It is the per-allocation indirection that [the specification's design directions](../superseded/allocations.md#what-it-was) name as the open path for splice-heavy containers, with the order kept as links where they sketch a rope.
 An overwrite is one content statement in the backing that holds the bytes, shadowing as today, so the two most frequent edits of a drawing editor, overwrites and splices, both cost a constant number of statements.
 
 **Identities are stable because they are not positions.**
@@ -136,7 +136,7 @@ No key changes when the page goes, so no statement elsewhere changes its meaning
 A splice states the new spans at keys between their neighbours'.
 
 **But nothing says that a span has left except a statement at its key**, a tombstone that must outlive every older statement physically present at that key, or an older span would come back.
-That is the predicate over physically present statements that [the newest size rule](../spec/address-table.md#conflict-resolution-across-epochs) removed for sizes, now for every span a splice removes.
+That is the predicate over physically present statements that [the newest size rule](../superseded/allocations.md#what-it-was) removed for sizes, now for every span a splice removes.
 And keys grow where insertions keep landing in one gap: with midpoints in base 128, the replay's keys averaged 1.3 to 6.3 bytes on the drawings, up to 28, and 10 to 14 bytes when typing, up to 26, where LSEQ's strategies for choosing a key near one end of the gap would shorten them.
 Labels of fixed width instead need relabeling, which order-maintenance algorithms bound to `O(log n)` labels per insertion amortized, restating spans again.
 On bytes written, it states about what D states, 1.6 to 5.0 bytes per edit, because it saves the successor links and pays for tombstones and keys.
@@ -181,7 +181,7 @@ It is not recommended.
 
 **Backings** are an allocation's offset spaces: backing 0 is the one every allocation has, and the only one of an allocation that was never spliced.
 A content statement belongs to backing 0 unless a `Backing` precedes it, so statements of backing 0 are encoded as today, at no extra byte.
-A backing's number means nothing but identity; a writer numbers them per allocation and may reuse a number once no span shows it, by the same argument that lets it [reuse an id](../spec/allocations.md#id-recycling).
+A backing's number means nothing but identity; a writer numbers them per allocation and may reuse a number once no span shows it, by the same argument that lets it [reuse an id](../superseded/allocations.md#what-it-was).
 
 **A span is known by its key, `(id, b, start)`**, and its newest statement is its value.
 The span keyed `(id, 0, 0)` is the allocation's **head**, and it alone may be empty, for an allocation whose first byte lies in another backing.
@@ -195,12 +195,12 @@ The span keyed `(id, 0, 0)` is the allocation's **head**, and it alone may be em
 - **Content** at an offset of a backing: the newest content statement of that backing that covers it, as today.
 - **A spliced allocation is invalid** if its chain names a key with no span statement, visits a span twice, shows a byte of a backing twice, or shows a byte that no content statement covers.
 
-Shown twice is forbidden so that no two places of an allocation alias one byte, which keeps [the byte-referenced-once invariant](../spec/address-table.md#design-directions) meaningful without refcounts.
+Shown twice is forbidden so that no two places of an allocation alias one byte, which keeps [the byte-referenced-once invariant](../superseded/allocations.md#what-it-was) meaningful without refcounts.
 
 ### Rules for writers
 
 - **No conflicts within an epoch**: at most one statement per id that states a size or is its head, at most one statement per span key, and content statements per backing as today.
-- **What becomes part of an allocation in an epoch is stated in that epoch**, which generalizes [the coverage rule](../spec/address-table.md#the-coverage-rule):
+- **What becomes part of an allocation in an epoch is stated in that epoch**, which generalizes [the coverage rule](../superseded/allocations.md#what-it-was):
   a byte of a backing becomes part of a spliced allocation when a span reached at the end of the epoch shows it and none reached at the end of the epoch before did;
   and a span becomes part of it when it becomes reached.
   Relinking a span that was reached before needs no statement of it; reaching one that was not, or showing a byte that was not shown, does.
@@ -232,11 +232,11 @@ The checks that make a file invalid fall out of the walk: a missing key, a revis
 **In memory, the fragment map is keyed by `(id, backing, offset)`, and a spliced allocation keeps an index of its spans by position.**
 The index is the rope of design F: a counted tree, which finds the span holding an offset and takes a splice in `O(log spans)`; for a few hundred spans, a vector with running totals, updated in `O(spans)` per flush, does as well.
 No fragment is re-keyed by a splice, so a flush no longer does `O(fragments behind)` work in memory for each.
-A reached span holds a pin of a third kind beside [`F` and `S`](../impl/liveness.md#pins), taken when the chain comes to reach it and released when it stops; the head holds `S` besides, as the statement that decides the allocation's form.
+A reached span holds a pin of a third kind beside [`F` and `S`](../superseded/allocations.md#what-it-was), taken when the chain comes to reach it and released when it stops; the head holds `S` besides, as the statement that decides the allocation's form.
 
 ### Flushing
 
-**[The fold](../impl/flush.md#phase-a--the-fold) is unchanged; the flush maps its pieces through the span index.**
+**[The fold](../superseded/allocations.md#what-it-was) is unchanged; the flush maps its pieces through the span index.**
 Committed bytes taken from an old offset become the backing ranges that show them; new content goes into a backing of the flush's own, one per spliced allocation and flush, or onto the end of the backing whose end the allocation's tail shows; overwrites in place go to the backings that hold the bytes.
 The flush states the spans whose length or successor changed, and the new ones.
 
@@ -256,7 +256,7 @@ On the drawings it barely fired, because the replay keeps every content fragment
 ### What it changes elsewhere
 
 - **The newest size rule** holds for contiguous allocations as it is; for a spliced one, the head takes the size statement's place, and a size statement newer than the head makes it contiguous again.
-- **[Stating the size again](../impl/address-table-operations.md#stating-the-size-again--the-one-correctness-obligation)**, a page rewrite's one obligation, extends to the head.
+- **[Stating the size again](../superseded/allocations.md#what-it-was)**, a page rewrite's one obligation, extends to the head.
 - **[Description defragmentation](../impl/consolidation.md)** works per backing, and gains flattening as a way to pay down a description.
 - **The reverse index**, from a data page to the ranges that point into it, the dirty set, and [the consolidator state](../impl/consolidator-state.md) key ranges by backing as well as by id.
 - **A move within an allocation**, as a restack, is a relinking that writes no data byte; [the `Move` operation](move-op.md) between allocations is unaffected.

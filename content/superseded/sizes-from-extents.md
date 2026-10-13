@@ -2,7 +2,7 @@
 title: Sizes from extents
 ---
 
-**Superseded.** Replaced by [the newest size wins](../spec/address-table.md#conflict-resolution-across-epochs) and [the coverage rule](../spec/address-table.md#the-coverage-rule).
+**Superseded.** Replaced by [the newest size wins](allocations.md#what-it-was) and [the coverage rule](allocations.md#what-it-was).
 
 An earlier address table let a reader infer an allocation's size from its statements instead of reading it from one: every content statement's extent counted toward the size, and a resize was stated by one of two statements, one that only bounded the size from below and one that also fenced off everything older beyond its bound.
 Bytes that no statement matched read as zero by default.

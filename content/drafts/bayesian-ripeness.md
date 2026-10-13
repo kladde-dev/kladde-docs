@@ -357,7 +357,7 @@ The prior on the rate enters the discounted sums as pseudo-observations, as in [
 $T_\delta$ follows from the page's epoch.
 
 **The fold learns a chunk's first loss from a bit in its statement's record.**
-[The statement slab's record](../impl/in-memory-state.md#2-the-statement-slab) counts a statement's pins in 32 bits, which leaves room for one more.
+[The statement slab's record](../superseded/allocations.md#what-it-was) counts a statement's pins in 32 bits, which leaves room for one more.
 When the fold supersedes part of a `Ref`'s payload whose bit is clear, it sets the bit, moves the chunk's bytes, the extent of its fragment before the split, from the page's untouched counts to its touched ones, and adds their exposure since the page's write, $c \, T_\delta$, to the touched exposure.
 At open, a `Ref` whose live fragments no longer cover its whole payload is touched; on a leaf, a statement's first loss is its death, and no bit is needed.
 

@@ -33,7 +33,7 @@ That single change removes all four problems at once:
 - there is no restartability analysis, because a crashed flush is simply re-run against an untouched previous state;
 - there are no untouched neighbours in the write path at all, so passenger corruption stops being a category rather than being detected.
 
-The fold survived unchanged — it is [still there](../impl/flush.md#phase-a--the-fold) — and everything downstream of it in the old flush design is simply gone.
+The fold survived unchanged — it is [still there](../impl/flush.md#the-fold) — and everything downstream of it in the old flush design is simply gone.
 
 This was the single largest argument for the redesign, and it is worth stating as a general lesson rather than a local one: **the machinery removed was bespoke, and the machinery that replaced it is well-trodden.**
 Never-overwrite plus cleaning is Rosenblum's log-structured file system; the alternating header commit is LMDB's meta pages; copy-on-write with checksums is ZFS, WAFL and btrfs.

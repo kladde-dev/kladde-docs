@@ -2,11 +2,11 @@
 title: The Move operation
 ---
 
-**Status: the record is [specified](../spec/journal.md#move); how a flush states it is a sketch.**
+**Status: the record is [specified](../superseded/allocations.md#what-it-was); how a flush states it is a sketch.**
 
 `Move(src_id, src_offset, len, dst_id, dst_offset)` relocates a range from one allocation to another, or within one, **without copying the bytes on disk**, and leaves the vacated source range reading as zero.
 
-Recorded because it changes what the storage layer must support, and because it is the reason the address table can [decline copy-on-write clones](../spec/address-table.md#design-directions).
+Recorded because it changes what the storage layer must support, and because it is the reason the address table can [decline copy-on-write clones](../superseded/allocations.md#what-it-was).
 
 ## It needs no new address-table statement
 
@@ -37,7 +37,7 @@ This is what lets the address table decline copy-on-write clones: cloning would 
 - **What becomes of the source range: it reads as zero, and the source keeps its size.**
   So the flush states it as `Zero(src_id, src_offset, len)`, or, when a `Resize` shrinking the source to `src_offset` follows, the two fold into one `Size(src_id, src_offset)` — the cheapest case, and the one a suffix donation produces.
 - **Overlapping self-moves zero only `source \ destination`.**
-  That is also what the address table needs: the new `Ref` and the denial cannot both name the overlap in one epoch, per [no conflicts within each epoch](../spec/address-table.md#no-conflicts-within-each-epoch).
+  That is also what the address table needs: the new `Ref` and the denial cannot both name the overlap in one epoch, per [no conflicts within each epoch](../superseded/allocations.md#what-it-was).
 
 ## Open questions
 

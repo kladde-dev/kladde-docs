@@ -18,7 +18,7 @@ The slot stays the default, and files that use no packing keep every byte they h
 ## The problem
 
 **Every type has one fixed inline size, and an enum's is its discriminant plus its largest variant, so every value of an enum pays for the largest variant.**
-That is [what makes offsets static](../spec/schema/type-descriptors.md#inline-size), and with them field access, element access by index, and the reading of a writer's layout under [evolution](../spec/schema/evolution.md).
+That is [what makes offsets static](../superseded/allocations.md#what-it-was), and with them field access, element access by index, and the reading of a writer's layout under [evolution](../spec/schema/evolution.md).
 Rust pays the same padding in memory, so the in-memory representation loses nothing it would not lose anyway.
 The file and the journal do lose: a store writes the whole slot, padding included, and the padding then occupies data pages like any other bytes.
 
@@ -47,7 +47,7 @@ An element tree has the same shape one level up: a node that is either an elemen
 
 Integers are the same problem in a different form.
 A count, a length, or an index is stored at the width its largest possible value needs, 4 or 8 bytes, while nearly every value written fits in one.
-A pointer is one too: it takes four bytes, while the ids of a file's allocations, which kladde [recycles lowest first](../impl/id-recycling.md), mostly fit in two.
+A pointer is one too: it takes four bytes, while the ids of a file's allocations, which kladde [recycles lowest first](../superseded/allocations.md#what-it-was), mostly fit in two.
 
 **Short content is the problem in a third form: every `PersistableString` and every `PersistableVec` owns an allocation, however little it holds.**
 In kladde-svg's model of an SVG drawing, strings are the most common source of allocations, nearly all of them `id`s, followed by the attribute lists of elements and by path data:
@@ -65,7 +65,7 @@ In memory, it costs an entry in the allocation map, a statement in the slab, and
 
 **Two existing mechanisms reach part of this, and neither reaches the padding between elements.**
 
-- A [`Zero` statement](../spec/address-table.md#statement-types) describes a range of zeros without data bytes, and the address table already names "data types with unbalanced variant payloads" as a use for it.
+- A [`Zero` statement](../superseded/allocations.md#what-it-was) describes a range of zeros without data bytes, and the address table already names "data types with unbalanced variant payloads" as a use for it.
   But a statement costs on the order of ten bytes of address table, more than the padding between two elements of a vector, so stating padding as `Zero` would grow the file rather than shrink it.
 - A narrower discriminant, which the specification allows (1, 2, 4 or 8 bytes) and kladde-rs picks by the largest discriminant value, saves on the tag and nothing on the padding.
 
@@ -119,8 +119,8 @@ A decimal encoding of floats, which would shrink them too, is [left for later](#
 
 **A pointer becomes a structural kind, `Pointer(T)`: an owning pointer to an allocation whose content is a `T`.**
 In a packed place, it is the unsigned LEB128 varint of its allocation's id, as a packed `u32` would be, with 0 for null, an absent allocation; in a slotted place, it keeps its four bytes.
-Allocation ids are [32 bits](../spec/address-table.md#bounds), so a packed pointer takes one to five bytes: one below 128, two below 16,384.
-Since kladde [recycles the lowest free id first](../impl/id-recycling.md), a file's ids stay about as dense as its allocations are many, and each of the drawings above has fewer than 16,384, so every one of their pointers would take at most two bytes.
+Allocation ids are [32 bits](../spec/span-table.md#bounds), so a packed pointer takes one to five bytes: one below 128, two below 16,384.
+Since kladde [recycles the lowest free id first](../superseded/allocations.md#what-it-was), a file's ids stay about as dense as its allocations are many, and each of the drawings above has fewer than 16,384, so every one of their pointers would take at most two bytes.
 A pointer changes size only when it changes at all: when a container first gets an allocation, gives it up, or has its whole value replaced by one with an allocation of its own.
 
 **With it, the containers of kladde-types need no opaque descriptors, and are described by what they are:**
@@ -146,7 +146,7 @@ And it needs its `Packed` wrapper, without which a `Sequence(char)` behind a poi
 
 **A pointer must say what it points to, or the containers' descriptors would lose their elements' types.**
 A `PersistableVec<u32>` and a `PersistableVec<u64>` differ only behind their pointers; a descriptor that showed the pointer alone would give them one fingerprint, and a reader would open one as the other.
-Describing what an allocation holds is option 1 of [the container problem](../spec/tooling.md#the-container-problem), which the specification leaves open; this proposal takes it, at the cost the specification names there: the containers' layouts become part of the format, so changing one changes descriptors that files contain.
+Describing what an allocation holds is option 1 of [the container problem](../spec/tooling.md#level-3--structural-export), which the specification leaves open; this proposal takes it, at the cost the specification names there: the containers' layouts become part of the format, so changing one changes descriptors that files contain.
 
 **`PersistableBlob<T>` stays opaque.**
 Its content is a payload that serde serialized, which no descriptor describes, and its opaque descriptor's parameter keeps `T` in its fingerprint.
@@ -234,7 +234,7 @@ Inheritance lets a container pack values whose types know nothing of it, and lea
 
 **The schema gains five kinds: `Pointer(T)`, `Sequence(T)`, the wrappers `Packed(T)` and `Slotted(T)`, and `Small(C, T)`.**
 
-- `Pointer(T)` takes the descriptor of what its allocation holds, and defines the reserved [`Pointer` kind](../spec/schema/type-descriptors.md#pointer-reserved).
+- `Pointer(T)` takes the descriptor of what its allocation holds, and defines the reserved [`Pointer` kind](../superseded/allocations.md#what-it-was).
 - `Sequence(T)` takes its element's descriptor, and may stand only as what a pointer points to, inside a `Packed` wrapper there, or as a small value's content.
 - `Packed(T)` may stand only as what a pointer points to, and lays that out packed.
 - `Slotted(T)` declares a place slotted against what it would inherit; `T` must be slottable.
@@ -268,9 +268,9 @@ That is the price of varints, and the reason to declare a field that is mutated 
 
 **A mutation that changes a value's size is one `Splice` on the allocation that contains the value: the old encoding out, the new one in, and whatever follows shifted.**
 Only a value in a packed place can change size, and every value around a packed place is packed as well, up to the pointer whose allocation it lies in, so the change reaches that allocation, where nothing would absorb it.
-No pointer has to be rewritten, because a pointer names an [id](../spec/allocations.md), not a position.
-The `Splice` moves no data bytes on file, but the address table restates every statement of the allocation behind the splice point, `O(fragments behind it)` [in table bytes](../spec/address-table.md#design-directions).
-On an allocation that the current journal created, it [costs nothing](../impl/flush.md#what-falls-out-unasked).
+No pointer has to be rewritten, because a pointer names an [id](../superseded/allocations.md), not a position.
+The `Splice` moves no data bytes on file, but the address table restates every statement of the allocation behind the splice point, `O(fragments behind it)` [in table bytes](../superseded/allocations.md#what-it-was).
+On an allocation that the current journal created, it [costs nothing](../impl/flush.md#the-fold).
 
 **An inline small value whose content changes size rewrites its tag along with the splice, in one transaction.**
 Typing into an inline string, inserting an attribute into an inline attribute list, or an attribute's own small string growing inside it all change the content's length, which the tag states.
@@ -333,7 +333,7 @@ Mutating a value in place at the writer's layout, the *retain* mode, gets harder
 **A tool can walk a file from its descriptors alone, through packed values, small values and containers, and stops only at opaque types.**
 Every packed encoding marks its own end, so a level-3 [tool](../spec/tooling.md) decodes it without knowing the application, once it has resolved each place's choice from the wrappers and from inheritance.
 It follows a pointer into its allocation and reads the content the pointer's descriptor gives — a vector's elements, a string's text, a hash map's slots — and decodes a small value in either form.
-That answers [the container problem](../spec/tooling.md#the-container-problem) by its option 1 for every container of kladde-types but the blob, which stays opaque and is skipped by its inline size, as today.
+That answers [the container problem](../spec/tooling.md#level-3--structural-export) by its option 1 for every container of kladde-types but the blob, which stays opaque and is skipped by its inline size, as today.
 And since every owning pointer outside an opaque type is visible, the leak checker that [conformance](../spec/conformance.md#the-suite) describes no longer needs the application's types.
 What a tool still cannot tell is what a library makes of a structure — that a string is kept normalized, or that a hash map's slot whose flag is clear holds no entry — which waits for [library annotations](#which-library-a-type-belongs-to-later).
 

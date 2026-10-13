@@ -6,7 +6,7 @@ The reference algorithms and data structures: what an implementation must mainta
 
 Everything here is **language-agnostic**.
 Pseudocode is written in a Rust-like notation, because `enum`s and pattern matching make the cases concrete and easy to reason about, but nothing here depends on Rust.
-For implementations in other languages, it is recommended but not required to make substantially the same choices for, e.g., integer widths or fundamental data structures like B-trees or hash maps, both of which follow from the [bounds the specification states](../spec/address-table.md#bounds).
+For implementations in other languages, it is recommended but not required to make substantially the same choices for, e.g., integer widths or fundamental data structures like balanced trees or hash maps, both of which follow from the [bounds the specification states](../spec/span-table.md#bounds).
 
 What does *not* belong here is anything a different language would do differently: trait shapes or class hierarchies, memory layout, alignment, the mutation-capture mechanism.
 Those decisions are documented in the language-specific documentations (currently only [kladde-rs](../rust/)).
@@ -15,16 +15,16 @@ Those decisions are documented in the language-specific documentations (currentl
 
 | document | contents |
 | --- | --- |
-| [In-memory state](in-memory-state.md) | the four structures a loaded file is held in, and why each is the shape it is |
-| [Address-table operations](address-table-operations.md) | pseudocode for every operation on that state: load, read, write, resize, free, recycle, evict, consolidate |
-| [Liveness accounting](liveness.md) | pins, coverage, and what makes a statement or a page reclaimable |
-| [Id recycling](id-recycling.md) | which recyclable id to hand out next, and why the order matters |
+| [In-memory state](in-memory-state.md) | the structures a loaded file is held in: the span table, the rope, the page table, the reverse index, and the span id allocator |
+| [Opening a file](opening.md) | the steps from the headers to a decoded root value |
+| [Values and their positions](values.md) | regions, what each container keeps to find its children, what a guard costs, the built-in containers, and moving values between containers |
 | [Write-phase state](write-phase-state.md) | what is tracked between flushes, and why it is derived from the journal |
-| [The flush](flush.md) | folding the journal into pages: piece tables, hoisting, scheduling, and what gets written |
-| [Consolidation](consolidation.md) | reclaiming garbage: victim selection, the three candidate kinds, and the budget |
-| [Consolidator state](consolidator-state.md) | what consolidation carries from one session to the next, and how it checks that it is still current |
+| [The flush](flush.md) | folding the journal into pages: the piece table, mapping pieces to spans, the span policy, placement, and the cut of the span table |
+| [Consolidation](consolidation.md) | reclaiming garbage: victim selection, evacuation, the page rewrite, merging spans, and the budget |
+| [Consolidator state](consolidator-state.md) | what consolidation could carry from one session to the next in the private chain |
 | [Transactions and batches](transactions-and-batches.md) | grouping operations into transactions, and the buffering state machine |
 | [Related work](related-work.md) | where the design comes from, and where it parts company |
+| [Implementation notes](implementation-notes.md) | where kladde-rs departs from these documents, and what it found |
 
 ## The shape of an implementation
 
@@ -34,64 +34,108 @@ That single decision is what keeps this design far simpler than a database engin
 
 - On-file representations are optimized for compactness and cheap incremental edits, never for random access.
 - There is no on-disk search tree, no B-tree page splitting, no path copying.
-- The address table's [tree of child references](../spec/address-table.md#physical-format) is a *directory*, not a search structure: nothing ever descends it by key.
+- The span table's [tree of child references](../spec/span-table.md#physical-format) is a *directory*, not a search structure: nothing ever descends it by key.
+- The order of the content lives in the spans' links, which a reader walks once, at open; a tree over the spans is kept in memory only.
 - Epochs are consulted exactly once, during the bulk read, and never again at run time.
 
-What this costs is that opening a file is `O(live bytes)` and that the whole file image is resident.
-What it buys is that every read is an in-memory lookup and every flush writes only deltas.
+What this costs is that opening a file is `O(entries + n)` for a sequence of `n` bytes, and that the whole sequence is decoded into memory.
+What it buys is that every read is an in-memory read of the application's own values and every flush writes only deltas.
 
-A future feature called *[segments](../drafts/segments.md)* will address the cost of bulk reads by allowing application authors to manually declare a subtree of their persisted data structure as being loaded and resolved lazily.
+A future feature called *[segments](../spec/sequence.md#partial-loading-later)* would address the cost of bulk reads by letting application authors declare a subtree as a chain of its own, loaded lazily.
 
-## The four structures
+## Overhead and work independent of size
 
-A loaded file is a mirror of its pages plus four indexes over them.
+**The live pages exceed the sequence by three terms — the description, the garbage, and the page framing — and each can be held at a target that does not depend on the sequence's length, at a cost per modification that does not either; the file adds to them a number of pages that depends on what a flush writes, and not on the sequence's length either.**
+This is what the design is for, and the algorithms on the following pages are chosen to keep it.
 
-### The mirror
+### Where the bytes of the file go
 
-An implementation reads pages into its own buffers with ordinary file reads, rather than mapping the file.
-Two rules keep that from meaning "the whole file, forever".
+Let `n` be the length of the sequence (with the schema's and the private chain's, which are small), `k` the number of spans the chains reach, `c` the mean encoded size of their entries without inline payloads, and `L̄ = n / k` the mean length of a span.
+The live pages hold:
 
-**Mirror only pages that are reachable**, where reachable means *named by a surviving fragment* — not merely named by some `Ref` that is physically present.
-The two differ by every `Ref` that lost its probes to a newer statement, and the difference is not small in a file that has been written to for a while.
-So the set is accumulated during [resolution](address-table-operations.md#what-falls-out-of-emission), from the `Bytes` fragments the sweep emits, rather than while decoding statements.
-It might be tempting to instead load each page lazily, the first time something reads from it.
-The decisive objection is not that a page could be missing — one can always be fetched — but that the resident set would stop being a property of the *file* and become a property of the *application*: nothing obliges a `Persistable` to read anything, so a partial loader, whether a sensor app that mocks the subtree it never touches or a tool that only compacts, would leave the storage layer on a path chosen by application code and exercised only when consolidation happens to relocate a page nobody loaded.
-Eager loading also turns scattered reads interleaved with `Persistable::load` into one sequential pass over a set that is known in advance, and validates every reachable page's CRC at open rather than at first touch — which may be long after the last backup that could have helped.
+- every byte of the sequence once, in a data page or as an inline payload in a table page, and zeros nowhere: at most `n`;
+- `k` entries: `k · c = n · c / L̄`;
+- garbage and slack, `G`: bytes of data pages that no reached span shows, dead entries in table pages, and room that a writer left empty;
+- the [page framing](../spec/file-format.md#page-framing), 0.37 %.
 
-Nothing can read a page that only dead `Ref`s name, which is what makes ignoring it safe rather than merely economical: a dead statement wins no probe at any epoch the file can be recovered to, so no read at any recoverable state resolves into that page.
-The page table agrees by construction, since such a page's [coverage](liveness.md#coverage) is zero and it is therefore already reusable.
+So live pages come to about `n · (1 + c / L̄ + G / n + 0.004)`.
 
-Today this saves little, since a reasonably consolidated file is mostly reachable.
-It matters once [segments](../drafts/segments.md) arrive: each segment will live in its own subset of pages, and there is no way to guarantee that a segment's pages are contiguous in the file, so "load one segment" will mean exactly "mirror the reachable pages of that segment".
+The file holds more pages than the live ones:
+
+- the **fallback** pages, which the last commit stopped referencing, and which [the reuse rule](../spec/durability.md#the-reuse-rule) keeps until the next flush's `fsync`;
+- the **reusable** pages that the next flush will write into, freed by the commit before the last;
+- the **journal**'s pages, at most its budget;
+- **holes**: further reusable pages below the last live page, which a fall of the live size leaves behind, and which later flushes fill, or [compaction mode](consolidation.md#compaction-mode) and truncation give back.
+
+### Each term, and what keeping it costs
+
+**The description, `c / L̄`, is set by the span policy.**
+[Bounded spans](flush.md#the-span-policy) keep `L̄ ≥ L / 2` in the leaves, so `c / L̄ ≤ 2c / L`: with entries of 8 bytes and `L = 256`, at most 6 %, and the header's exempt spans add at most a page.
+Each modification creates a constant number of span boundaries, at most two for a splice or an overwrite and three for a move, and removing one costs at most `L` bytes written again and one entry, so the policy costs `O(L)` bytes per modification, amortized.
+Merging cold regions into spans of a page lowers the term for them to about 0.15 %, once per region and cooling.
+
+**The garbage and slack, `G / n`, are set by the cleaner's target.**
+Holding pages at a mean live fraction `u` leaves `G ≤ (1 / u − 1) · n`, 11 % at `u = 0.9`.
+In steady state, content that the application supersedes turns into garbage, and the cleaner must win back as much room as that content took.
+A cleaner that takes the emptiest page first takes one at most `u` full, live fraction `v ≤ u`; writing its survivors into pages that it fills to at least `1 − θ` takes `v / (1 − θ)` of a page, so it wins back `1 − v / (1 − θ)` of one.
+Each page of room won back then costs `v (1 − θ) / (1 − θ − v)` pages of survivors moved, plus their spans restated, `c / L̄` per byte, and the cleaner can keep up only while `u < 1 − θ`:
+
+| `u` | `θ = 0` | `θ = 0.05` |
+| --- | --- | --- |
+| 0.85 | 5.7 | 8.1 |
+| 0.9 | 9 | 17 |
+
+That is the classic bound for log-structured cleaning (Rosenblum and Ousterhout, "The Design and Implementation of a Log-Structured File System", SOSP 1991), and uniformly random overwrites are its worst case; skewed workloads clean far more cheaply, which is what age terms in victim selection try to exploit.
+`θ` is a worst case too: [packing](consolidation.md#slack-is-cheaper-than-a-split--up-to-a-point) holds every page a flush writes but its last to at least `1 − θ` full and usually fills it, so the cost lies near the column for `θ = 0`.
+
+**The pages around the live ones are set by what one flush writes.**
+In steady state, a flush frees about as many pages as it writes, so with `p` pages written per flush, the file holds about `p` fallback pages and `p` reusable ones: `2p` pages besides the live ones, plus the journal's.
+`p` is the flush's new data and table pages, plus the survivors its cleaning moves: about ten pages for a flush that supersedes a page of content at `u = 0.9` and `θ = 0`.
+So a large file carries some 25 pages besides its live ones, about 100 KB, which is 0.1 % of a sequence of 100 MB and vanishes as `n` grows; for a file of a few pages, the same pages are most of the file.
+
+**Everything else is constant or logarithmic.**
+A splice, an overwrite and a move state a constant number of spans; a moved byte restates its span and nothing else, since no key changes; the rope finds and edits spans in `O(log k)`; a guard is made from its parent's with one lookup in the parent's index, and a change of size updates one entry per level ([what a guard costs](values.md#what-a-guard-costs)); victims come from bucket queues in `O(1)`, and their spans from a reverse index in `O(1)` each; and the table pages' directory changes `O(depth)` pages per leaf added or removed, amortized over the entries a leaf holds.
+
+So the live pages' overhead is `c / L̄ + G / n + 0.004`, set by `L` and `u`, the file adds `2p` pages and the journal's, and the work per modification is `O(w + L)` bytes for `w` bytes written and `O(log n)` time in the store, plus the walk from the root to the modified value, which the application makes anyway.
+
+### A worked example
+
+Arithmetic, not a measurement: a sequence of 100 MB, of which 1 MB is being edited.
+
+| part | spans | entry bytes | share of `n` |
+| --- | --- | --- | --- |
+| 99 MB cold, in spans of a page | 24,300 | 146 KB, at 6 bytes each | 0.15 % |
+| 1 MB hot, in spans of 128 bytes on average | 8,200 | 82 KB, at 10 bytes each | 0.08 % |
+| garbage and slack, pages kept 90 % live | | | 11 % |
+| page framing | | | 0.4 % |
+| **live pages** | | | **about 112 %** |
+| fallback and reusable pages, a flush writing 12 pages, and a journal of 4 | | | 0.1 % |
+| **the file** | | | **about 112 %** |
+
+At `u = 0.85` the garbage takes 18 %, and the cleaner moves at most 5.7 bytes per byte written instead of 9.
+In either case, it is the cleaner's target, and not the description, that decides where between 10 and 20 % the file lands.
+[The file as one sequence, measured](../evaluation/one-sequence.md) shows what kladde-rs reaches on real edits.
+
+## The mirror
+
+**An implementation reads pages into its own buffers with ordinary file reads, rather than mapping the file, and reads only the pages the chains reach.**
+At open it reads every table page the header reaches, walks the chains, and then reads the data pages the reached spans show, in page order, into a **mirror**, from which the decode of the sequence reads; [Opening a file](opening.md) gives the steps.
+
+It might be tempting to load each data page lazily, the first time something reads from it.
+Reading them eagerly turns scattered reads into one sequential pass over a set known in advance, and validates every reached page's CRC at open rather than at first touch — which may be long after the last backup that could have helped.
+And it keeps the resident set a property of the *file*: nothing obliges a data type to read anything, and a tool that only compacts reads no content at all.
 
 **Drop the data-page mirror once loading is done.**
-After the load, application reads are served by the values' own in-memory representations and never touch the file, so a `Bytes` fragment's `(page, offset)` is dereferenced only when a flush relocates those bytes or a `Copy`/`Splice` reads them — both rare, and both able to afford a fresh read.
+After the load, application reads are served by the values' own in-memory representations and never touch the file, so a span's bytes in a data page are read again only when a flush moves them, merges them with their neighbours, or rewrites a short span an edit cut into — all rare, and all able to afford a fresh read.
 
-**Address-table pages stay resident by default**, for a reason data pages do not share: `Inline` payloads live *inside* them, and [both table-side consolidation mechanisms](consolidation.md#why-address-table-pages-have-two-mechanisms) copy those payloads on every consolidating flush — the [page rewrite](address-table-operations.md#rewrite_pagevictim-dirty), which also decodes its victim, and the rotating window.
-They are also small — on the order of 8 MB for a million allocations.
-Nothing depends on it, though: only the header must stay, being the write buffer, and dropping the leaves after load, as data pages are dropped, costs one read per table victim and one per table page whose inline payload the window restates.
+**Table pages stay resident by default**, for a reason data pages do not share: `Inline` payloads live inside them, and every flush that restates an inline span copies its payload.
+They are also small next to the sequence.
+Nothing depends on it, though: only the header must stay, being the write buffer, and dropping the leaves after load costs one read per leaf a flush rewrites or restates from.
 
 *Why not `mmap`.*
 Mapping the file would let the operating system's page cache serve as the mirror, with pointer-dereference access and no second copy.
 It is rejected for now because **I/O errors arrive as `SIGBUS` rather than as an error value**: a page that cannot be faulted in — a failing disk, or the file truncated by something else — takes the process down, and there is no portable way to catch it.
-Keeping error handling explicit is worth the extra copy.
-Should that trade ever be revisited, note also that the mapping must be read-only, since kladde writes with ordinary writes and `fsync` and mixing the two is only coherent by grace of the platform's unified page cache.
+Should that trade ever be revisited, the mapping must be read-only, since kladde writes with ordinary writes and `fsync`, and mixing the two is only coherent by grace of the platform's unified page cache.
 
 *Reading through a cursor.*
-When a data type reads its allocations during `Persistable::load`, the reference implementation hands it an iterator over shared byte slices (fragments) rather than an assembled owned byte slice to avoid unnecessary copies.
-Over the mirror, such a cursor costs no syscalls at all.
-
-### The indexes
-
-1. **The fragment map** — the resolved content view, keyed by `(id, offset)`. Everything else hangs off it.
-2. **The statement slab** — one record per *live* statement: where its encoding lives, and how many reasons it has to stay.
-3. **The allocation map** — per-id metadata: size, size statement, when the application last wrote it, and two counters that no per-page number could replace: how much description this allocation costs, and how many statements still name its id.
-4. **The page table** — per-page kind, epoch, and live-byte counter, bucketed for `O(1)` victim selection.
-
-Plus two derived structures rebuilt at open and never persisted: the **id allocator** and the **eviction clock**.
-A flush adds transient state of its own — the fragments it has taken but not yet stated, and the dirty set it states them from — which it drops when it commits; see [During a flush](in-memory-state.md#during-a-flush).
-
-Content is never copied out of the mirror while the mirror holds it.
-Both `Ref` and `Inline` content have a file address — an `Inline` payload lives inside an address-table page, but it is bytes at a known address all the same — so a resolved fragment names a location rather than owning bytes, and a range that resolves to zero needs no bytes at all.
-
-See [In-memory state](in-memory-state.md).
+The decode reads the sequence through a cursor that follows the rope across span boundaries and hands out slices of the mirror and of the table pages, so no byte of the sequence is copied before a value's own decoder takes it.

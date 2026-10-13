@@ -84,13 +84,15 @@ Each header page holds a fixed-size `header` field in the [[#page framing]], whi
 | `log2_page_size`     | 1 byte   | binary logarithm of the page size; currently, the only allowed value is `12`, indicating a 4 KiB page size, but the spec is designed not to prevent `13`, `14`, `15`, or `16` (for powers of 2 from 8 KiB through 64 KiB) in the future if measurements deem them useful. |
 | `format_version`     | 2 bytes  | the specification version this file was written against; currently only version `0` is allowed, indicating "pre-stable".                                                                                                                                                  |
 | `min_reader_version` | 2 bytes  | the oldest specification version that can still read this file; currently only version `0` is allowed, and it stays `0` until kladde-rs is declared production ready: until then the format promises no compatibility, changes without raising it, and a file written by one pre-release need not open in another |
-| `root_allocation`    | 4 bytes  | ID of the [allocation](allocations.md) holding the root value                                                                                                                                                                                                             |
-| `schema_table`       | 4 bytes  | ID of the allocation holding the [descriptor table](schema/canonical-encoding.md#table-encoding)                                                                                                                                                                          |
-| `consolidator_state` | 4 bytes  | ID of an allocation in which an implementation keeps state of its own from one session to the next, or `0` if there is none. See [[#The consolidator state]].                                                                                                             |
+| `sequence_head`      | 4 bytes  | the id of the first [span](span-table.md) of the [sequence](sequence.md), the root value's encoding, or `0` if the sequence is empty                                                                                                                                       |
+| `schema_head`        | 4 bytes  | the id of the first span of the schema chain, which holds the [descriptor table](schema/canonical-encoding.md#table-encoding), or `0` if it is empty                                                                                                                      |
+| `private_head`       | 4 bytes  | the id of the first span of the private chain, in which an implementation keeps state of its own from one session to the next, or `0` if it is empty. See [[#The private chain]].                                                                                         |
 | `root_fingerprint`   | 16 bytes | the [schema fingerprint](schema/fingerprints.md) of the root type                                                                                                                                                                                                         |
 | `journal_pointer`    | 4 bytes  | the page number of the page holding the beginning of the journal that will be used after the flush that created this header page. See [[#The journal pointer]].                                                                                                           |
 
-The header page **is** the root [address-table](address-table.md) page, so the address table is reached without indirection, and the commit that publishes a new header publishes a new root table page in the same write.
+The `header` field is 48 bytes, at offsets 0, 11, 12, 14, 16, 20, 24, 28 and 44 in the order above, so the page's `kind` sits at offset 48 and a header page's `content` at offset 59.
+
+The header page **is** the root [span-table](span-table.md) page, so the span table is reached without indirection, and the commit that publishes a new header publishes a new root table page in the same write.
 
 The two header pages are written alternatingly: the flush with epoch `E` writes header slot `E mod 2`.
 On open, a reader reads both header pages (if both are present), picks the CRC-valid one with higher epoch, and ignores the other header page.
@@ -115,9 +117,9 @@ However, readers must not assume that `journal_pointer` points at most directly 
 Closing and reopening the file introduces another `fsync`, which transitions the last page from fallback to reusable, at which point the implementation is allowed to truncate the file past it, resulting in a file whose `journal_pointer` seemingly points unnecessarily far past the end.
 Readers must be able to handle such a file.
 
-### The consolidator state
+### The private chain
 
-**`consolidator_state` names an allocation in which an implementation may keep whatever it wants to carry from one session to the next, or is `0` if there is none.**
+**`private_head` names a chain in which an implementation may keep whatever it wants to carry from one session to the next, or is `0` if there is none.**
 Its content is up to the implementation.
 A consolidator's heuristics, for instance, learn from what happens over many flushes, and a session that could start only from what the file records anyway would forget all of it at every close.
 [Consolidator state](../impl/consolidator-state.md) describes what the reference implementation keeps there.
@@ -125,11 +127,11 @@ A consolidator's heuristics, for instance, learn from what happens over many flu
 Four rules govern it:
 
 - **Nothing in it affects what the file contains.**
-  A reader that ignores the field resolves every allocation to the same content, and nothing reachable from the root names the allocation.
-- **In every other respect it is an allocation like any other.**
-  The field owns it, as `schema_table` owns the descriptor table, so it stays alive for as long as the field names it; and it never has id `0`, which the field reserves for "none".
+  A reader that ignores the chain decodes the same sequence and the same schema; the [canonical textual representation](tooling.md#a-canonical-textual-representation) of a file leaves it out.
+- **In every other respect it is a chain like the others.**
+  Its spans obey the [span table's rules](span-table.md), and no span belongs to two chains.
 - **Any writer may keep it, replace it, or clear the field.**
-  A writer that keeps it keeps its id and content, as it would any allocation's, whether or not it understands them; a writer that replaces it or clears the field frees the allocation the field named.
+  A writer that keeps it keeps its bytes, whether or not it understands them; it may restate or merge the chain's spans as it would any others.
 - **It may be stale, or another implementation's.**
   Flushes by a writer that kept it without maintaining it, or by its owner if the owner updates it lazily, leave it describing an older state of the file.
   So an implementation must treat a state it does not recognize as its own as absent, and must check what it does recognize against the file before relying on it.
@@ -159,7 +161,7 @@ The **epoch** is a monotone counter, incremented by one per flush, stored in eve
 
 It serves three purposes:
 
-1. It **orders contradicting statements** between address-table pages, which is what makes shadowing work without a rewrite ([Address table](address-table.md#conflict-resolution-across-epochs)).
+1. It **orders the entries of one span** across table pages: the entry in the page of highest epoch describes the span, which is what lets a flush restate a span without rewriting the page that held its older entry ([Span table](span-table.md#resolution)).
 2. It **salts the journal's CRC chain**, so stale bytes in a reused page can never impersonate valid journal content.
 3. It is an **end-to-end assertion**: a page reachable from the header of epoch `E` must carry an epoch `≤ E`.
    A violation reveals that the platform broke the `fsync` contract, and the file must be treated as damaged rather than silently misread.
@@ -183,7 +185,7 @@ Two version numbers, because "can I read this?" and "was this written by somethi
   A reader whose own version is below this **must** refuse to open the file rather than attempt a partial interpretation.
 
 A writer raises the minimum reader version only when it uses a feature that older readers would silently misinterpret.
-Adding a new [primitive code](schema/type-descriptors.md#primitive), for instance, does raise it, because an older reader would not know the width of the new primitive and would compute every subsequent offset wrongly.
+Adding a new [primitive code](schema/type-descriptors.md#primitive), for instance, does raise it, because an older reader would not know how to decode the new primitive, and so where any value after it begins.
 Reordering the descriptor table does not, because references are table-local and any conforming reader follows them.
 
 This is the same slot a per-file *application* semantic-versioning scheme would use.
@@ -195,5 +197,5 @@ The format assumes **a single process with exclusive write access**.
 Multiple concurrent writers, and readers in other processes observing a file being written, are out of scope.
 
 This is a scoping decision, not a structural one.
-The single-owner pointer discipline and the copy-on-write commit are both compatible with an MVCC-style snapshot-isolation scheme, which is the direction a concurrent version would take.
+The copy-on-write commit is compatible with an MVCC-style snapshot-isolation scheme, which is the direction a concurrent version would take.
 **TBD.**

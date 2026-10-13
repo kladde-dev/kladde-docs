@@ -30,7 +30,7 @@ Both are excluded by construction rather than by cleanup.
 
 Page states are **derived, not stored**.
 
-Define the **world** of a header as everything reachable from it: its address-table pages, the data pages those reference, and every page of the *next* epoch's **journal segment**, of which the header names only the first page; the rest are reached from it.
+Define the **world** of a header as everything reachable from it: its span-table pages, the data pages that reached spans show bytes of, and every page of the *next* epoch's **journal**, of which the header names only the first page; the rest are reached from it.
 At any moment the two on-disk header slots define at most two worlds that can (and typically do) overlap, and every page is in exactly one of three states:
 
 - **live** — in the world of the newer on-disk header;
@@ -95,21 +95,21 @@ So an implementation allocates a deallocated page's blocks before writing to it,
 
 ## The flush protocol
 
-Journal segment `E` collects the transactions issued between flush `E − 1` and flush `E`.
+The journal of epoch `E` collects the transactions issued between flush `E − 1` and flush `E`.
 Appends to it are protected by the chained, epoch-salted transaction CRCs and are **not** fsynced individually.
 
 Flush `E` then proceeds:
 
-1. **Fold** journal `E` in memory into content descriptions for each allocation's dirty ranges.
+1. **Fold** journal `E` in memory into the new content of the sequence, as runs of bytes already in the file and new bytes.
 2. **Choose target pages**: reusable pages, else grow the file.
-3. **Write data pages** for the dirty ranges.
+3. **Write data pages** for the new bytes.
    Remaining space in each new page may be filled with live content relocated from sparse pages — consolidation that costs no extra page writes.
 4. **Write further consolidation pages**, within whatever budget the implementation chooses.
-5. **Write address-table pages**: the statements describing everything touched in steps 3–4, plus any [tombstones](address-table.md#statement-types).
-6. **Choose a reusable start page for journal segment `E + 1`.**
-   That page needs no write, except in a session's first flush: journal segment `E + 1`'s CRC chain is salted with epoch `E + 1`, so stale bytes in the page cannot validate as journal content unless they belong to a segment whose header a crash lost, and only a session's first flush can re-issue that header's epoch ([details](journal.md#the-start-of-a-session)).
+5. **Write span-table pages**: the entries of every span that steps 1–4 created or changed, as the [reach rule](span-table.md#rules-for-writers) requires and as the writer chooses beyond it.
+6. **Choose a reusable start page for the journal of epoch `E + 1`.**
+   That page needs no write, except in a session's first flush: that journal's CRC chain is salted with epoch `E + 1`, so stale bytes in the page cannot validate as journal content unless they belong to a journal whose header a crash lost, and only a session's first flush can re-issue that header's epoch ([details](journal.md#the-start-of-a-session)).
 7. **`fsync`**.
-8. **Write the header** into slot `E mod 2`: epoch `E`, the root address-table payload, journal segment `E + 1`'s start page, CRC.
+8. **Write the header** into slot `E mod 2`: epoch `E`, the root span-table page's content, the three chains' first spans, the start page of the journal of epoch `E + 1`, CRC.
 
 No further `fsync` is required, and flush `E + 1` may begin immediately: step 7 already made state `E` recoverable, so nothing waits for the header write of step 8 to become durable.
 See [[#why one fsync suffices|below]].
@@ -118,13 +118,13 @@ See [[#why one fsync suffices|below]].
 
 The protocol maintains exactly two, and they are what the argument rests on.
 
-**I1 — a header is issued only after an `fsync` that covered (i) everything the new header references, except the journal segment it names, and (ii) the previous header.**
+**I1 — a header is issued only after an `fsync` that covered (i) everything the new header references, except the journal it names, and (ii) the previous header.**
 The header write of epoch `E` happens after `fsync` `E` returns, and `fsync` `E` also flushed the header of epoch `E − 1`, which was issued before it.
 
-The named new journal segment is exempted from invariant I1 because it is the one part of a world that is still being written after the header is issued: header `E` names journal segment `E + 1`, which is still empty when `fsync` `E` runs.
+The named new journal is exempted from invariant I1 because it is the one part of a world that is still being written after the header is issued: header `E` names the journal of epoch `E + 1`, which is still empty when `fsync` `E` runs.
 It needs no protection from I1: it validates itself, transaction by transaction, through the chained epoch-salted CRCs.
 
-*Consequence:* a header found on disk implies that everything in its world except the journal segment it names is durable.
+*Consequence:* a header found on disk implies that everything in its world except the journal it names is durable.
 There is no such thing as a valid header pointing at a missing page (except for the journal page it names, which does not need to exist until its first transaction is recorded), so recovery never has to validate a world before trusting it — only the journal it replays.
 
 **I2 — a flush writes only to reusable pages, with one exception: the commit in step 8 overwrites the slot holding the *older* of the two headers** (the reuse rule).
@@ -137,7 +137,7 @@ Because I1 and I2 together mean the only thing a crash can destroy is the curren
 A crashed flush is simply re-run against an untouched previous state; there is no partial application to undo and no write-ahead copy to consult.
 
 Note what makes `flush()`'s return value honest.
-When flush `E` returns, `fsync` `E` has completed, so header `E − 1` and journal segment `E` are durable, so **state `E` is recoverable even though header `E` itself may not be durable yet** — recovery would land on header `E − 1` and replay journal segment `E` in full.
+When flush `E` returns, `fsync` `E` has completed, so header `E − 1` and journal `E` are durable, so **state `E` is recoverable even though header `E` itself may not be durable yet** — recovery would land on header `E − 1` and replay journal `E` in full.
 The header write is a *representation* change, not the durability point; durability is established by the `fsync`.
 
 This is why kladde needs one `fsync` per flush where a random-access database like LMDB needs two: kladde can afford to let the header lag one write behind and lean on journal replay.
@@ -147,7 +147,7 @@ By contrast, LMDB has no journal and thus `fsync`s twice: once after writing upd
 
 1. Read both header pages; keep the CRC-valid ones; take the one with the **highest epoch**.
 2. Bulk-load its world.
-3. Replay the valid prefix of the journal segment it names, stopping at the first transaction whose chained CRC fails.
+3. Replay the valid prefix of the journal it names, stopping at the first transaction whose chained CRC fails.
 
 Thus, recovery happens entirely on the storage layer and is agnostic to the schema.
 
@@ -157,23 +157,23 @@ If both header slots hold a CRC-valid header, the one with the higher epoch gove
 That is not automatic, because the header of the last flush was [never fsynced](#why-one-fsync-suffices): its slot can still revert to the epoch before it, and recovery would then land on a world the new session has already started overwriting.
 One `fsync` at open, after the headers are read and before any page is offered to the allocator, settles it; a failure of it is [fatal](#fsync-failure-is-fatal) like any other.
 
-This is worth a syscall per open, because respecting the older world instead is not free: it means resolving *its* address table as well, purely to learn which pages it reaches.
+This is worth a syscall per open, because respecting the older world instead is not free: it means resolving *its* span table and walking *its* chains as well, purely to learn which pages it reaches.
 An implementation that would rather not fsync at open can have the same effect by letting its first flush extend the file rather than reuse anything, since that flush's own `fsync` makes the governing header durable and its commit retires the older world.
 The reference implementation uses the "`fsync` at open" option for simplicity.
 
 ### Case analysis for a power cut during flush `E`
 
 - **Successful case: header `E` reached the disk whole** — the cut came after step 8, and that write happened to be written back before the power was lost.
-  By I1 everything in header `E`'s world except journal segment `E + 1` is durable, and header `E` carries the highest epoch among the CRC-valid headers, so recovery picks it and reaches state `E`.
-  It then replays whatever CRC-valid prefix of journal segment `E + 1` it finds, which here is empty: its start page was only chosen in step 6, the writer is blocked for the duration of the flush, and the stale bytes in that page cannot validate as journal content because the chain is salted with epoch `E + 1`.
+  By I1 everything in header `E`'s world except journal `E + 1` is durable, and header `E` carries the highest epoch among the CRC-valid headers, so recovery picks it and reaches state `E`.
+  It then replays whatever CRC-valid prefix of journal `E + 1` it finds, which here is empty: its start page was only chosen in step 6, the writer is blocked for the duration of the flush, and the stale bytes in that page cannot validate as journal content because the chain is salted with epoch `E + 1`.
   So the flushed state `E` is recovered exactly.
 - **Error case: header `E` did not reach the disk** — either its write tore, leaving an invalid CRC, or it never arrived, leaving the slot's previous occupant (header `E − 2`, stale but CRC-valid).
   Recovery is indifferent between those sub-cases because it selects the valid header with the *highest* epoch, not merely a valid one.
-  The governing header is then `E − 1`, which `fsync` `E` made durable and which I2 leaves untouched; by I2 its world is intact except for journal segment `E`, whose first page it names.
-  Recovery lands on state `E − 1` plus any valid prefix of the (possibly torn) journal segment `E` — at worst losing transactions that no completed `fsync` ever covered, which is within the guarantee.
+  The governing header is then `E − 1`, which `fsync` `E` made durable and which I2 leaves untouched; by I2 its world is intact except for journal `E`, whose first page it names.
+  Recovery lands on state `E − 1` plus any valid prefix of the (possibly torn) journal `E` — at worst losing transactions that no completed `fsync` ever covered, which is within the guarantee.
 
   If the cut came *before* `fsync` `E` returned, header `E − 1` may itself be missing, and its slot holds header `E − 3`.
-  Recovery then falls one epoch further back, to header `E − 2` and journal segment `E − 1`, which `fsync` `E − 1` made durable — the same argument one step down, and still within the guarantee.
+  Recovery then falls one epoch further back, to header `E − 2` and journal `E − 1`, which `fsync` `E − 1` made durable — the same argument one step down, and still within the guarantee.
 
 A finer-grained walk-through, step by step through one epoch, is in [the implementation notes](../impl/flush.md#walk-through-of-an-epoch).
 
@@ -199,7 +199,7 @@ What a full disk takes away is **progress**, not durability, which is the whole 
 For the session to stay usable afterwards, a flush that fails partway must not leave its in-memory effects half-applied: an implementation either applies them only once the commit succeeds, unwinds them on failure, or poisons the session as it would after a failed `fsync`.
 
 **The commit itself never needs to extend the file.**
-Both header pages always exist, and a flush small enough to keep its statements [in the header](../impl/flush.md#the-header-as-write-buffer) writes no other page at all.
+Both header pages always exist, and a flush small enough to keep its entries [in the header](../impl/flush.md#the-header-as-write-buffer) writes no other page at all.
 So "free something and flush" can commit with zero bytes free on the device, and each such commit retires an older world and turns its pages reusable.
 What is left is a file with no reusable page *and* no room to grow, which is a file that is essentially all live — and there "cleaning cannot keep up" and "the file is honestly this large" [coincide](../impl/consolidation.md#pacing).
 
@@ -219,7 +219,7 @@ Stated honestly, because the trade is real.
 
 - **Files are larger during operation.** Superseded pages linger until consolidation rewrites them. The overhead is a policy outcome, not a constant: garbage accrues in proportion to write traffic and drains in proportion to consolidation effort, so enforcing "consolidate until live fraction ≥ τ" bounds the file at `live_size / τ`.
 - **Total bytes written exceed an in-place design's**, because cleaning rewrites survivors. The worst case is uniform random small writes across a large file — the workload that hurts every log-structured system.
-- **A minimum flush is a handful of pages** (data + address table + header) even for a tiny transaction. The crossover favours this design as soon as writes scatter at all, but frequent single-byte flushes pay more here than an in-place design would.
+- **A minimum flush is a handful of pages** (data + span table + header), though a flush whose new bytes are all inline and whose entries fit in the header writes the header alone even for a tiny transaction. The crossover favours this design as soon as writes scatter at all, but frequent single-byte flushes pay more here than an in-place design would.
 - **Full trust in `fsync`**, leaned on harder than an in-place design does, mitigated by the epoch cross-checks turning a broken contract into a detected failure.
 
 In exchange, committed bytes are never in the write path, so there is no class of corruption to detect and no recovery path that has to repair anything.

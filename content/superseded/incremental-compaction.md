@@ -182,7 +182,7 @@ Headline results: frontier slides make total copying linear in live bytes at all
 ## What was still open when it was retired
 
 - **A generation or age counter**, weighting allocations by how long they had sat still, to generalise the shrink counter from "has shrunk repeatedly" to "is churning at all". It needed compaction to be able to *swap* runs rather than only slide them.
-- **The reshape conservatism**: several places treated "this allocation was resized" as "it may have relocated", because placement is not known until it runs. Safe but pessimistic — and the same conservatism reappears in the current design's [hoist condition](../impl/flush.md#why-the-graph-may-be-unnecessary).
+- **The reshape conservatism**: several places treated "this allocation was resized" as "it may have relocated", because placement is not known until it runs. Safe but pessimistic — and the same conservatism reappears in the current design's [hoist condition](allocations.md#what-it-was).
 - **Other pathologies not yet characterized.** The stress test was found by reasoning about the policy, not by fuzzing. A systematic adversarial search over operation sequences, maximizing bytes copied per byte reclaimed, would be a good way to find the next one, and did not exist.
 
 That last item is the one most worth carrying forward: the current consolidation policy has had no equivalent adversarial search either.

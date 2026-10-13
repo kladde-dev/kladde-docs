@@ -2,7 +2,7 @@
 title: Whole-allocation table entries
 ---
 
-**Superseded.** Replaced by [per-range statements](../spec/address-table.md#statement-types).
+**Superseded.** Replaced by [per-range statements](allocations.md#what-it-was).
 
 The first address-table design under copy-on-write pages: one statement per allocation, carrying its size and the locations of all its chunks.
 It was worked out in full — including the escalation mechanisms below — before per-range statements made all of it unnecessary.
@@ -32,7 +32,7 @@ Whole-entry statements had no sub-keys to destabilize, and bought three simplifi
 
 **The resolution, which came later:** key statements by **byte offset** rather than by chunk index.
 A byte offset *is* stable under overwrites and resizes — the operations that dominate — which is what makes per-range statements viable where per-chunk statements were not.
-The price is that a middle splice shifts the offsets of everything behind it, which is [recorded as a known cost](../spec/address-table.md#design-directions) rather than a blocker.
+The price is that a middle splice shifts the offsets of everything behind it, which is [recorded as a known cost](allocations.md#what-it-was) rather than a blocker.
 
 ## The mechanisms it needed, and no longer does
 
@@ -69,7 +69,7 @@ That was the honest boundary of the "no trees" stance: trees are unnecessary for
 Because the index was rewritten atomically with the commit, membership in it was authoritative: an address-table page not listed was dead, whatever its bytes said.
 Resolution never depended on the *absence* of an unreferenced page, only on the listed set and their epochs — which is what kept the scheme free of the reclamation-ordering subtleties a scan-based design has to solve.
 
-**What replaced it** is the [child-reference tree](../spec/address-table.md#physical-format) inside the address-table pages themselves, rooted at the header page.
+**What replaced it** is the [child-reference tree](allocations.md#what-it-was) inside the address-table pages themselves, rooted at the header page.
 The `Index` page kind is gone; the escalation story survives as [the shape of the tree](../impl/flush.md#the-shape-of-the-tree), with the same "escalate then and not before" reasoning and the same observation that it is a directory rather than a search structure.
 Since epochs live in the pages' own framing, the `(page, epoch)` pairing the index carried is no longer needed either.
 
@@ -79,10 +79,10 @@ A `tombstone(id)` had to exist as long as some **indexed** address-table page ca
 
 Because the index committed atomically, the lifetime rule was purely logical, with none of the durable-invalidation lag a scan-based design needs: a tombstone became droppable in exactly the commit that removed or consolidated away the last lower-epoch page carrying an entry for the id.
 
-The modern rule is [the same idea expressed in pins](../impl/liveness.md#tombstones), and the underlying question — "is any older mention still physically present?" — is the same one, now answered by the `mentions` counter.
+The modern rule is [the same idea expressed in pins](allocations.md#what-it-was), and the underlying question — "is any older mention still physically present?" — is the same one, now answered by the `mentions` counter.
 
 ## What else survived
 
-Beyond the chunking rules, the [coverage accounting](../impl/liveness.md#coverage) was designed here and carried over essentially unchanged: coverage is in-memory only, maintained `O(1)` per shadowed statement, rebuilt for free at open during the bulk read, and never persisted.
+Beyond the chunking rules, the [coverage accounting](allocations.md#what-it-was) was designed here and carried over essentially unchanged: coverage is in-memory only, maintained `O(1)` per shadowed statement, rebuilt for free at open during the bulk read, and never persisted.
 
 So was the split of consolidation into data-page victim selection by live fraction and address-table consolidation by **id range** rather than page identity — including the observation that rewriting a window of statements sorted and adjacent re-establishes delta-encoding density, so that density is restored by cleaning rather than maintained by an invariant.

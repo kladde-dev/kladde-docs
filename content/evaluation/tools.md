@@ -5,9 +5,12 @@ title: Benchmarks and tests
 Every program that tests kladde-rs or measures it, in kladde-rs and in this repository: what each runs, what it records, how to run it, and how to read what it prints.
 The results are on the other pages of [Evaluation](index.md); this page has none.
 
-It describes kladde-rs at commit `7c5cdd6` on its branch `text-bench`, which is the branch `defrag-shifts` and one more benchmark.
-kladde-rs's `main` lacks that benchmark, `text-bench`, and most of what kladde-svg measures: the layouts, and every option of `svg-bench` but `--quick`, `--seed` and `--variant`.
-Its tables also lack the last two columns, `restated_bytes` and `merged_bytes`.
+It describes kladde-rs at commit `7c5cdd6` on its branch `text-bench`, which is the branch `defrag-shifts` and one more benchmark, and which holds the design of [allocations and an address table](../superseded/allocations.md) that every evaluation page but the last measured; the branch `address-table`, kladde-rs's main branch at the time, lacks `text-bench` and most of what kladde-svg measures.
+
+**kladde-rs's `main` now holds the present design, and keeps less of this.**
+It has `text-bench`, and `svg-bench` with one layout, since every list and string is inline in one sequence, with the options `--quick`, `--edits`, `--only`, `--seed`, `--variant`, `--focus`, `--focus-moves`, `--journal-budget`, `--churn-floor` and `--target-fill`, and the span policy's `--span-min` and `--rewrite-below`; [the file as one sequence, measured](one-sequence.md) describes its tables.
+`kladde-bench`'s synthetic scenarios, which allocated, resized and freed, went with the design they measured.
+Its tests are the store's oracle, against a byte vector, its simulated power cuts and its consolidation, the containers' randomized tests, the derive's, and kladde-svg's round trip.
 
 ## At a glance
 

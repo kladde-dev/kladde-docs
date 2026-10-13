@@ -49,17 +49,17 @@ The tutorial's version also predates the chaining, so it describes recovery as t
 
 ### 5. `mentions` is claimed to have one reader and has at least two
 
-[Liveness](../impl/liveness.md#the-last-tombstone) states flatly: "This is the only reader of `mentions`", meaning the release of a tombstone's pin at `mentions == 1`.
+[Liveness](../superseded/allocations.md#what-it-was) states flatly: "This is the only reader of `mentions`", meaning the release of a tombstone's pin at `mentions == 1`.
 [In-memory state](../impl/in-memory-state.md) repeats it as "one thing only".
 
-But [Liveness](../impl/liveness.md#ranking)'s own ranking section reads it again, to score "dead statements whose removal would let a tombstone retire".
+But [Liveness](../superseded/allocations.md#what-it-was)'s own ranking section reads it again, to score "dead statements whose removal would let a tombstone retire".
 
 The claim matters because it is the argument for how cheap `mentions` is.
 With a second reader the field is harder to remove than the text suggests, and anyone auditing whether it can be dropped will reach the wrong conclusion.
 
 ### 6. Reclamation is optional and also required
 
-[Allocations](../spec/allocations.md#reclamation-is-not-part-of-this-specification) says whether an implementation reclaims garbage is unconstrained, and that one which never consolidates is conforming.
+[Allocations](../spec/sequence.md#reclamation-is-not-part-of-this-specification) says whether an implementation reclaims garbage is unconstrained, and that one which never consolidates is conforming.
 
 [Guarantees](../spec/index.md#guarantees-an-implementation-must-provide) says "reclamation is incremental by construction" as though it were a property the spec asserts.
 
@@ -69,7 +69,7 @@ What remains is the wording of the guarantees row: the resolution is presumably 
 
 Sizedness conversion was removed along with sizedness, taking the `Convert` record with it ([the superseded heap](../superseded/relocatable-heap.md#sizedness)).
 
-[The flush](../impl/flush.md#frees-first-is-a-preference-not-an-edge) still uses it as the motivating example in three load-bearing places: the three-cycle that forces frees-first to be a priority rather than an edge, the [content-blind fast path](../impl/flush.md#the-content-blind-fast-path)'s flag condition, and the [implementation order](../impl/flush.md#implementation-order)'s step 5.
+[The flush](../superseded/allocations.md#what-it-was) still uses it as the motivating example in three load-bearing places: the three-cycle that forces frees-first to be a priority rather than an edge, the [content-blind fast path](../superseded/allocations.md#what-it-was)'s flag condition, and the [implementation order](../superseded/allocations.md#what-it-was)'s step 5.
 
 The arguments themselves survive — `Alloc(B); Copy(A→B); Free(A)` has the same shape as the conversion it describes — so this is stale vocabulary attached to live reasoning rather than a collapsed argument.
 It is listed here because a reader who checks whether conversion exists will conclude the section is obsolete, which it is not.
@@ -85,7 +85,7 @@ Trivial, and only listed because the table is the first thing a new implementer 
 The second row is the application read, so the ambiguity the first row used to carry is mostly gone.
 
 What remains: the first row still does not say it means the *storage-level* read, and it counts only the fragment-map lookup.
-If data pages are [not resident after loading](../impl/index.md#the-four-structures), reaching the bytes is a `pread` rather than a dereference, so the honest bound is `O(log F)` lookups *plus* whatever fetching the bytes costs.
+If data pages are [not resident after loading](../impl/in-memory-state.md), reaching the bytes is a `pread` rather than a dereference, so the honest bound is `O(log F)` lookups *plus* whatever fetching the bytes costs.
 Worth saying, since the whole point of the row is to tell an implementer what is achievable.
 
 ### 10. Grouping is "free" but constrained
@@ -135,24 +135,24 @@ Blocking for both creation and open, and it is the one structure whose layout ca
 
 ### 6. The pointer encoding inside allocations
 
-[Pointer encoding](../spec/allocations.md#pointer-encoding) is TBD: width, null representation, alignment.
+[Pointer encoding](../superseded/allocations.md#what-it-was) is TBD: width, null representation, alignment.
 
 This blocks the very first derived struct with a container field, because storing a `PersistableVec` means writing a pointer into the parent's bytes.
 The reference implementation's choice — 32-bit, zero reserved for null — is probably just right, but it needs to be *decided*, since it is a format-level fact that readers depend on.
 
 ### 7. The in-memory address table
 
-The largest body of new code, and the only large item that is purely implementation: [Address-table operations](../impl/address-table-operations.md) already gives pseudocode for load, resolve, read, the fragment-map primitives, apply-a-statement, resize, free, page rewrite and eviction.
+The largest body of new code, and the only large item that is purely implementation: [Address-table operations](../superseded/allocations.md) already gives pseudocode for load, resolve, read, the fragment-map primitives, apply-a-statement, resize, free, page rewrite and eviction.
 
-Risk is concentrated in two places — the [partition invariant](../impl/in-memory-state.md#the-fragments-of-an-existing-id-exactly-partition-0-size) of the fragment map, where a bug returns a neighbour's bytes rather than failing, and the [size restatement](../impl/address-table-operations.md#stating-the-size-again--the-one-correctness-obligation) obligation on page rewrites, where a bug silently resurrects truncated data.
+Risk is concentrated in two places — the [partition invariant](../superseded/allocations.md#what-it-was) of the fragment map, where a bug returns a neighbour's bytes rather than failing, and the [size restatement](../superseded/allocations.md#what-it-was) obligation on page rewrites, where a bug silently resurrects truncated data.
 Both deserve assertions from the first commit rather than tests added later.
 
 ### 8. The fold, plus its differential oracle
 
-[The flush](../impl/flush.md#phase-a--the-fold) is fully designed.
+[The flush](../impl/flush.md#the-fold) is fully designed.
 A prototype needs only the naive in-order replayer and the piece-table fold that must agree with it — but [the oracle comes first](../impl/flush.md#correctness-the-differential-oracle), and building it in the wrong order is the documented way to get this wrong.
 
-The [scheduler](../impl/flush.md#phase-c--ordering) is explicitly *not* needed: hoisting collapses the graph, and the recommendation is to skip it until a workload proves otherwise.
+The [scheduler](../superseded/allocations.md#what-it-was) is explicitly *not* needed: hoisting collapses the graph, and the recommendation is to skip it until a workload proves otherwise.
 
 ### 9. Recording every mutation
 
@@ -161,7 +161,7 @@ Design work is zero — [the log is the sole authority](../impl/write-phase-stat
 
 ### 10. Freeing
 
-[Freeing](../rust/freeing.md) is designed and not built, so today a dropped or overwritten value orphans its allocation.
+[Freeing](../superseded/allocations.md#what-it-was) is designed and not built, so today a dropped or overwritten value orphans its allocation.
 
 A prototype **can** ship leaking — it is harmless against a file that is being exercised rather than kept — but it interacts with the prototype's other goals: a leak makes the file grow, which exercises consolidation, which the prototype is otherwise entitled to skip.
 Worth deciding deliberately rather than by omission.
@@ -177,8 +177,8 @@ Each of these blocks the prototype only in the sense that a number must be typed
 
 ### Deferrable, and why
 
-- **Data-page consolidation.** The [reverse-index gap](../impl/consolidation.md#finding-the-referrers-of-a-data-page) is unresolved, but a prototype may consolidate address-table pages only, which are self-describing, or nothing at all. Garbage accumulates; nothing breaks.
+- **Data-page consolidation.** The [reverse-index gap](../impl/in-memory-state.md#4-the-reverse-index) is unresolved, but a prototype may consolidate address-table pages only, which are self-describing, or nothing at all. Garbage accumulates; nothing breaks.
 - **Schema evolution.** The prototype checks the schema, which means comparing the root fingerprint and failing closed. [Resolution](../spec/schema/evolution.md) is a separate and much larger feature.
-- **A flush that re-points moved bytes.** The [`Move` record](../spec/journal.md#move) is specified, and a prototype can fold it like a `Copy` followed by zeroing the source range, giving up only the rewrite it would save; [re-pointing the bytes instead](move-op.md) can wait.
+- **A flush that re-points moved bytes.** The [`Move` record](../spec/journal.md#record-kinds) is specified, and a prototype can fold it like a `Copy` followed by zeroing the source range, giving up only the rewrite it would save; [re-pointing the bytes instead](move-op.md) can wait.
 - **Non-owning references**, application versioning, and concurrency. All marked TBD and none reachable from the prototype's feature list.
 - **Unwind behaviour.** [Poisoning on panic](../rust/transactions.md) is aspirational; the interim contract — reopen the file — is adequate for a prototype.

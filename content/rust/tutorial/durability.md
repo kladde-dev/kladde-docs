@@ -11,7 +11,7 @@ A mutation does two things before it returns.
 1. It appends records describing the byte-level change to the **journal**.
 2. It updates the in-memory value.
 
-Separately and later, the journal is **folded**: the records are applied to the file's compact form, written to fresh pages, and a new journal segment is started.
+Separately and later, the journal is **folded**: the records are applied to the file's compact form, written to fresh pages, and a new journal is started.
 
 Durability comes from the journal, not from the fold.
 A mutation that has returned survives an application crash whether or not a fold has happened, because its record is in the file — the operating system writes it out even if your process dies.
@@ -27,7 +27,7 @@ Journal appends are not forced to disk one by one, so a power cut can take the o
 Everything folded by a completed flush survives, and what survives of the rest is always a prefix: never a later mutation without the earlier ones.
 
 **A partial mutation is never visible.**
-Each mutation, and each transaction, is recorded so that recovery replays all of it or none of it, and the built-in containers order their records so that every state in between is valid anyway.
+Each mutation is one transaction, and so is each transaction you open, so recovery replays all of it or none of it: a push that splices in an element and rewrites the vector's count is never half there.
 
 **A crash during a fold costs the fold, not the data.**
 The fold never overwrites live data in place; it writes to unused space and commits with one small atomic write.

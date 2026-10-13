@@ -5,121 +5,133 @@ title: The flush
 How the journal becomes pages: what to write, where to put it, and in what order.
 
 The [protocol that commits a flush](../spec/durability.md#the-flush-protocol) is normative; everything about *what* a flush chooses to write is not, and is described here.
+It is a small optimizing compiler, and it should be built like one: **oracle first, optimizer second**.
 
-This is a small optimizing compiler, and it should be built like one: **oracle first, optimizer second**.
+**A flush folds the journal into the new sequence, maps it onto spans, lets the span policy merge what it wants merged, places new bytes in data pages with consolidation's victims riding along, cuts the span table into the header and leaves, and commits.**
 
-## Phase A — the fold
+## The fold
 
-Per id, linear, no graph.
-For each id the journal touches, walk its record subsequence maintaining whether it exists, its current size, and a **piece table** over its bytes.
+**The fold keeps a piece table over the sequence, starting as one piece, the committed sequence, and the journal's records edit it.**
+A piece is a run of the new sequence and where its bytes come from: the committed sequence, from some position on, as it stood after the last flush, or the journal's byte arena, from some position on.
 
 ```rust
 enum Source {
-    Literal(ArenaPos),      // bytes buffered in the journal's byte arena
-    Storage(Id, Offset),    // must be read from the file
-    Zero,                   // resolves to zero; occupies no bytes anywhere
+    Committed(u64),   // the committed sequence, from this position on
+    Arena(u64),       // the journal buffer's arena, from this position on
 }
+
+struct Piece { src: Source, len: u64 }
 ```
 
-A piece table is a sorted map from **segment start offset** to `Source` — one entry per segment boundary, never per byte.
-A byte's origin is found by taking the greatest key `≤` the offset and advancing that source by the difference.
-`Source` is offset-relative precisely so that advance is meaningful.
+The pieces sit in a counted tree, as the [rope](in-memory-state.md#2-the-rope) does over spans, so each record costs `O(log p)` for the `p` pieces the journal made, however long the sequence:
 
-The distinction that drives everything:
-
-- **Fresh** ids — absent when the fold first meets them, or released by a `Free` earlier in the journal — start `{0 → Zero}` at size zero.
-  Their content is *fully symbolic*; nothing about them ever needs to be read.
-- **Persistent** ids — live from an earlier flush — start `{0 → Storage(self, 0)}`.
-
-Every table therefore begins with exactly **one** entry, which is what makes the compact representation below natural rather than bolted on.
-
-### Per-record rules
-
-| record | effect on the table |
+| record | effect on the piece table |
 | --- | --- |
-| `Write(off, bytes)` | overwrite `[off, off+len)` with `Literal` |
-| `Resize(s′)` | clip to `s′`, or extend with `Zero` |
-| `Splice(off, old_len, new)` | overwrite, then **shift the suffix segments** |
-| `Copy(src, …)` | overwrite the destination range with pieces taken from *src's current table* |
-| `Move(src, …)` | as `Copy`, then overwrite what the destination left of the source range with `Zero` |
-| `Free` | mark released; the next record that brings the id back starts a fresh table |
+| `Write(pos, bytes)` | take `[pos, pos + len)` out, as a cut; insert one `Arena` piece |
+| `Splice(pos, removed, bytes)` | take `[pos, pos + removed)` out, as a cut if it is not empty; insert one `Arena` piece |
+| `Move(from, len, to)` | take `[from, from + len)` out and insert it at `to` |
+| `Paste(pos, removed, cut)` | take `[pos, pos + removed)` out and drop it; insert the cut's tree |
 
-Every record but `Free` [first brings its id into existence](../spec/journal.md#every-record-but-free-brings-its-allocation-into-existence) and extends the table with `Zero` to the end of the range it writes, so a record on an absent id starts a fresh table.
-Overwrite is the only non-trivial primitive: split at both boundaries, drop the entries strictly inside, insert the new one.
+Taking a range out is two splits and a join, and returns the range as a tree of its own; inserting is a split and two joins.
+**A transaction's cuts are kept as those trees until the transaction ends**, so a paste inserts the pieces its cut removed and the flush states three to six spans for the two, however large the value, and writes none of its bytes; replay at open does the same.
+The cuts of a transaction are freed when the next transaction starts, or the fold ends.
 
-**Coalesce on insert.**
-A loop of sequential writes produces adjacent literals contiguous in the arena, and without merging you get one entry per write where one per run would do.
-This is not a micro-optimization; it is what keeps the common case at one or two segments.
+At the end, the fold lists the new sequence as pieces, merging adjacent pieces that continue each other.
+A record whose range does not lie inside the sequence, or a paste of a cut its transaction did not make or already pasted, makes the journal invalid.
 
-### What falls out unasked
+**What falls out unasked:**
 
-- **A splice on a fresh allocation costs zero I/O.**
-  It is a table edit; the shift never touches bytes.
-  Since strings and vectors splice in loops, this is probably the largest single win available.
-- **A transient allocation — fresh and freed in the same journal — never touches storage.**
-  Recycle its id and emit nothing.
-- **An identity piece emits nothing.**
-  `Storage(self, k)` with `k` equal to the segment start means the bytes are already where they belong.
-  Without this check, every untouched region of every persistent allocation would emit a self-copy.
+- **A splice that lands in bytes the same flush wrote costs nothing beyond them**: it edits `Arena` pieces, and the bytes it shifts are never mentioned.
+- **A move costs no bytes**: its pieces are committed ranges, which keep the spans that show them.
+- **Repeated writes to one place cost one write**: only the last one's bytes survive in the pieces.
 
-### Representing a piece table cheaply
+## Mapping pieces to spans
 
-Most touched allocations have exactly one segment, so a tree each is wasteful:
+**A committed range is shown by the spans that showed it, found through the rope; where a range begins or ends inside a span, the span is split**: its left part is stated again with a shorter length, and its right part becomes a new span over the same bytes.
+New bytes become new spans, inline below the [threshold](#the-inline-threshold) and placed in data pages above it.
+Every span is linked to the one that now follows it, and every span whose content, length or successor changed is stated, with every new one.
 
-```rust
-enum Content {
-    Uniform(Source),   // one segment over [0, size) — no allocation at all
-    Spilled,           // entries live in the flush-wide map
-}
-```
+So a splice cuts the chain at its two ends and adds the span of its new bytes: one to three entries.
+A move cuts it at three places — the start and the end of the moved run, and its destination — and splits at most one span at each; the three left parts are also exactly the spans whose successors change: the one before the run now links to what followed it, the run's last span to what follows the destination, and the span before the destination to the run's first span.
+Where a place is the sequence's start, the header's first span changes instead, which costs no entry, and where a place already falls between two spans, its split goes; so a move states three to six spans, however many it moves.
+Every span inside a moved run keeps its entry, since neither its bytes nor its successor change.
 
-`Uniform` covers freshly-allocated-and-fully-written, untouched-persistent, and grown-but-unwritten.
-On the second segment, spill into **one** flush-wide map keyed by `(Id, Offset)`.
-Zero tree allocations in the common case, exactly one in total otherwise.
+Spans that no chain reaches any more are dropped: their ids are free, and their entries dead.
+The [reach rule](../spec/span-table.md#rules-for-writers) holds by construction, since a span becomes reached only as a new span, or as a span whose entry the flush writes anyway.
 
-## Phase B — placement
+### Overwrites: split or rewrite
 
-The fold says *what* each allocation's content is; placement says *where* the new bytes go.
+**An edit that cuts into a span can split it, or write it again whole with the edit's bytes, and the flush rewrites a `Ref` shorter than a threshold and splits a longer one.**
+
+- **Splitting** costs three entries the first time a place is written, and one for every later overwrite of the same bytes, which restates the middle span; it leaves the description fragmented until [the span policy](#the-span-policy) merges the pieces.
+- **Rewriting** costs one entry and the span's length in data bytes, and fragments nothing; it suits short spans, and is costly for long ones.
+
+So a drag that moves a point many times splits its span once and restates an inline span of a few bytes at every later flush.
+**An `Inline` span is always rewritten**, since splitting one restates its whole payload as well, in two or three entries instead of one.
+The threshold applies to the span an edit cuts into, not to the parts a cut leaves: a `Ref` long enough to be split leaves a left part that may be shorter than the threshold, which is stated as it is, and the span policy merges it later.
+A third way, shadowing part of a span with an entry of its own, is [left out of the format](../spec/span-table.md#design-directions).
+
+### Zeros
+
+**A run of zeros among the new bytes, long enough that a `Zero` entry is cheaper than the bytes, becomes a `Zero` span**: 32 bytes is a reasonable cut.
+Encodings without padding hold few zeros, but `Fixed` values and large preallocated arrays have them.
+
+## The span policy
+
+**Two policies bound the description, and they combine: one bounds it in the leaves at a constant cost per edit, the other drives it toward nothing where the sequence has gone cold; spans whose entries sit in the header are exempt from both.**
+
+- **Bounded spans**, the discipline of a B-tree's leaves without the interior nodes: no two neighbouring spans whose entries lie in leaves are shorter than `L` together.
+  A flush keeps the rule after its fold has been mapped to spans and before it places anything: it writes the spans that break it again as one, among its own new bytes, which costs at most `L` bytes per boundary removed and never cascades, since a merged span is longer than either neighbour was.
+  The mean span in the leaves is then at least `L / 2` long, everywhere and at all times.
+- **Merging by temperature**: a run of spans whose content has not been written for a while is written again as spans of up to a page, by [the rotating walk](consolidation.md#merging-spans-rides-the-rotating-walk).
+  Each boundary is removed once, after the edits that made it, and a cold span of a page costs about six bytes, 0.15 % of what it shows.
+  It needs a temperature per span, which [heat](in-memory-state.md#heat) gives.
+- **The header is exempt**: spans of any length may keep their entries there.
+  An edit site that every flush touches — typing, dragging a shape, moving a slider until a setting sounds right — splits its spans while it is hot, and merging them would write the same bytes again at every flush, only for the next edit to split them anew.
+  The header can afford them, since it holds the hottest entries, is written by every flush anyway, and holds at most a page of entries, so the exemption adds at most a page to the description, however large the file.
+
+**The bound takes effect where entries leave the header**: when the header would overflow, the flush chooses its coldest runs of spans to evict to leaves, by heat, and merges each run's short spans as it evicts them, so their bytes are written again once, after they have gone cold.
+Since merging writes bytes, the flush makes that choice before it places anything, from entry sizes it estimates without encoding them.
+
+The first policy gives the worst-case bound of [the guiding principle](index.md#overhead-and-work-independent-of-size), the second the low overhead of a large file that is mostly cold, and the exemption keeps the first from charging hot edits for merges that the next edit undoes.
+A larger `L` makes the description smaller and each edit more expensive.
+Neither touches the format, which allows spans of any length from one byte to a page.
+
+**The constants**, as [measurements](../evaluation/one-sequence.md#the-span-policy) chose them for kladde-rs: the bound `L`, 64 bytes; the length below which a `Ref` cut by an edit is rewritten rather than split, 64 bytes; the inline threshold, 64 bytes; the flushes after which a span counts as cold for the walk, 16; and the walk's price `μ`, 0.02 entry bytes per byte written.
+They were measured on a handful of drawings and texts, and remain open questions, as do what should count as cold, and how hot spans and the header should share the span table's room.
+
+## The `Inline` threshold
+
+The [format](../spec/span-table.md#entries) fixes the ceiling at 126 bytes; the policy threshold belongs below it.
+
+Below roughly the encoded size of a `Ref`, inlining is strictly better — the address would be as large as the data.
+Between there and the ceiling it is a trade: inline payloads ride the header for free while hot but inflate the table pages when cold, whereas a `Ref` plus its data bytes is written once but occupies room in a data page and keeps that page partially live.
+The accounting argues for keeping the threshold low: an inline payload is charged to the table page that holds it and is only reclaimed by rewriting that page, whereas a `Ref`'s bytes are charged to a data page that consolidation can clean apart from the entry.
+64 bytes is a good default.
+
+## Placement
 
 ### Cutting content across pages
 
-A flush writes whole pages, so a dirty range must be cut into pieces that each fit in one page.
-Two rules govern the cutting:
+A flush writes whole pages, and a `Ref` shows bytes of one page only, so new bytes are cut into spans that each fit in one page.
 
-- **The writer prefers maximal pieces.**
-  A long dirty range becomes `MAX_PAGE_CONTENT`-sized pieces in whole pages plus a remainder in a shared page; a small allocation is written as a single piece in a shared page.
-  This is what keeps address-table statements compact.
-- **Whoever rewrites bytes may re-cut them.**
-  Piece boundaries carry no meaning beyond "these bytes are stored contiguously here", so a flush re-cuts the ranges it rewrites at will, and consolidation may split a piece it relocates — or merge adjacent pieces it relocates together — so that its target pages come out full; [packing](consolidation.md#packing-in-id-order-with-look-ahead) says when a split is worth its statement.
+- **A run longer than a page becomes whole pages first**, each one span, plus a remainder; that is the one cut that is forced rather than chosen.
+- **The remainders are packed in sequence order with a bounded look-ahead**, pulling consolidation's victims into any page with room its own content cannot use, and cutting only to keep a page from closing more than `θ` empty; [packing](consolidation.md#packing-in-sequence-order-with-look-ahead) is described with consolidation, since what it has to know is consolidation's side of the interface.
+- **Whoever writes bytes may cut them anew**: span boundaries carry no meaning beyond "these bytes lie contiguously here", so a flush re-cuts what it writes at will, and consolidation may split or merge spans it relocates.
 
-*Why free re-cutting rather than a fixed head/middle/tail scheme.*
-The problem it solves is **worst-case consolidation**.
-With rigid piece sizes, an application that only ever allocates `MAX_PAGE_CONTENT / 2 + 1` bytes pins every data page at ~50 % fill, and no amount of relocation can fix it, because the pieces cannot be made to fit.
-One flexible cut per allocation only softens this — sizes just over half a page still strand ~25 % — and fixed-size middle pieces freeze a large allocation's page alignment at creation, so consolidation could never re-pack it without rewriting all of it.
+Free re-cutting removes the worst case of fixed-size pieces: chunks all just over half a page could otherwise never share a page.
+The price of each cut is one entry, and in ordinary flushes the packer [prefers slack to a split](consolidation.md#slack-is-cheaper-than-a-split--up-to-a-point).
 
-Free re-cutting dissolves both problems at once: consolidation *may* pack pages the way stock is cut rather than the way bins are packed — fill the page, cut whatever piece crosses the boundary, continue with its remainder in the next page — so a high fill is reachable for *any* population of live bytes, and there is no alignment left to preserve because there is no grid.
-The price of each such cut is bounded and small: one extra statement, roughly 10 address-table bytes, plus a fragment-map entry.
-
-**That is a capability, not the routine policy**, and the distinction matters because the price is permanent while the slack it avoids is not.
-Free re-cutting is what removes the worst case above, where no packing exists at all; in ordinary flushes the packer prefers [leaving slack to paying for a split](consolidation.md#slack-is-cheaper-than-a-split--up-to-a-point), and cuts only where it is forced — a chunk longer than a page — or where a page would otherwise close more than `θ` empty.
-
-A flush writes every piece it produces **whole**, even when only one byte of the range changed.
-This is not new cost in disguise: the operating system would have rewritten the surrounding page in place anyway.
-What is new is that the old bytes remain behind as garbage until consolidation reclaims them.
+A flush writes every span it produces **whole**; the old bytes remain behind as garbage until consolidation reclaims them.
 
 ### Page contiguity buys nothing
 
-**Adjacent pages need exactly as many statements as scattered ones**, because a `Ref`'s payload is [bounded by one page's content](../spec/address-table.md#bounds): no `Ref` spans a page boundary, so a bulk write of many pages is one statement per page wherever those pages are.
+**Adjacent pages need exactly as many entries as scattered ones**, because a `Ref` [shows bytes of one page only](../spec/span-table.md#bounds), so a bulk write of many pages is one span per page wherever those pages are.
 Placement therefore does not seek runs of pages at all; it takes the lowest reusable page, which is what keeps [outer fragmentation](consolidation.md#outer-fragmentation) from forming.
-
-What *does* fragment is the description of an allocation filled incrementally across many flushes, whose pieces land wherever each flush put them.
-There the honest statement is that the description fragments in proportion to the number of flushes that touched the allocation, and that repairing it is **consolidation's** job, not the flush's.
-
-Uninitialized ranges help the sparse case for free: an allocation created large but written sparsely stores locations only for the ranges actually written, and occupies no data pages for the rest.
 
 ### Where the pages come from
 
-The reusable pool is an ordered set, a list, and a watermark, because the [two-generation quarantine](../spec/durability.md#the-reuse-rule) is a rotation rather than a computation:
+The reusable pool is an ordered set, a list, and a watermark, because the [quarantine](../spec/durability.md#the-reuse-rule) is a rotation rather than a computation:
 
 ```rust
 struct FreePages {
@@ -133,196 +145,48 @@ free.ready.extend(free.retiring.drain(..));
 free.retiring = pages_this_commit_stopped_referencing();
 ```
 
-`allocate_reusable_page` takes the **lowest** page in `ready`, and extends the file only when `ready` is empty; journal pages come from the same pool.
-Lowest-first is what lets pages at the end of the file stay dead once they die, so that [truncation](consolidation.md#truncation) can return them, and it costs one `pop_first` — a bitmap with a cursor on its lowest set bit does as well.
-No search beyond that, and no interval tree: [contiguity buys nothing](#page-contiguity-buys-nothing), so the pool never has to answer "find me `k` adjacent pages".
-
-### Cutting and packing, concretely
-
-The objective is to fill pages without describing their contents in more statements than necessary — every cut is one more statement — and the two pull against each other only where chunks fit pages badly.
-
-```rust
-fn place(dirty: Vec<Range>, rewrites: Vec<Chunk>, elastic: &mut Elastic) -> Vec<Page> {
-    // 1. Whole pages first: a long range becomes floor(len / C) full pages, each
-    //    described by exactly one statement, plus a remainder below C. This is the
-    //    one cut that is forced rather than chosen.
-    let mut remainders = Vec::new();
-    for r in dirty {
-        let (whole, rest) = r.split_at_multiple_of(MAX_PAGE_CONTENT);
-        for piece in whole { write_whole_page(piece); }
-        remainders.push(rest);
-    }
-
-    // 2. Pack the remainders — with the description defragmentation rewrites this
-    //    flush pays for, which are never longer than a page — in (id, offset) order
-    //    with a bounded look-ahead, pulling in consolidation's victims wherever a
-    //    page has room its own content cannot use, and cutting only to keep a page
-    //    from closing more than θ empty.
-    pack(Lookahead::new(merge_by_key(remainders, rewrites), L), elastic)
-}
-```
-
-[`pack`](consolidation.md#packing-in-id-order-with-look-ahead) is described with consolidation, because what it has to know is consolidation's side of the interface: the flush's chunks must be written and a victim's need not be, which is what lets a victim fill the room a cut would otherwise have filled.
-It guarantees that every page a flush writes, except its last, is at least `1 − θ` full, and when it must cut, it cuts the flush's own chunk rather than a victim's — the flush's content being the likelier to be overwritten soon, taking the extra statement with it.
-
-### The `Inline` threshold
-
-The [format](../spec/address-table.md#statement-types) fixes the ceiling at 125 bytes; the policy threshold belongs far below it.
-
-Below roughly the encoded size of a `Ref` (~10 bytes), inlining is strictly better — the pointer would be as large as the data.
-A starting policy: inline everything up to ~64 bytes, plus anything whose eviction would leave a data page holding only scraps; then measure.
-
-Between there and the ceiling it is a trade: inline payloads ride the header for free while hot but inflate the address table when cold, whereas a `Ref` plus its data bytes is written once but occupies a data-page slot and keeps that page partially live.
-Note the accounting asymmetry that argues for keeping the threshold low: an inline's payload is charged to the address-table page that holds it and is only reclaimed by rewriting that page, whereas a `Ref`'s content is charged to a data page that consolidation can clean independently of the statement describing it.
-
-**This is what makes small allocations first-class.**
-Below the threshold, an allocation lives its entire life — creation, every update, deletion — as a few bytes of statements inside pages the flush was writing anyway, with no page-granularity amplification anywhere.
-That is the cost profile a dynamically typed guest language, allocating by the thousands, needs.
-
-## Phase C — ordering
-
-Vertices are the **emitted actions**, not the journal's records — the fold changed the set:
-
-```
-Claim(id, size)          Release(id)
-Reshape(id, size)        Transfer(src, src_off → dst, dst_off, len)
-Write(id, off, bytes)
-```
-
-**`Reshape` stays one vertex.**
-It is tempting to decompose it into claim/transfer/release — that decomposition is a good *explanation* of why conversion and multi-flush resize are the same latent hole — but it is the wrong granularity here: splitting it would put the old range's release into the schedule as a separate vertex, and a frees-first pass could then hand that range to another claim before the copy ran.
-
-### Edges
-
-1. `Claim(id)` → every action writing into `id`.
-2. A transfer reading `id` → `Release(id)`.
-3. A transfer reading a range → later actions writing that range.
-   A write-after-read anti-dependency, easy to forget because it runs backwards from the usual intuition.
-4. Earlier writes to a range → a transfer reading it.
-   The fold has usually already turned these into literals, so this edge mostly evaporates.
-
-**It is a DAG by construction**: every hard edge points from a lower journal position to a higher one.
-
-### Frees-first is a preference, not an edge
-
-Running releases before claims gives placement more space to work with.
-It must be encoded as a **priority**, never as an edge — a conversion produces `Claim(new) → Transfer → Release(old)`, and adding `Release → Claim` as a hard edge makes that a three-cycle.
-
-So: Kahn's algorithm with a priority queue over the ready set, in order
-
-1. anything that unblocks a release,
-2. releases,
-3. claims, largest first,
-4. everything else.
-
-First-fit-decreasing therefore becomes *best-effort over the ready set* rather than global.
-Only conversion-style chains block, but the guarantee is weaker than an unconditional sort and should be stated where it is relied on.
-
-### Why the graph may be unnecessary
-
-**A worked example.**
-After an earlier flush the file holds `A1` (size 256) and `A2` (size 128), both persistent.
-The journal records:
-
-```
-1.  Copy(src = A1, src_off = 0, len = 64, dst = A2, dst_off = 32)
-2.  Free(A1)
-3.  Resize(A3, 200)         // A3 is new; 200 ≤ 256, so it would fit in A1's space
-4.  Write(A3, 0, [64 bytes])
-```
-
-With a naive priority the ready set is `{Transfer, Claim(A3)}` — the release is blocked — and claims outrank transfers, so `Claim(A3)` runs first while `A1` is still live, and `A3` lands elsewhere.
-Note the scheduler did not *postpone* the free; it ran it as early as the dependencies allowed, and that was not early enough.
-With priority rule 1, the transfer runs first, the release becomes ready and top-priority, and `A3` reuses `A1`'s space with no address-level reasoning at all.
-
-**Hoisting.**
-At fold time, if a `Storage(src, …)` piece references a range this flush will **disturb**, read those bytes immediately and turn the piece into a `Literal`.
-Disturbed means any of: this flush releases `src`, writes the range, or reshapes `src` (since it may relocate).
-All three are known during the fold, which already runs at flush with full read access.
-
-Applied to the example: `A1` is released, so `A2`'s middle piece becomes a literal during the fold.
-The transfer disappears, the release loses its only predecessor, and frees-first applies unconditionally.
-Same result, and the only cost is 64 buffered bytes — bytes that were going to be read anyway.
-
-**Hoisting every disturbed read collapses the DAG.**
-Every surviving transfer then reads a range that is not released, not written, and not reshaped, and its source stays live so no claim can be placed over it.
-The only remaining edge is `Claim(dst) → Transfer`, which the fixed phase order *releases → claims → reshapes → transfers and writes* already satisfies.
-
-So: **build hoisting first and skip the graph entirely.**
-It is dramatically simpler and it is correct; its only cost is memory proportional to the volume of disturbed reads, which for kladde's containers is small.
-Build the scheduler when a workload shows the buffering hurting.
-
-The weakest point is that the hoist condition is conservative on *reshaped*: an allocation whose size changed might not actually relocate, but the fold cannot know before placement runs.
-
-### The content-blind fast path
-
-Set a flag when any record produces a piece `Storage(other_id, …)` with `other_id` not equal to the id itself.
-That is `Copy`, `Move`, and conversion-on-a-persistent-id, and nothing else — in particular **not** plain resize, and **not** splice, whose source and destination are the same id.
-
-When the flag is clear at flush — the overwhelming majority of flushes — run *releases → first-fit-decreasing claims → reshapes → writes* with no graph, no hoisting, and no per-piece analysis.
+Taking a page takes the **lowest** page in `ready`, and extends the file only when `ready` is empty; journal pages come from the same pool.
+Lowest-first lets pages at the end of the file stay dead once they die, so that [truncation](consolidation.md#truncation) can return them.
 
 ## The header as write buffer
 
-The root of the address table is the header page, and the header page is rewritten by every flush no matter what.
-That page is free real estate, so it doubles as the address table's **write buffer**: every flush [takes its content whole](address-table-operations.md#the-header) and states it again, and the cut fills the header before any leaf, at zero additional page writes.
+The root of the span table is the header page, and the header page is rewritten by every flush no matter what.
+That page is free real estate, so it doubles as the span table's **write buffer**: every flush states the header's entries again, and fills the header with the hottest entries before any leaf, at zero additional page writes.
 
-Consequences:
+- The common small flush writes **no** table page beyond the header, and no data page when its new bytes are all inline.
+- An entry carried in the header is restated every flush at the new epoch, for free.
 
-- The common small flush writes **no** address-table page beyond the header.
-- The header always holds **resolved truth** at the current epoch, which is why a statement evicted from it needs no re-resolution, and why multi-epoch disagreement can exist only between the header and leaves, or between two leaves.
-- A statement carried in the header becomes a *new* record at the new epoch each flush, so a size statement re-points and its pin moves every flush.
-  Header pages are exempt from coverage-driven victim selection, since they are rewritten unconditionally.
-
-When the header overflows, the coldest statements go to a fresh leaf instead, ranked by an **eviction clock** recording how many flushes each has gone untouched.
-
-The name overstates the machinery.
-What the header can hold is bounded by `MAX_PAGE_CONTENT`, so the clock covers on the order of 700 entries however large the file is, and the cut can simply sort the header's candidates by heat and keep a prefix.
-Nothing here needs a CLOCK sweep, an approximate-LRU, or a heap: an `O(n log n)` sort of 700 entries, on the rare flush that overflows, is beneath measurement.
-
-**The clock's entries belong to fragments, not to statements**, since the cut [derives statements afresh](consolidation.md#one-dirty-set-and-why-statements-are-derived-last) every flush; a statement derived from several fragments takes the hottest of them.
-An entry is reset when the application writes its fragment — when the fold takes it — not when the header merely carries it, and not when its allocation is read, since reads never reach the address table at all.
-Eviction and consolidation both state statements sorted by id, so leaves *tend* to cover coherent id ranges — a soft property worth cultivating and not depending on, since it keeps delta encoding dense.
-Evicting the coldest *key-contiguous run* rather than the coldest statements wherever they sit cultivates it at the source: heat still decides that a run goes, and key order decides which (see [the dirty set](consolidation.md#one-dirty-set-and-why-statements-are-derived-last)).
+**When the header overflows, the coldest entries go to leaves**, ranked by [heat](in-memory-state.md#heat).
+What the header can hold is bounded by `MAX_PAGE_CONTENT`, so the ranking covers a few hundred entries however large the file is, and a sort of them on the rare flush that overflows is beneath measurement.
+Evicting the coldest runs of spans contiguous in id, rather than the coldest entries wherever they sit, keeps the leaves' ids dense, which keeps their delta encoding short, and lets the evicted run be [merged to the bound](#the-span-policy) as it leaves.
 
 ## The shape of the tree
 
-Address-table pages form a tree rooted at the header, and it is a **directory, not a search structure**: every lookup is served by the in-memory fragment map, nothing ever descends the tree by key, so there is no ordering invariant to maintain across pages — and a B-tree's ~25 % expected slack is precisely the price of maintaining that invariant under inserts.
-
-Interior pages are packed full, in arrival order; at each level only the newest interior page is partially filled.
+Table pages form a tree rooted at the header, and it is a **directory, not a search structure**: every lookup is served by the in-memory span table, nothing descends the tree by key, so there is no ordering invariant to maintain across pages.
 
 - While everything fits in the header: **zero extra pages** — the steady state of every small file.
-- Overflow spills to leaves referenced directly from the header, with statements continuing to share the header alongside the child references.
-  At ~3 bytes per child reference, a header can reference on the order of a thousand leaves, i.e. a few MiB of statements, before this stops sufficing.
-- Beyond that, one layer of interior pages reaches roughly a million leaves; deeper is not going to be needed.
+- Overflow goes to leaves referenced directly from the header, with entries continuing to share the header alongside the child references.
+  At one to two bytes per child reference, a header can reference two to four thousand leaves, one to two million spans.
+- Beyond that, one layer of interior pages reaches some million leaves; deeper is not going to be needed.
 
 Structural updates are copy-on-write path copies, but the paths are short and the root is free: adding or removing a leaf rewrites at most `depth − 1` pages besides the leaf itself.
-Because interior pages are plain arrays of page numbers, removing a leaf's entry compacts its interior page for free during that rewrite.
-A depth change is a single-page event: when the header's child list outgrows its budget, move the whole list into one fresh interior page and reference that instead.
+A depth change is a single-page event: when the header's child list outgrows its room, move the whole list into one fresh interior page and reference that instead.
+
+## The cut
+
+**The cut writes every stated span's entry: the header's into the header, the rest into new leaves, in id order**, each leaf closed when the next entry does not fit, so that every leaf but the last is full to within one entry.
+The last leaf, or the header when there is no leaf, takes **fillers**: whole sparse leaves whose live entries fit its room, restated there, which drains them for free ([the page rewrite](consolidation.md#the-page-rewrite)).
+The header's capacity is what remains after the file-header fields and its child list, and the child list depends on how many leaves the flush adds and unlinks, so the header's share is chosen against an estimate and corrected: if the list turns out longer, the header gives up its coldest entries to the leaves.
+
+Entries are derived from the span table as it finally stands, after everything else in the flush, so each span is stated exactly once in the flush's epoch, as the [format requires](../spec/span-table.md#rules-for-writers), however many sources touched it.
 
 ## Correctness: the differential oracle
 
 Build the oracle before the optimizer.
 
-Keep a naive in-order replayer as a reference implementation, and differential-test the optimized flush against it: same journal, then compare the entire observable state — every live allocation's geometry and bytes, compared in full.
-Nothing is masked out: every byte of a live allocation has exactly one right answer, so a schedule that differs from the replayer anywhere is wrong.
-Randomized journals with shrinking.
-
-Two properties, asserted separately because they fail differently:
-
-- **fold agreement** — the fold's geometry equals the write-phase geometry the mutation path already tracked.
-  Cheap enough to leave enabled outside tests.
-- **schedule equivalence** — the differential comparison above.
-
-## Implementation order
-
-1. **Log every mutation.** Fixes the recovery hole; the only step that is not optional.
-2. **Write-phase geometry as a delta** over the committed state.
-3. **The differential oracle**, before any optimization.
-4. **The fold**, with the `Uniform`/spill representation and the fold-agreement assertion.
-5. **Read hoisting** and the content-blind fast path.
-   At this point splice and conversion become implementable, and copy becomes addable.
-6. **The scheduler** — only if buffering measured in step 5 proves too expensive.
-   It may never be needed.
+**Test the store on its own against a plain byte vector**: any series of `Write`, `Splice`, `Move` and `Paste`, flushes, reopens and simulated power cuts must leave the sequence holding the vector's bytes.
+Above the store, **after every operation, the sequence must equal the canonical encoding of the in-memory root value**, byte for byte.
+Randomized operation series with shrinking.
 
 ## Walk-through of an epoch
 
@@ -333,13 +197,13 @@ This exists because two points in the argument are easy to get backwards: most p
 
 - Header `E − 2` exists and has been fsynced.
 - Header `E − 1` was written but not fsynced yet.
-- Journal segment `E` is partially written, not fsynced.
+- Journal `E` is partially written, not fsynced.
 - All `Data` and `Table` pages of world `E − 1` have been fsynced and are **live** — this flush must not overwrite them.
 - Pages of world `E − 2` that are *not also* part of world `E − 1` are **fallback**, and must not be overwritten either.
-  This includes journal segment `E − 1`, which header `E − 2` names.
+  This includes journal `E − 1`, which header `E − 2` names.
   Pages belonging to both worlds are simply live, which is the common case rather than the exception: typically most pages of world `E − 2` are in both.
 
-**Steps 1–7** of [the flush protocol](../spec/durability.md#the-flush-protocol) write data and address-table pages for epoch `E`, then fsync.
+**Steps 1–7** of [the flush protocol](../spec/durability.md#the-flush-protocol) write data and table pages for epoch `E`, then fsync.
 No header page is touched.
 On a power cut during or after this:
 

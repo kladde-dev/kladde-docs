@@ -3,7 +3,8 @@ title: The built-in containers
 ---
 
 `kladde-types` provides four durable containers.
-They are hand-implemented against the persistence layer rather than derived, the same way `std`'s collections hand-write raw pointer manipulation internally.
+They are hand-implemented against the persistence layer rather than derived, since each keeps an index of its own in memory.
+Every container's content lies inline in the file's one sequence of bytes, wherever its value lies, so a short list costs no more on file than its elements and its count.
 
 ## A default library, not a privileged one
 
@@ -37,20 +38,27 @@ let mut v = guard.entries_mut();
 v.push(PersistableString::from("a"))?;
 v.insert(0, PersistableString::from("b"))?;
 v.get_mut(1).unwrap().push_str("c")?;  // the guard of one element
-let first = v.remove(0)?;   // yours now, allocations and all
-v.push(first)?;             // so it moves without copying its bytes
-v.delete(0)?;               // removes and frees
+let first = v.remove(0)?;   // yours now, as a plain value
+v.push(first)?;             // encoded again, at the end
+let moved = v.cut(0)?;      // removed, its bytes kept for a paste
+v.push_cut(moved)?;         // pasted at the end, without writing its bytes again
+v.move_element(0, 1)?;      // reordered, without writing an element's bytes
+v.delete(0)?;               // removed and dropped
 ```
 
 Reading needs no guard: `PersistableVec<T>` dereferences to `[T]`, so `len`, indexing and `iter` work on the in-memory elements.
 
-**Layout.** A pointer inline, plus a separate allocation holding a dense array of fixed-size element slots — the same shape as `Vec<T>`'s in memory.
-The length is that allocation's size divided by the element size, so it is never stored separately.
+**Encoding.** The number of elements as a varint, then the elements, back to back.
+In memory, a `Vec<T>`, and for an element type whose size depends on its value, a Fenwick tree of the elements' sizes, four bytes per element, so that the guard of element `i` finds where it starts in `O(log m)`.
+A vector of fixed-size elements — `f32`, a struct of them, or [`Fixed<T>`](deriving.md#fixed-size-values) — finds element `i` by multiplication and keeps nothing more.
 
-**Cost.** A push grows the allocation and writes the new slot, a pop shrinks it, and an insertion or removal in the middle is one splice, which shifts the tail exactly as `Vec` does.
+**Cost.** A push, an insertion and a removal are each a splice of the element plus a rewrite of the count, in one transaction; a change of an element's size is a splice inside it; and `move_element` writes no element's bytes at all.
+None of them rewrites the elements behind it: the file records where its bytes lie as linked runs, so bytes that shift are not restated.
 
-**Removal.** `remove` and `pop` hand the element back with everything it owns, so you can store it elsewhere; `delete` and `clear` free it.
-An element you take out and then drop leaks its allocations in the file, the way a value passed to `std::mem::forget` leaks its memory.
+**Moving.** `remove` and `pop` hand the element back as a plain value; pushing it elsewhere encodes it again.
+`cut` removes it too, but keeps its bytes as a *cut*, which `push_cut` or `insert_cut` pastes into any vector of the same element type without writing them again: the move costs a few entries in the file however large the element is.
+A cut holds a transaction open until it is pasted, so paste it right away; dropping it unpasted removes the element for good.
+`delete` and `clear` remove and drop.
 
 ## `PersistableString`
 
@@ -76,9 +84,11 @@ owner.set("ada")?;
 owner.push_str(" lovelace")?;
 ```
 
-It is a thin wrapper around `PersistableVec<u8>`, which is more interesting than it sounds.
-Plain `String` deliberately has **no** `Persistable` implementation, and that absence is the enforcement mechanism: a struct field typed `String` simply fails to compile, rather than silently persisting nothing.
-`PersistableString` exists because a durable string needs a field of its own to remember which allocation holds its bytes, and `String` has nowhere to put one.
+On file, the text's UTF-8 bytes and then the byte `0xFF`, which UTF-8 never contains; in memory, a `String`, which it dereferences to.
+Text states no count, so every edit — `push_str`, `insert_str`, `replace_range`, `truncate` — is one splice of the file's sequence, wherever it lands and however long the text is.
+
+Plain `String` deliberately has **no** `Persistable` implementation, and neither have `Vec` and `HashMap`: a field's type says that it is durable, and its guard is where its recorded mutations live.
+A struct field typed `String` fails to compile, and the error points you to the durable type.
 
 So this does not compile, and that is the point:
 
@@ -93,22 +103,22 @@ struct Journal {
 }
 ```
 
-## `PersistableHashMap<K, V>`
+## `PersistableMap<K, V>`
 
-A key-value map.
+A key-value map that keeps its entries in insertion order.
 `K: Eq + Hash + Persistable`, `V: Persistable`.
 
 <!-- kladde-example: name=containers file=src/map.rs
 before:
   use kladde::{Kladde, Persistable};
-  use kladde_types::{PersistableHashMap, PersistableString};
+  use kladde_types::{PersistableMap, PersistableString};
   #[derive(Persistable)]
   struct Contact {
       email: PersistableString,
   }
   #[derive(Persistable)]
   struct Book {
-      contacts: PersistableHashMap<PersistableString, Contact>,
+      contacts: PersistableMap<PersistableString, Contact>,
   }
   fn demo(book: &mut Kladde<Book>, contact: Contact) -> kladde::Result<()> {
   let mut guard = book.guard();
@@ -121,20 +131,20 @@ let mut contacts = guard.contacts_mut();
 let ada = PersistableString::from("ada");
 contacts.insert(PersistableString::from("ada"), contact)?;
 contacts.get_mut(&ada).unwrap().email_mut().set("ada@example.com")?;
-contacts.delete(&ada)?;     // removes and frees; `remove` hands the value back
+contacts.delete(&ada)?;     // removes and drops; `remove` hands the value back
 ```
 
 Reading — `get`, `contains_key`, `iter`, `len` — needs no guard.
-Inserting under a key that is already present overwrites its value in place and returns the old one, as `HashMap::insert` does.
+Inserting under a key that is already present replaces its value and returns the old one, as `HashMap::insert` does.
 
-**Layout.** An array of fixed-size slots, each a one-byte liveness tag followed by a `(K, V)` pair.
-The on-disk form does *not* support key lookup at all — that is what the in-memory map is for — so it needs no hashing structure on disk.
+**Encoding.** The number of entries, then each entry's key and value, in the map's order.
+The file does *not* support key lookup at all — that is what the in-memory map is for — so it needs no hashing structure on file.
+In memory, the entries sit in a vector, in their order on file, beside a hash table of their indices, so each key is stored exactly once and `K: Clone` is not required.
 
-**Removal is tombstoning**: the tag is cleared in place and nothing else moves, and a later insertion reuses the slot.
-This is what lets each key be stored exactly once in memory, and is why `K: Clone` is not required.
+**Removal swaps**: the last entry moves into the removed one's place, without writing its bytes, so the file stays dense, and an insertion appends.
 
 **Keys are immutable.**
-No guard is ever handed out for a key; `Persistable` on `K` governs only how its bytes are read and written.
+No guard is ever handed out for a key; `Persistable` on `K` governs only how its bytes are encoded.
 
 ## `PersistableBlob<T>`
 
@@ -158,7 +168,7 @@ struct Config {
 }
 ```
 
-Wraps any `T: Serialize + DeserializeOwned + Default` as an opaque, serialized payload with its own allocation.
+Wraps any `T: Serialize + DeserializeOwned + Default` as an opaque, serialized payload, prefixed with its length.
 Use it when a type is not yours to change and cannot get its own `Persistable` implementation.
 
 **It is deliberately the worst option.**
@@ -170,8 +180,8 @@ It is gated behind `kladde-types`' `serde` feature — the only thing in the wor
 
 A **rope**, for large text with efficient middle-insertion, is designed but not built.
 
-Tuples of up to twelve components are persistable, laid out like a tuple struct, and their guard's `parts()` hands out a guard per component.
-There is no durable `Option` or `Box` as such — a derived enum covers `Option`'s role.
+Tuples of up to twelve components are persistable, encoded like a tuple struct, and their guard's `parts()` hands out a guard per component.
+`Option<T>` is persistable as an enum, and its guard offers `set`, `take` and `as_mut`; `Box<T>` is persisted as the `T` it holds, which is how a recursive type gets a size in Rust.
 
 ## Choosing
 
@@ -179,7 +189,8 @@ There is no durable `Option` or `Box` as such — a derived enum covers `Option`
 | --- | --- |
 | a sequence | `PersistableVec<T>` |
 | text | `PersistableString` |
-| a lookup table | `PersistableHashMap<K, V>` |
+| a lookup table | `PersistableMap<K, V>` |
+| a value that changes often and should keep its size | [`Fixed<T>`](deriving.md#fixed-size-values) |
 | a few values that belong together | a tuple, or a derived struct |
 | your own struct or enum | [`#[derive(Persistable)]`](deriving.md) |
 | a foreign type you cannot change | `PersistableBlob<T>`, reluctantly |

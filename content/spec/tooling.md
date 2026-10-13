@@ -10,28 +10,28 @@ No tools exist yet.
 ## The premise
 
 A kladde file is self-describing in two independent ways.
-It describes its **storage**: the [address table](address-table.md) is reachable from the header and names every allocation, so the file's structure is recoverable without any application knowledge at all — and without a scan, since everything is rooted.
-And it describes its **types**: the embedded [descriptor table](schema/) says how every non-opaque value in the file is laid out.
+It describes its **storage**: the [span table](span-table.md) is reachable from the header and describes every span of every chain, so the file's structure is recoverable without any application knowledge at all — and without a scan, since everything is rooted.
+And it describes its **types**: the [schema chain](sequence.md#three-chains) says how every value in the sequence is encoded.
 
 Together these mean a tool can be useful at three levels, each requiring strictly more than the last.
 
 ## Level 1 — storage analysis
 
-Requires: the [page](file-format.md), [address-table](address-table.md) and [allocation](allocations.md) layers.
+Requires: the [page](file-format.md), [span-table](span-table.md) and [sequence](sequence.md) layers.
 Requires **no** schema and no application knowledge.
 
 A tool at this level can:
 
-- enumerate every live allocation with its id and size, and every fragment of its content with the page it lives in;
-- compute total live bytes, file length, and therefore **garbage**;
+- list every chain, its length, and its spans with the pages they show bytes of;
+- compute the live bytes, the description's share, the file's length, and therefore **garbage**;
 - report the per-page live fraction, and how much of the file is superseded pages awaiting reuse;
-- report journal length and how far the committed state lags behind it;
+- report the journal's length and how far the committed state lags behind it;
 - **consolidate** the file into a tight new one, and truncate it.
 
-Rewriting a file from an external tool is safe for exactly the reason it is safe internally: it changes no id, no size, and no content, so it is invisible to any reader.
+Rewriting a file from an external tool is safe for exactly the reason it is safe internally: it changes the content of no chain, so it is invisible to any reader.
 This makes a standalone `kladde compact` genuinely implementable, which is unusual for a format of this kind.
 
-What it cannot do is tell you what any of it *means* — which allocation holds what, or whether a large one is a container's backing array or a single opaque blob.
+What it cannot do is tell you what any of it *means*.
 
 ## Level 2 — schema inspection
 
@@ -40,7 +40,7 @@ Still requires no application knowledge.
 
 A tool at this level can:
 
-- list every type in the file, with its kind, fields, variants, and inline size;
+- list every type in the file, with its kind, fields, variants, and whether it is fixed-size;
 - compute and display each type's [fingerprint](schema/fingerprints.md);
 - identify the root type;
 - report which types are Opaque, and their declaring library and version — which is exactly the list of things a reader would need an implementation of;
@@ -50,40 +50,19 @@ This is what makes "why won't my application open this file?" a diagnosable ques
 
 ## Level 3 — structural export
 
-Requires: additionally the ability to walk the value graph from the root.
-Requires no application knowledge, but is **inherently partial**.
+Requires: additionally decoding the sequence by the descriptors.
+Requires no application knowledge.
 
-A tool at this level can render the file as text — JSON, or something more structured — by starting at the root type and recursing.
-Primitives decode by their code, structs by their fields, enums by their discriminant.
+A tool at this level can render the whole content as text by decoding the sequence from the root descriptor, front to back: primitives decode by their code, structs by their fields, enums by their discriminant, sequences by their count, text up to its terminator.
+Every container is described structurally, there is no pointer graph to follow, and nothing can be unreachable, so the export is complete.
 
-It stops at two boundaries:
+It stops only at **Opaque** types, whose content is by definition not decomposable: a tool can report their identity and version, and dump their bytes, which the encoding delimits, but not interpret them.
 
-**Opaque types.**
-By definition their content is not decomposable.
-A tool can report identity, version, and inline size, and can dump the bytes, but cannot interpret them.
-This includes the built-in container types, which is a significant limitation — see below.
+## A canonical textual representation
 
-**Pointers.**
-A tool can follow the ownership graph only if it can tell which bytes are pointers.
-Today that knowledge lives in the language bindings, not in the schema, which is why the [Pointer descriptor kind](schema/type-descriptors.md#pointer-reserved) is reserved.
-
-## The container problem
-
-The most significant gap between this design intent and what is achievable today is that the **built-in containers are Opaque**.
-
-A vector is currently described as an opaque type with a library name, a version, and an inline header size.
-So a level-3 tool can see *that* a field holds a vector, but not its length, not its element layout, and not how to reach its contents — even though a vector is one of the most structurally regular things in the file.
-
-Two possible resolutions, neither decided:
-
-1. **Give containers structural descriptors.**
-   A vector's representation really is describable — a header plus a dense array of fixed-size element slots — and the reserved [Array](schema/type-descriptors.md#array-reserved) and Pointer kinds exist partly for this.
-   This would make containers fully walkable by any tool, at the cost of freezing more of their layout into the format.
-2. **Register container layouts out of band**, so a tool can be taught about the standard containers without them ceasing to be Opaque in the file.
-   Cheaper, but it means a tool needs a table of known types and is no longer purely self-describing.
-
-**TBD.**
-This decision determines how useful generic tooling can actually be, and it is worth making before the format is frozen: option 1 changes the descriptors that files contain, so it cannot be retrofitted silently.
+**The specification should eventually define a canonical textual representation of kladde files**, and canonical conversions to and from common human-readable formats such as JSON.
+These representations would cover the schema and the sequence: not the private chain, which any writer may keep, replace or clear without changing what the file holds, and not how either is cut into spans.
+Two files with the same schema and sequence would then have the same text, whatever implementation wrote them and however often they were consolidated.
 
 ## Cross-implementation testing
 

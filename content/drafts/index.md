@@ -8,6 +8,9 @@ Documents here are **not** held to the separation the rest of the hub observes: 
 
 Nothing here is adopted.
 When a draft settles, it is split along the usual seams and moves into [Specification](../spec/), [Implementation](../impl/) and [kladde-rs](../rust/) — or, if it is rejected, into [Superseded](../superseded/) with the reasoning intact.
+The proposal of the file as one sequence settled that way: its content is now the specification's [sequence](../spec/sequence.md) and [span table](../spec/span-table.md) and the pages around them.
+
+Most drafts below were written against the [design it replaced](../superseded/allocations.md), of allocations and an address table, and describe that design where they say "today"; their ideas about consolidation's policies carry over to pages of spans, and those about allocations, statements and places do not.
 
 ## Current drafts
 
@@ -21,7 +24,6 @@ When a draft settles, it is split along the usual seams and moves into [Specific
 | [Sorting survivors by temperature](survivor-classes.md) | another idea for reducing file size, orthogonal to how ripeness is estimated: try to avoid creating pages that mix cold chunks with chunks that are still draining. |
 | [Variable-size values](variable-size.md) | a proposal: separate how many bytes a value's encoding takes from how much room its place reserves; packed places unpad enums, write integers and pointers as varints, and admit small strings and vectors that keep short content inline |
 | [Sparse leaves, and consolidation from the statements up](consolidation-from-statements.md) | a finding, resolved: leaves stayed far emptier than data pages because consolidation interleaves choosing victims, deriving statements, and laying them out; the newest size wins ended the pile-up of nearly empty leaves, and dropping the fill floor on retiring leaves ended their staying half empty; and a redesign from the address table's logical level that keeps the three apart |
-| [Splices without restating the tail](splices.md) | a proposal for the address table: seven ways to state a splice without restating what lies behind it, measured on kladde-svg and on typing; recommends linked spans over backings, with their compaction as the open question |
-| [The file as one sequence](one-sequence.md) | a proposal for a redesign above the pages: no allocations, the file's content one packed byte sequence kept as a chain of spans, and data types that see only their own region; how it keeps live pages within a constant factor of the sequence at constant work per edit |
+| [Splices without restating the tail](splices.md) | a proposal for the address table: seven ways to state a splice without restating what lies behind it, measured on kladde-svg and on typing; recommends linked spans over backings, which the adopted design took further |
 
 [Open issues](open-issues.md) is the odd one out: it is not an idea in progress but a standing list, and it is kept here because it is maintained by audit and goes stale the moment the documents it indexes are edited.

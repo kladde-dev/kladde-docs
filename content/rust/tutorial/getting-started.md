@@ -85,7 +85,7 @@ Rust does not.
 There is no hook that fires when you assign to a field.
 
 The guard is the substitute.
-It is an RAII token — exactly the relationship `MutexGuard` has to `Mutex` — that proves you have exclusive, recording access, and it carries two things a plain `&mut` could not: the backend to record into, and the *location* in the file that this particular field occupies.
+It is an RAII token — exactly the relationship `MutexGuard` has to `Mutex` — that proves you have exclusive, recording access, and it carries two things a plain `&mut` could not: the backend to record into, and the *region* of the file's content that this particular field occupies — where its encoding starts in the file's one sequence of bytes, and how long it is.
 
 This is why you cannot mutate a durable value through a plain `&mut`.
 There is no such method.
