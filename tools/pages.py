@@ -88,6 +88,7 @@ ORDER = [
     "drafts/variable-size.md",
     "drafts/consolidation-from-statements.md",
     "drafts/splices.md",
+    "drafts/cpp.md",
 ]
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
