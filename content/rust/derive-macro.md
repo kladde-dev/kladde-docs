@@ -98,6 +98,36 @@ And `parts()` borrows the guard, so `set` cannot switch the variant while a fiel
 `parts()` on a temporary guard works in a `match` but not in a `let … else`, which drops the temporary at the end of the statement; a consuming `into_parts(self)` would make the `let` form work too, and is proposed rather than built.
 An enum without any fields gets no `parts()`, since it has nothing to mutate in place.
 
+## Trait objects, as an enum
+
+**A file can hold only values whose types it can name, so where an application would hold a `Box<dyn Shape>`, it holds an enum of the shapes, which implements `Shape` by forwarding every method to its current variant.**
+The trait is marked `#[kladde::dispatch]`, and the enum `#[kladde(dispatch(Shape))]` beside `#[derive(Durable)]`; every variant holds one value, of a type that implements the trait.
+The derive also implements `From` for every variant's type, and for the `T` of a variant that holds a `Box<T>`, so `AnyShape::from(Circle { .. })` builds the right variant.
+
+On file the enum is an ordinary enum, with a variant per implementation, so the [schema](../spec/schema/type-descriptors.md#enum) needs nothing new, and a C++ or Python implementation reads it as it reads any enum.
+A variant may hold its value in a `Box`, to keep a large variant from making every value of the enum large in memory: a box is persisted as what it holds, its guard is what it holds' guard, and it is `Bounded` where what it holds is, so boxing or unboxing a variant changes neither the file nor the fingerprint.
+
+*Why an enum rather than `Box<dyn Trait>` itself.*
+Rust cannot list a trait's implementations, so the variants have to be listed somewhere, and an enum is the list Rust already checks: two variants with the same explicit discriminant fail to compile (E0081), and a variant's type that does not implement the trait fails at the enum.
+A reader has to know every variant to decode a file, so the openness of `dyn` would buy nothing on file; collecting implementations from several crates at link time would make the fingerprint depend on which crates a binary linked.
+And `Durable` cannot be used through `dyn` — it requires `Sized`, has associated constants and a generic `Guard`, and `decode` returns `Self` — so a durable `Box<dyn Shape>` would need a helper trait, a table of decoders, and guards reached by downcasting, where the enum gets `parts()` and an exhaustive `match`.
+The enum is also faster, with no vtable and no allocation per value.
+
+**How the two macros meet.**
+A derive sees only the enum, never the trait's methods, so `#[kladde::dispatch]` emits, beside the unchanged trait, a hidden `macro_rules!` macro, `__kladde_dispatch_Shape`, that knows the methods and writes the forwarding impl for an enum it is handed; it re-exports it next to the trait with `pub(crate) use`.
+The derive invokes it by the trait's path, with the trait's module path and the macro's name in place of the trait's, so the enum may be in any module, before or after the trait.
+For each variant it passes the pattern binding the held value, the value's type, and how to reach the value by reference, by mutable reference and by value, through the box for a variant that holds one; and the impl's `where` clause, with a bound of the trait on each variant's type, spanned at that type, so that a missing implementation is reported at the enum, and a generic enum gets the bounds it needs.
+This is the pattern of the `ambassador` crate; `enum_dispatch` instead passes the trait's tokens through global state between the two macros, which depends on the order rustc expands them in.
+
+**What it forwards.**
+Every method of the trait, defaulted ones included, so that a variant's own implementation wins: methods taking `self`, `&self` or `&mut self`, generic ones, `async` ones, `unsafe` ones, and ones with `impl Trait` arguments.
+It refuses, at the trait, what it cannot forward: a method without a receiver, which no enum could choose a variant for; one that takes `Self` other than as its receiver, or returns `Self` or `impl Trait`, since each variant would bring or return a type of its own; and associated types and constants, which each variant may choose differently, and generic traits.
+A variant's type that two variants hold gets no `From`, nor does one that mentions a type parameter, since `From<T>` would overlap with every other variant's.
+
+**Limitations.**
+The trait and the enum must be in one crate: a `macro_rules!` macro can be public only through `#[macro_export]`, which puts it at the crate root, where a macro-expanded one may not be named by path from its own crate.
+A box is recognized by its spelling, `Box<T>`, `std::boxed::Box<T>` or `alloc::boxed::Box<T>`, so a variant holding a box behind a type alias forwards to the box itself, which then has to implement the trait.
+
 ## Generics and transparency
 
 Type parameters are supported: each gets a `Durable` bound, the heuristic `#[derive(Debug)]` uses.

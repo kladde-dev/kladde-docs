@@ -68,7 +68,7 @@ A Python implementation should use property hooks and have no guards at all.
 | [Crate layout](crates.md) | the workspace, the dependency direction, and where the seam falls |
 | [Durable and guards](durable-and-guards.md) | the central traits, regions, `Fixed`, why mutation needs a guard, and why it returns a `Result` |
 | [Containers](containers.md) | how the built-in containers are encoded and indexed, and cuts |
-| [The derive macro](derive-macro.md) | what it generates, fixed forms, and why guards are generated per type |
+| [The derive macro](derive-macro.md) | what it generates, fixed forms, enums in place of trait objects, and why guards are generated per type |
 | [Transactions](transactions.md) | the RAII types, and what happens on unwind |
 | [Schema binding](schema-binding.md) | how a Rust type declares its descriptor, and the check at open |
 | [The store](store.md) | the Rust-specific half of the storage layer: interior mutability, I/O, and the in-memory structures |

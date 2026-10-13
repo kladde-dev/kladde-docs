@@ -197,6 +197,75 @@ enum PhoneNumber {
 }
 ```
 
+## Trait objects
+
+A `Box<dyn Shape>` is not durable: a file can hold only values whose types it can name.
+**Hold an enum of the shapes instead, and let it implement the trait by forwarding to its variants**: mark the trait `#[kladde::dispatch]`, and the enum `#[kladde(dispatch(Shape))]`.
+
+<!-- kladde-example: name=dispatch file=src/main.rs mode=run deps=kladde -->
+```rust
+use kladde::{Durable, Kladde};
+
+#[kladde::dispatch]
+trait Shape {
+    fn area(&self) -> f32;
+}
+
+#[derive(Durable)]
+struct Circle { r: f32 }
+impl Shape for Circle {
+    fn area(&self) -> f32 { 3.0 * self.r * self.r }
+}
+
+#[derive(Durable)]
+struct Rect { w: f32, h: f32 }
+impl Shape for Rect {
+    fn area(&self) -> f32 { self.w * self.h }
+}
+
+#[derive(Durable)]
+struct Frame { outer: Rect, hole: Rect, angle: f32, label: u32 }
+impl Shape for Frame {
+    fn area(&self) -> f32 { self.outer.area() - self.hole.area() }
+}
+
+#[derive(Durable)]
+#[kladde(dispatch(Shape))]
+#[repr(u32)]
+enum AnyShape {
+    Circle(Circle) = 1,
+    Rect(Rect) = 2,
+    Frame(Box<Frame>) = 3,  // boxed, so that a circle stays small in memory
+}
+
+fn main() -> kladde::Result<()> {
+    let mut shape = Kladde::new(AnyShape::from(Circle { r: 1.0 }));
+    assert_eq!(shape.get().area(), 3.0);
+
+    let frame = Frame {
+        outer: Rect { w: 3.0, h: 3.0 },
+        hole: Rect { w: 1.0, h: 1.0 },
+        angle: 0.0,
+        label: 7,
+    };
+    shape.guard().set(frame.into())?;   // `From<Frame>` boxes it
+    if let AnyShapeParts::Frame(mut f) = shape.guard().parts() {
+        f.hole_mut().w_mut().set(2.0)?;
+    }
+    assert_eq!(shape.get().area(), 7.0);
+    Ok(())
+}
+```
+
+The enum implements every method of the trait, each forwarding to the value its current variant holds, and converts `From` each variant's value.
+It is an ordinary durable enum otherwise: you mutate a variant through `parts()`, and switch variants with `set`.
+
+**Each variant holds one value, whose type implements the trait**, or the enum fails to compile, at the variant.
+The discriminants are optional, as on every enum, but explicit ones keep your files readable when you add or reorder implementations.
+**A variant may box its value**, which keeps one large implementation from making every value of the enum as large in memory; it changes nothing in the file, so you can box or unbox a variant later.
+
+The trait's methods must take `self`, `&self` or `&mut self`, and mention `Self` nowhere else, and the trait and the enum must live in one crate; [the derive macro](../derive-macro.md#trait-objects-as-an-enum) says why.
+
 ## Generics
 
 Type parameters work, and each gets a `Durable` bound:

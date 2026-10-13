@@ -13,7 +13,7 @@ The workspace, what depends on what, and where the language-neutral half ends.
 | `kladde-schema` | type descriptors, their canonical encoding, fingerprints, and the rules of nesting. Depends on nothing but `kladde-varint`. |
 | `kladde-varint` | LEB128 varints and zigzag. |
 | `kladde-types` | the built-in containers: vector, map, string, blob. The default collection, not a layer — it uses only the public API any library could. |
-| `kladde-derive` | the `#[derive(Durable)]` macro. Reached through `kladde`'s `derive` feature; applications do not depend on it directly. |
+| `kladde-derive` | the `#[derive(Durable)]` macro, and the `#[kladde::dispatch]` attribute with which a derived enum stands in for a trait object. Reached through `kladde`'s `derive` feature; applications do not depend on it directly. |
 | `kladde` | the application-facing entry point: creating and opening files, the root value, transactions and batches. Re-exports the derive macro and everything a `Durable` impl names, so an application needs this crate and nothing below it. |
 
 Two more crates sit beside them, used by the measurements and nothing else: `kladde-svg`, an SVG drawing held as a durable value, with `svg-bench` among its binaries, and `kladde-bench`, with `text-bench`; together they drive the [evaluation](../evaluation/tools.md).

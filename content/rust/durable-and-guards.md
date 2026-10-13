@@ -57,7 +57,9 @@ A `Decoder` reads the sequence from the mirror through the rope, across span bou
 ### `Bounded` and `Fixed<T>`
 
 `Fixed<T>` holds `T`'s values in their [fixed form](../spec/schema/type-descriptors.md#fixed), which a subtrait, `Bounded`, states, so that no method panics for a type without one, and `Fixed<DurableString>` fails to compile where it is written, with a message that names the fix.
-The scalars, `Fixed`, and the `Option`s and tuples of `Bounded` types are `Bounded`, and a derived type is if it is marked `#[kladde(bounded)]` ([the derive](derive-macro.md#fixed-forms)).
+The scalars, `Fixed`, and the `Option`s, `Box`es and tuples of `Bounded` types are `Bounded`, and a derived type is if it is marked `#[kladde(bounded)]` ([the derive](derive-macro.md#fixed-forms)).
+A `Box<T>` takes `T`'s fixed form, as it takes `T`'s encoding and descriptor, so boxing a field keeps `Fixed` of what holds it.
+Its conditional impl never meets the cycle that its `FIXED_SIZE` cuts, since a recursive type is never `Bounded`; a recursive type marked `#[kladde(bounded)]` fails to compile, though with rustc's cycle error (E0391) rather than kladde's message.
 A type with a fixed size and no fixed form is possible, and harmless, since nothing can wrap it in `Fixed`.
 
 `FIXED_FORM_SIZE` is the bound on a value's size that `Fixed<T>` needs, so `Durable` declares no other maximum: `Fixed<T>` stores the fixed form, every integer at its full width, rather than `T`'s encoding padded to its longest, in which a field would move whenever a varint before it grew.
