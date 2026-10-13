@@ -66,9 +66,9 @@ When several belong together — money leaving one account must arrive in anothe
 
 <!-- kladde-example: name=accounts file=src/main.rs mode=run deps=kladde -->
 ```rust
-use kladde::{Kladde, Persistable};
+use kladde::{Kladde, Durable};
 
-#[derive(Persistable)]
+#[derive(Durable)]
 struct Accounts {
     checking: i64,
     savings: i64,
@@ -102,8 +102,8 @@ So keep transactions short, and use a batch for a long run of mutations that are
 <!-- kladde-example: name=batch file=src/lib.rs deps=kladde,kladde-types
 before:
   use kladde::Kladde;
-  use kladde_types::PersistableVec;
-  fn import(log: &mut Kladde<PersistableVec<u64>>) -> kladde::Result<()> {
+  use kladde_types::DurableVec;
+  fn import(log: &mut Kladde<DurableVec<u64>>) -> kladde::Result<()> {
 after:
   Ok(())
   }

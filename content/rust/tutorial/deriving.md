@@ -2,7 +2,7 @@
 title: Deriving your own types
 ---
 
-`#[derive(Persistable)]` turns your own struct or enum into a durable type, as long as every persisted field is itself `Persistable`.
+`#[derive(Durable)]` turns your own struct or enum into a durable type, as long as every persisted field is itself `Durable`.
 
 ## What to import
 
@@ -17,32 +17,32 @@ kladde-types = { git = "https://github.com/kladde-dev/kladde-rs" }
 
 You do **not** need `kladde-derive` or `kladde-persist`.
 The macro is re-exported from `kladde` behind its `derive` feature, which is on by default, and generated code is rooted at `::kladde`, which re-exports every item it names.
-That is deliberate: if you had to add `kladde-persist` yourself, a version disagreeing with `kladde`'s would give you two distinct copies of the `Persistable` trait and an error message that prints the expected and found types identically.
+That is deliberate: if you had to add `kladde-persist` yourself, a version disagreeing with `kladde`'s would give you two distinct copies of the `Durable` trait and an error message that prints the expected and found types identically.
 
 Here is a complete program:
 
 <!-- kladde-example: name=phonebook file=src/main.rs mode=run deps=kladde,kladde-types -->
 ```rust
-use kladde::{Kladde, Persistable};
-use kladde_types::{PersistableString, PersistableVec};
+use kladde::{Kladde, Durable};
+use kladde_types::{DurableString, DurableVec};
 
-#[derive(Persistable)]
+#[derive(Durable)]
 enum PhoneNumber {
-    Mobile(PersistableString),
-    Landline(PersistableString),
+    Mobile(DurableString),
+    Landline(DurableString),
 }
 
-#[derive(Persistable)]
+#[derive(Durable)]
 struct Contact {
-    email: PersistableString,
-    phones: PersistableVec<PhoneNumber>,
+    email: DurableString,
+    phones: DurableVec<PhoneNumber>,
     starred: bool,
 }
 
 fn main() -> kladde::Result<()> {
     let mut contact = Kladde::new(Contact {
-        email: PersistableString::from("ada@example.com"),
-        phones: PersistableVec::new(),
+        email: DurableString::from("ada@example.com"),
+        phones: DurableVec::new(),
         starred: false,
     });
 
@@ -50,13 +50,13 @@ fn main() -> kladde::Result<()> {
     guard.starred_mut().set(true)?;
     guard
         .phones_mut()
-        .push(PhoneNumber::Mobile(PersistableString::from("555-0100")))?;
+        .push(PhoneNumber::Mobile(DurableString::from("555-0100")))?;
     Ok(())
 }
 ```
 
-The `Persistable` in that `use` is the derive *macro*.
-It shares its name with the `Persistable` *trait*, which is legal and deliberate — they live in different namespaces, exactly as `serde`'s `Serialize` does.
+The `Durable` in that `use` is the derive *macro*.
+It shares its name with the `Durable` *trait*, which is legal and deliberate — they live in different namespaces, exactly as `serde`'s `Serialize` does.
 If you need to name the trait explicitly in the same file, import it under an alias.
 
 ## Structs
@@ -77,8 +77,8 @@ A field's guard finds where the field starts: at a constant offset up to the fir
 Integers wider than a byte are varints, so a `u32` takes one byte below 128 and up to five above.
 
 That includes primitive fields.
-`bool`, `i32`, `char` and friends all implement `Persistable`, specifically so the macro can treat every field uniformly rather than special-casing leaves.
-So do tuples of up to twelve `Persistable` types, encoded like a tuple struct, `Option<T>`, and `Box<T>`, which is persisted as the `T` it holds.
+`bool`, `i32`, `char` and friends all implement `Durable`, specifically so the macro can treat every field uniformly rather than special-casing leaves.
+So do tuples of up to twelve `Durable` types, encoded like a tuple struct, `Option<T>`, and `Box<T>`, which is persisted as the `T` it holds.
 
 ## Fixed-size values
 
@@ -89,9 +89,9 @@ A derived type can be wrapped in `Fixed` only if it is marked `#[kladde(bounded)
 
 <!-- kladde-example: name=fixed file=src/lib.rs deps=kladde,kladde-types
 before:
-  use kladde::{Fixed, Persistable};
-  use kladde_types::PersistableVec;
-  #[derive(Persistable)]
+  use kladde::{Fixed, Durable};
+  use kladde_types::DurableVec;
+  #[derive(Durable)]
   #[kladde(bounded)]
   enum ShapeKind {
       Circle,
@@ -99,7 +99,7 @@ before:
   }
 -->
 ```rust
-#[derive(Persistable)]
+#[derive(Durable)]
 #[kladde(bounded)]
 struct Shape {
     x: u32,
@@ -107,9 +107,9 @@ struct Shape {
     kind: ShapeKind,       // also #[kladde(bounded)]
 }
 
-#[derive(Persistable)]
+#[derive(Durable)]
 struct Drawing {
-    shapes: PersistableVec<Fixed<Shape>>,   // eight bytes per shape, plus the kind's
+    shapes: DurableVec<Fixed<Shape>>,   // eight bytes per shape, plus the kind's
     revision: Fixed<u64>,
 }
 ```
@@ -124,10 +124,10 @@ A single-field struct marked `#[kladde(transparent)]` is persisted exactly as it
 
 <!-- kladde-example: name=newtype file=src/lib.rs deps=kladde
 before:
-  use kladde::{Kladde, Persistable};
+  use kladde::{Kladde, Durable};
 -->
 ```rust
-#[derive(Persistable)]
+#[derive(Durable)]
 #[kladde(transparent)]
 struct Meters(u32);
 
@@ -142,24 +142,24 @@ Its guard's `get_mut()` returns the field's guard.
 
 An enum is its discriminant, as a varint, followed by the selected variant's fields, each variant encoded like a struct in its own right.
 So a value takes the size of its own variant, not of the largest.
-Positional fields are named by their position: `Mobile(PersistableString)` has a field called `"0"`.
+Positional fields are named by their position: `Mobile(DurableString)` has a field called `"0"`.
 
 **To mutate the current variant in place, match on the guard's `parts()`.**
 It hands out the guards of the current variant's fields, in an enum named after yours, `PhoneNumberParts`, with the same variants:
 
 <!-- kladde-example: name=enum-parts file=src/main.rs mode=run deps=kladde,kladde-types -->
 ```rust
-use kladde::{Kladde, Persistable};
-use kladde_types::PersistableString;
+use kladde::{Kladde, Durable};
+use kladde_types::DurableString;
 
-#[derive(Persistable)]
+#[derive(Durable)]
 enum PhoneNumber {
-    Mobile(PersistableString),
-    Landline(PersistableString),
+    Mobile(DurableString),
+    Landline(DurableString),
 }
 
 fn main() -> kladde::Result<()> {
-    let mut number = Kladde::new(PhoneNumber::Mobile(PersistableString::from("555-01")));
+    let mut number = Kladde::new(PhoneNumber::Mobile(DurableString::from("555-01")));
 
     let mut guard = number.guard();
     match guard.parts() {
@@ -168,7 +168,7 @@ fn main() -> kladde::Result<()> {
     }
 
     // To switch to another variant, replace the whole value.
-    guard.set(PhoneNumber::Landline(PersistableString::from("555-0123")))?;
+    guard.set(PhoneNumber::Landline(DurableString::from("555-0123")))?;
     assert!(matches!(number.get(), PhoneNumber::Landline(digits) if digits == "555-0123"));
     Ok(())
 }
@@ -185,26 +185,26 @@ Explicit values on variants with fields need a `#[repr]` anyway, as Rust require
 
 <!-- kladde-example: name=pinned-discriminants file=src/lib.rs deps=kladde,kladde-types
 before:
-  use kladde::Persistable;
-  use kladde_types::PersistableString;
+  use kladde::Durable;
+  use kladde_types::DurableString;
 -->
 ```rust
-#[derive(Persistable)]
+#[derive(Durable)]
 #[repr(u32)]
 enum PhoneNumber {
-    Mobile(PersistableString) = 1,
-    Landline(PersistableString) = 2,
+    Mobile(DurableString) = 1,
+    Landline(DurableString) = 2,
 }
 ```
 
 ## Generics
 
-Type parameters work, and each gets a `Persistable` bound:
+Type parameters work, and each gets a `Durable` bound:
 
 ```rust
-#[derive(Persistable)]
+#[derive(Durable)]
 struct Labelled<T> {
-    label: PersistableString,
+    label: DurableString,
     value: T,
 }
 ```
@@ -213,20 +213,20 @@ Lifetime and const parameters are not supported.
 
 ## What the derive needs
 
-Every persisted field must be `Persistable`.
+Every persisted field must be `Durable`.
 In practice that means:
 
 - primitives — fine as-is;
 - kladde containers — fine as-is;
 - your own derived types — fine, and they nest arbitrarily;
-- `String`, `Vec<T>`, `HashMap<K, V>` — **not** `Persistable`.
+- `String`, `Vec<T>`, `HashMap<K, V>` — **not** `Durable`.
   Use the kladde equivalents.
   This is deliberate: a field's type says whether it is durable, and the compile error tells you which type to use.
 
 ## Non-persisted fields
 
 Sometimes a struct has a field that should not be stored — a cache, a handle, something derived.
-The derive macro has no attribute for this yet; the workaround is a [hand-written implementation](custom-persistable.md) that encodes only the fields you want persisted.
+The derive macro has no attribute for this yet; the workaround is a [hand-written implementation](custom-durable.md) that encodes only the fields you want persisted.
 
 Doing so does **not** make your type opaque to the format.
 A hand-written implementation that encodes exactly the bytes of a struct with two fields *has* that struct's [descriptor](../../spec/schema/type-descriptors.md).

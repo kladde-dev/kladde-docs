@@ -11,21 +11,21 @@ Every container's content lies inline in the file's one sequence of bytes, where
 `kladde-types` is not part of the machinery, and nothing depends on it.
 It is a collection of types most applications turn out to want, offered so that you do not have to write them yourself.
 
-Everything in it is built on the same public `Persistable`/`Guard` surface available to any crate.
+Everything in it is built on the same public `Durable`/`Guard` surface available to any crate.
 There is no internal kladde magic here that a third-party library — or your own application — could not use equally well, and third-party libraries of general-purpose durable types are welcome.
 
-## `PersistableVec<T>`
+## `DurableVec<T>`
 
 A growable sequence.
-`T` must be `Persistable`, and nothing more — no `Clone`, no `Serialize`.
+`T` must be `Durable`, and nothing more — no `Clone`, no `Serialize`.
 
 <!-- kladde-example: name=containers file=src/vec.rs deps=kladde,kladde-types
 before:
-  use kladde::{Kladde, Persistable};
-  use kladde_types::{PersistableString, PersistableVec};
-  #[derive(Persistable)]
+  use kladde::{Kladde, Durable};
+  use kladde_types::{DurableString, DurableVec};
+  #[derive(Durable)]
   struct Journal {
-      entries: PersistableVec<PersistableString>,
+      entries: DurableVec<DurableString>,
   }
   fn demo(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
 after:
@@ -35,8 +35,8 @@ after:
 ```rust
 let mut guard = journal.guard();
 let mut v = guard.entries_mut();
-v.push(PersistableString::from("a"))?;
-v.insert(0, PersistableString::from("b"))?;
+v.push(DurableString::from("a"))?;
+v.insert(0, DurableString::from("b"))?;
 v.get_mut(1).unwrap().push_str("c")?;  // the guard of one element
 let first = v.remove(0)?;   // yours now, as a plain value
 v.push(first)?;             // encoded again, at the end
@@ -46,7 +46,7 @@ v.move_element(0, 1)?;      // reordered, without writing an element's bytes
 v.delete(0)?;               // removed and dropped
 ```
 
-Reading needs no guard: `PersistableVec<T>` dereferences to `[T]`, so `len`, indexing and `iter` work on the in-memory elements.
+Reading needs no guard: `DurableVec<T>` dereferences to `[T]`, so `len`, indexing and `iter` work on the in-memory elements.
 
 **Encoding.** The number of elements as a varint, then the elements, back to back.
 In memory, a `Vec<T>`, and for an element type whose size depends on its value, a Fenwick tree of the elements' sizes, four bytes per element, so that the guard of element `i` finds where it starts in `O(log m)`.
@@ -60,17 +60,17 @@ None of them rewrites the elements behind it: the file records where its bytes l
 A cut holds a transaction open until it is pasted, so paste it right away; dropping it unpasted removes the element for good.
 `delete` and `clear` remove and drop.
 
-## `PersistableString`
+## `DurableString`
 
 Growable text.
 
 <!-- kladde-example: name=containers file=src/string.rs
 before:
-  use kladde::{Kladde, Persistable};
-  use kladde_types::PersistableString;
-  #[derive(Persistable)]
+  use kladde::{Kladde, Durable};
+  use kladde_types::DurableString;
+  #[derive(Durable)]
   struct Journal {
-      owner: PersistableString,
+      owner: DurableString,
   }
   fn demo(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
   let mut guard = journal.guard();
@@ -87,38 +87,38 @@ owner.push_str(" lovelace")?;
 On file, the text's UTF-8 bytes and then the byte `0xFF`, which UTF-8 never contains; in memory, a `String`, which it dereferences to.
 Text states no count, so every edit — `push_str`, `insert_str`, `replace_range`, `truncate` — is one splice of the file's sequence, wherever it lands and however long the text is.
 
-Plain `String` deliberately has **no** `Persistable` implementation, and neither have `Vec` and `HashMap`: a field's type says that it is durable, and its guard is where its recorded mutations live.
+Plain `String` deliberately has **no** `Durable` implementation, and neither have `Vec` and `HashMap`: a field's type says that it is durable, and its guard is where its recorded mutations live.
 A struct field typed `String` fails to compile, and the error points you to the durable type.
 
 So this does not compile, and that is the point:
 
 <!-- kladde-example: name=plain-string-is-rejected file=src/lib.rs mode=compile_fail deps=kladde
 before:
-  use kladde::Persistable;
+  use kladde::Durable;
 -->
 ```rust
-#[derive(Persistable)]
+#[derive(Durable)]
 struct Journal {
-    owner: String,  // the trait bound `String: Persistable` is not satisfied
+    owner: String,  // the trait bound `String: Durable` is not satisfied
 }
 ```
 
-## `PersistableMap<K, V>`
+## `DurableMap<K, V>`
 
 A key-value map that keeps its entries in insertion order.
-`K: Eq + Hash + Persistable`, `V: Persistable`.
+`K: Eq + Hash + Durable`, `V: Durable`.
 
 <!-- kladde-example: name=containers file=src/map.rs
 before:
-  use kladde::{Kladde, Persistable};
-  use kladde_types::{PersistableMap, PersistableString};
-  #[derive(Persistable)]
+  use kladde::{Kladde, Durable};
+  use kladde_types::{DurableMap, DurableString};
+  #[derive(Durable)]
   struct Contact {
-      email: PersistableString,
+      email: DurableString,
   }
-  #[derive(Persistable)]
+  #[derive(Durable)]
   struct Book {
-      contacts: PersistableMap<PersistableString, Contact>,
+      contacts: DurableMap<DurableString, Contact>,
   }
   fn demo(book: &mut Kladde<Book>, contact: Contact) -> kladde::Result<()> {
   let mut guard = book.guard();
@@ -128,8 +128,8 @@ after:
 -->
 ```rust
 let mut contacts = guard.contacts_mut();
-let ada = PersistableString::from("ada");
-contacts.insert(PersistableString::from("ada"), contact)?;
+let ada = DurableString::from("ada");
+contacts.insert(DurableString::from("ada"), contact)?;
 contacts.get_mut(&ada).unwrap().email_mut().set("ada@example.com")?;
 contacts.delete(&ada)?;     // removes and drops; `remove` hands the value back
 ```
@@ -144,16 +144,16 @@ In memory, the entries sit in a vector, in their order on file, beside a hash ta
 **Removal swaps**: the last entry moves into the removed one's place, without writing its bytes, so the file stays dense, and an insertion appends.
 
 **Keys are immutable.**
-No guard is ever handed out for a key; `Persistable` on `K` governs only how its bytes are encoded.
+No guard is ever handed out for a key; `Durable` on `K` governs only how its bytes are encoded.
 
-## `PersistableBlob<T>`
+## `DurableBlob<T>`
 
 An escape hatch for foreign types.
 
 <!-- kladde-example: name=containers file=src/blob.rs deps=kladde-types[serde],serde
 before:
-  use kladde::Persistable;
-  use kladde_types::PersistableBlob;
+  use kladde::Durable;
+  use kladde_types::DurableBlob;
   use serde::{Deserialize, Serialize};
   #[derive(Default, Serialize, Deserialize)]
   struct WindowGeometry {
@@ -162,14 +162,14 @@ before:
   }
 -->
 ```rust
-#[derive(Persistable)]
+#[derive(Durable)]
 struct Config {
-    window: PersistableBlob<WindowGeometry>,  // a foreign serde type
+    window: DurableBlob<WindowGeometry>,  // a foreign serde type
 }
 ```
 
 Wraps any `T: Serialize + DeserializeOwned + Default` as an opaque, serialized payload, prefixed with its length.
-Use it when a type is not yours to change and cannot get its own `Persistable` implementation.
+Use it when a type is not yours to change and cannot get its own `Durable` implementation.
 
 **It is deliberately the worst option.**
 A blob is rewritten in full on every change, which forfeits kladde's central advantage; it is opaque to [tooling](../../spec/tooling.md); and it drags in a serialization dependency.
@@ -180,18 +180,18 @@ It is gated behind `kladde-types`' `serde` feature — the only thing in the wor
 
 A **rope**, for large text with efficient middle-insertion, is designed but not built.
 
-Tuples of up to twelve components are persistable, encoded like a tuple struct, and their guard's `parts()` hands out a guard per component.
-`Option<T>` is persistable as an enum, and its guard offers `set`, `take` and `as_mut`; `Box<T>` is persisted as the `T` it holds, which is how a recursive type gets a size in Rust.
+Tuples of up to twelve components are durable, encoded like a tuple struct, and their guard's `parts()` hands out a guard per component.
+`Option<T>` is durable as an enum, and its guard offers `set`, `take` and `as_mut`; `Box<T>` is persisted as the `T` it holds, which is how a recursive type gets a size in Rust.
 
 ## Choosing
 
 | you have | use |
 | --- | --- |
-| a sequence | `PersistableVec<T>` |
-| text | `PersistableString` |
-| a lookup table | `PersistableMap<K, V>` |
+| a sequence | `DurableVec<T>` |
+| text | `DurableString` |
+| a lookup table | `DurableMap<K, V>` |
 | a value that changes often and should keep its size | [`Fixed<T>`](deriving.md#fixed-size-values) |
 | a few values that belong together | a tuple, or a derived struct |
-| your own struct or enum | [`#[derive(Persistable)]`](deriving.md) |
-| a foreign type you cannot change | `PersistableBlob<T>`, reluctantly |
-| a foreign type whose layout you know | [a hand-written impl](custom-persistable.md) |
+| your own struct or enum | [`#[derive(Durable)]`](deriving.md) |
+| a foreign type you cannot change | `DurableBlob<T>`, reluctantly |
+| a foreign type whose layout you know | [a hand-written impl](custom-durable.md) |

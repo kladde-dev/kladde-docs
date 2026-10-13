@@ -1,15 +1,15 @@
 ---
-title: Persistable and guards
+title: Durable and guards
 ---
 
 The central traits, why mutation needs a guard, and why it returns a `Result`.
 
 **A data type encodes, decodes, and mutates its region; it never allocates, frees, or knows a position.**
 
-## `Persistable`
+## `Durable`
 
 ```rust
-pub trait Persistable: Sized {
+pub trait Durable: Sized {
     /// `Some(n)` if every value encodes to `n` bytes.
     const FIXED_SIZE: Option<usize>;
 
@@ -25,7 +25,7 @@ pub trait Persistable: Sized {
 
 /// A type with a fixed form, which `Fixed<Self>` holds.
 #[diagnostic::on_unimplemented(message = "`{Self}` has no fixed form", /* ... */)]
-pub trait Bounded: Persistable {
+pub trait Bounded: Durable {
     const FIXED_FORM_SIZE: usize;
     fn encode_fixed(&self, out: &mut Encoder<'_>);
     fn decode_fixed(input: &mut Decoder<'_>) -> Result<Self, Error>;
@@ -34,7 +34,7 @@ pub trait Bounded: Persistable {
 pub struct Fixed<T: Bounded>(pub T);
 ```
 
-A `Persistable` is a plain, in-memory value that *has the right shape* to be persisted, but is not itself tied to any backend.
+A `Durable` is a plain, in-memory value that *has the right shape* to be persisted, but is not itself tied to any backend.
 Reading it is ordinary reading.
 Besides `describe_local`, the trait offers `to_bytes`, `from_bytes`, `describe`, `schema` and `fingerprint`, with defaults.
 
@@ -42,7 +42,7 @@ Besides `describe_local`, the trait offers `to_bytes`, `from_bytes`, `describe`,
 
 `Some(n)` if every value encodes to `n` bytes, as the [specification](../spec/schema/type-descriptors.md#fixed-size-types) has it, and `None` otherwise.
 A vector decides by it whether to keep an index of where its elements start, and the derive by it whether a field after another has a constant offset.
-It stays an `Option` on `Persistable`, rather than a subtrait, because a vector branches on it at compile time, which a subtrait could support only with specialization.
+It stays an `Option` on `Durable`, rather than a subtrait, because a vector branches on it at compile time, which a subtrait could support only with specialization.
 
 **A `Box<T>`'s `FIXED_SIZE` is `None` whatever `T`'s**: a type that holds itself through a box would otherwise ask its own size of itself while the compiler evaluates it, which rustc refuses as a cycle (E0391) rather than reading it as "not fixed-size".
 The derive cannot tell a recursive type from the tokens of one type, and a box is the one indirection among kladde's types that could pass a fixed size on, so answering `None` there cuts every cycle; a vector of boxes then keeps an index it could do without, and nothing on file changes.
@@ -56,11 +56,11 @@ A `Decoder` reads the sequence from the mirror through the rope, across span bou
 
 ### `Bounded` and `Fixed<T>`
 
-`Fixed<T>` holds `T`'s values in their [fixed form](../spec/schema/type-descriptors.md#fixed), which a subtrait, `Bounded`, states, so that no method panics for a type without one, and `Fixed<PersistableString>` fails to compile where it is written, with a message that names the fix.
+`Fixed<T>` holds `T`'s values in their [fixed form](../spec/schema/type-descriptors.md#fixed), which a subtrait, `Bounded`, states, so that no method panics for a type without one, and `Fixed<DurableString>` fails to compile where it is written, with a message that names the fix.
 The scalars, `Fixed`, and the `Option`s and tuples of `Bounded` types are `Bounded`, and a derived type is if it is marked `#[kladde(bounded)]` ([the derive](derive-macro.md#fixed-forms)).
 A type with a fixed size and no fixed form is possible, and harmless, since nothing can wrap it in `Fixed`.
 
-`FIXED_FORM_SIZE` is the bound on a value's size that `Fixed<T>` needs, so `Persistable` declares no other maximum: `Fixed<T>` stores the fixed form, every integer at its full width, rather than `T`'s encoding padded to its longest, in which a field would move whenever a varint before it grew.
+`FIXED_FORM_SIZE` is the bound on a value's size that `Fixed<T>` needs, so `Durable` declares no other maximum: `Fixed<T>` stores the fixed form, every integer at its full width, rather than `T`'s encoding padded to its longest, in which a field would move whenever a varint before it grew.
 A fixed-size type's fixed form is its encoding byte for byte, except where an enum's integer `#[repr]` sets a discriminant wider than the one byte its encoding takes: `#[repr(u32)] enum Pinned { A, B }` has `FIXED_SIZE` 1 and `FIXED_FORM_SIZE` 4.
 
 **The guard of a `Fixed<T>` replaces the value whole**, an overwrite of its fixed size, since a guard of one of `T`'s fields would have to write that field in its fixed form, which would take a second guard for every type.
@@ -87,14 +87,14 @@ A child made on its own borrows its parent region mutably, so the parent cannot 
 
 ```rust
 pub trait Guard {
-    type Persistable;
-    fn as_persistable(&self) -> &Self::Persistable;
+    type Durable;
+    fn as_durable(&self) -> &Self::Durable;
 }
 ```
 
 A guard borrows the value and its region for a lifetime — exactly the relationship `MutexGuard` has to `Mutex`, and the naming is deliberate.
 It is an RAII token proving exclusive, recording access.
-A guard's `Persistable` need not be `Self`, since a `Box<T>` uses `T`'s guard.
+A guard's `Durable` need not be `Self`, since a `Box<T>` uses `T`'s guard.
 
 Every mutating method on a guard does two things: it records the mutation through its region, and it mutates the in-memory value.
 **Mutating methods never return anything for the caller to separately apply.**
@@ -123,7 +123,7 @@ Per-type generation means `MyTypeGuard` is local to the crate that declared `MyT
 The store flushes by itself whenever a mutation would not fit in what is left of its journal's budget, and it does so [from inside the mutating call](../impl/transactions-and-batches.md#checkpoint-versus-commit) that closed it — while a guard is alive.
 That is safe for two reasons, one per layer.
 
-**The flush touches no `Persistable` value and moves no position.**
+**The flush touches no `Durable` value and moves no position.**
 It folds journal records into pages; it never reads or writes an in-memory value, and positions in the sequence, which guards hold, mean the same after it.
 
 **A flush lands only on a transaction boundary.**
@@ -133,7 +133,7 @@ It runs between appends, and every append is a whole transaction, so every state
 
 ```rust
 notes.guard()              // NotesGuard  — the root's region: the whole sequence
-     .lines_mut()          // PersistableVecGuard — a child region, after the title
+     .lines_mut()          // DurableVecGuard — a child region, after the title
      .push(value)?;        // splices the element and the count, then mutates memory
 ```
 

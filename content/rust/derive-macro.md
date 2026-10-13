@@ -2,37 +2,37 @@
 title: The derive macro
 ---
 
-What `#[derive(Persistable)]` generates, and why.
+What `#[derive(Durable)]` generates, and why.
 
 ## What it generates
 
 For a struct or enum, four things:
 
-1. a `Persistable` implementation — `FIXED_SIZE`, `encoded_len`, `encode`, `decode`, and the schema descriptor;
+1. a `Durable` implementation — `FIXED_SIZE`, `encoded_len`, `encode`, `decode`, and the schema descriptor;
 2. a **guard type**, `MyTypeGuard`, with a `_mut()` accessor per field, a `parts()` method handing out a guard for every field at once, and a whole-value `set`;
 3. a `Deref` implementation on the guard, so read-only methods stay available — and no `DerefMut`, which would hand out a `&mut` whose changes no journal record describes;
 4. with `#[kladde(bounded)]`, a `Bounded` implementation: the fixed form.
 
 ```rust
-#[derive(Persistable)]
-struct Point { x: f32, label: PersistableString, n: u32 }
+#[derive(Durable)]
+struct Point { x: f32, label: DurableString, n: u32 }
 ```
 
 generates, in essence:
 
 ```rust
-impl Persistable for Point {
-    const FIXED_SIZE: Option<usize> = sum_sizes(&[f32::FIXED_SIZE, PersistableString::FIXED_SIZE, u32::FIXED_SIZE]);
+impl Durable for Point {
+    const FIXED_SIZE: Option<usize> = sum_sizes(&[f32::FIXED_SIZE, DurableString::FIXED_SIZE, u32::FIXED_SIZE]);
     fn encoded_len(&self) -> usize { self.x.encoded_len() + self.label.encoded_len() + self.n.encoded_len() }
     fn encode(&self, out: &mut Encoder<'_>) { self.x.encode(out); self.label.encode(out); self.n.encode(out) }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Error> {
-        Ok(Point { x: f32::decode(input)?, label: PersistableString::decode(input)?, n: u32::decode(input)? })
+        Ok(Point { x: f32::decode(input)?, label: DurableString::decode(input)?, n: u32::decode(input)? })
     }
     // ...
 }
 
 impl<'r, B: Backend> PointGuard<'r, B> {
-    fn label_mut(&mut self) -> PersistableStringGuard<'_, B> {
+    fn label_mut(&mut self) -> DurableStringGuard<'_, B> {
         let offset = 4;                                  // after `x`, whose size is fixed
         let len = self.inner.label.encoded_len();
         self.inner.label.guard(self.region.child(offset, len, None, 1))
@@ -65,10 +65,10 @@ It requires every field's type to be `Bounded`, failing at the type's definition
 So the author opts in.
 Opting in marks only the types that `Fixed` wraps and those inside them, none in kladde-svg; opting out would mark every type that holds text, a container or itself, 6 of kladde-svg's 15 derived types.
 
-## Primitives are `Persistable` too
+## Primitives are `Durable` too
 
 `i32`, `bool`, `char` and friends have implementations, specifically so the macro can treat **every** field uniformly rather than special-casing leaves.
-Those implementations must live in the crate that *defines* `Persistable`, because `impl Persistable for i32` is `impl ForeignTrait for ForeignType` from anywhere else, which the orphan rules forbid; the same reasoning forces the scalar guard types into that crate.
+Those implementations must live in the crate that *defines* `Durable`, because `impl Durable for i32` is `impl ForeignTrait for ForeignType` from anywhere else, which the orphan rules forbid; the same reasoning forces the scalar guard types into that crate.
 
 ## Enums
 
@@ -100,7 +100,7 @@ An enum without any fields gets no `parts()`, since it has nothing to mutate in 
 
 ## Generics and transparency
 
-Type parameters are supported: each gets a `Persistable` bound, the heuristic `#[derive(Debug)]` uses.
+Type parameters are supported: each gets a `Durable` bound, the heuristic `#[derive(Debug)]` uses.
 Lifetime and const parameters are rejected.
 
 `#[kladde(transparent)]` on a single-field struct persists it exactly as its field — same bytes, same descriptor, same fingerprint — and gives its guard one `get_mut()` returning the field's guard, as `#[serde(transparent)]` does.
@@ -109,12 +109,12 @@ Lifetime and const parameters are rejected.
 
 Generated code names items by absolute path, because a macro cannot know what the user called their imports.
 It roots them at **`::kladde`**, and `kladde` re-exports every item generated code or a hand-written impl names, so an application depends on `kladde` and nothing below it.
-That matters for more than convenience: if the facade did *not* re-export them, an author would add `kladde-persist` themselves, and a version that disagreed with the facade's would produce two distinct copies of the `Persistable` trait and an error that prints the expected and found types identically.
+That matters for more than convenience: if the facade did *not* re-export them, an author would add `kladde-persist` themselves, and a version that disagreed with the facade's would produce two distinct copies of the `Durable` trait and an error that prints the expected and found types identically.
 
 A library built directly on `kladde-persist` has no reason to pull the facade in, and redirects the macro instead, as `serde`'s `#[serde(crate = "...")]` does:
 
 ```rust
-#[derive(Persistable)]
+#[derive(Durable)]
 #[kladde(crate = "kladde_persist")]
 struct Node { /* ... */ }
 ```

@@ -6,7 +6,7 @@ title: Getting started
 
 A durable data structure lives in two places at once.
 
-**In memory**, it is an ordinary Rust value: a `PersistableVec<T>` really does hold a `Vec<T>`, and reading from it is a plain memory access.
+**In memory**, it is an ordinary Rust value: a `DurableVec<T>` really does hold a `Vec<T>`, and reading from it is a plain memory access.
 Nothing about reading touches the file.
 
 **In the file**, it is a compact binary representation that lags slightly behind, plus a *journal* of changes not yet folded into it.
@@ -26,13 +26,13 @@ after:
   mod parts;
 -->
 ```rust
-use kladde::{Kladde, Persistable};
-use kladde_types::{PersistableString, PersistableVec};
+use kladde::{Kladde, Durable};
+use kladde_types::{DurableString, DurableVec};
 
-#[derive(Persistable)]
+#[derive(Durable)]
 struct Journal {
-    owner: PersistableString,
-    entries: PersistableVec<PersistableString>,
+    owner: DurableString,
+    entries: DurableVec<DurableString>,
 }
 
 fn main() -> kladde::Result<()> {
@@ -40,15 +40,15 @@ fn main() -> kladde::Result<()> {
     let mut journal = Kladde::create(
         &path,
         Journal {
-            owner: PersistableString::from("ada"),
-            entries: PersistableVec::new(),
+            owner: DurableString::from("ada"),
+            entries: DurableVec::new(),
         },
     )?;
 
     journal
         .guard()
         .entries_mut()
-        .push(PersistableString::from("first entry"))?;
+        .push(DurableString::from("first entry"))?;
     println!("{} entries", journal.get().entries.len());
     journal.close()?;
 
@@ -70,7 +70,7 @@ No guard, no file access, no cost beyond the read itself.
 
 **Writing goes through `guard()`**, which hands you a `JournalGuard`.
 Every field of a derived type gets a `_mut()` accessor on its guard, which reborrows the same backend one level deeper.
-So `journal.guard().entries_mut()` is a `PersistableVecGuard`, and `push` on it both records the change and mutates the vector.
+So `journal.guard().entries_mut()` is a `DurableVecGuard`, and `push` on it both records the change and mutates the vector.
 It returns a `Result`, because recording is I/O.
 
 **`open` reads it all back.**
@@ -99,7 +99,7 @@ Guards compose to arbitrary depth, and each level reborrows the same backend:
 before:
   use crate::Journal;
   use kladde::Kladde;
-  use kladde_types::PersistableString;
+  use kladde_types::DurableString;
   fn nesting(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
 after:
   Ok(())
@@ -108,8 +108,8 @@ after:
 ```rust
 let mut guard = journal.guard();
 let mut entries = guard.entries_mut();
-entries.push(PersistableString::from("second"))?;
-entries.push(PersistableString::from("third"))?;
+entries.push(DurableString::from("second"))?;
+entries.push(DurableString::from("third"))?;
 ```
 
 Or in one chain, when you only need one mutation:
@@ -134,7 +134,7 @@ To mutate several fields together, `parts()` hands out a guard for every field a
 before:
   use crate::{Journal, JournalParts};
   use kladde::Kladde;
-  use kladde_types::PersistableString;
+  use kladde_types::DurableString;
   fn parts(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
 after:
   Ok(())
@@ -144,7 +144,7 @@ after:
 let mut guard = journal.guard();
 let JournalParts { mut owner, mut entries } = guard.parts();
 owner.set("grace")?;
-entries.push(PersistableString::from("handed over"))?;
+entries.push(DurableString::from("handed over"))?;
 ```
 
 Hold a guard only as long as you need it.

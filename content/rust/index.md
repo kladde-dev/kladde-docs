@@ -10,7 +10,7 @@ The [file format](../spec/) and the [algorithms](../impl/) are shared; the trait
 ## Two audiences
 
 **If you want to use kladde in an application**, start with the [tutorial](tutorial/).
-It assumes you know Rust and nothing about kladde, and works up from a first program to writing your own persistable types.
+It assumes you know Rust and nothing about kladde, and works up from a first program to writing your own durable types.
 
 **If you want to work on kladde**, or port it, read the [specification](../spec/) and [implementation notes](../impl/) first — they carry the parts that are not about Rust — and come back here for the rest.
 
@@ -27,21 +27,21 @@ after:
 -->
 ```rust
 use kladde::Kladde;
-use kladde::Persistable;
-use kladde_types::{PersistableString, PersistableVec};
+use kladde::Durable;
+use kladde_types::{DurableString, DurableVec};
 
-#[derive(Persistable)]
+#[derive(Durable)]
 struct Notes {
-    title: PersistableString,
-    lines: PersistableVec<PersistableString>,
+    title: DurableString,
+    lines: DurableVec<DurableString>,
 }
 
 let mut notes = Kladde::new(Notes {
-    title: PersistableString::from("today"),
-    lines: PersistableVec::new(),
+    title: DurableString::from("today"),
+    lines: DurableVec::new(),
 });
 
-notes.guard().lines_mut().push(PersistableString::from("wrote a doc"))?;
+notes.guard().lines_mut().push(DurableString::from("wrote a doc"))?;
 ```
 
 The `push` updates the in-memory vector and appends the change to the journal before it returns.
@@ -66,7 +66,7 @@ A Python implementation should use property hooks and have no guards at all.
 | document | contents |
 | --- | --- |
 | [Crate layout](crates.md) | the workspace, the dependency direction, and where the seam falls |
-| [Persistable and guards](persistable-and-guards.md) | the central traits, regions, `Fixed`, why mutation needs a guard, and why it returns a `Result` |
+| [Durable and guards](durable-and-guards.md) | the central traits, regions, `Fixed`, why mutation needs a guard, and why it returns a `Result` |
 | [Containers](containers.md) | how the built-in containers are encoded and indexed, and cuts |
 | [The derive macro](derive-macro.md) | what it generates, fixed forms, and why guards are generated per type |
 | [Transactions](transactions.md) | the RAII types, and what happens on unwind |

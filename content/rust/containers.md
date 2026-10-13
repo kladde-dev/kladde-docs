@@ -4,10 +4,10 @@ title: Containers
 
 How kladde-types realises the [built-in containers](../impl/values.md#the-built-in-containers), and the choices that are Rust's.
 
-The containers are **hand-implemented** against `Persistable`, `Guard` and `Region`, not generated, since each keeps an index of its own in memory.
+The containers are **hand-implemented** against `Durable`, `Guard` and `Region`, not generated, since each keeps an index of its own in memory.
 Everything they use is public, so a third-party library of durable types can do anything they do.
 
-## `PersistableVec<T>`
+## `DurableVec<T>`
 
 **Encoding:** a [Sequence](../spec/schema/type-descriptors.md#sequence): the count as a varint, then the elements.
 **In memory:** a `Vec<T>`, and for a `T` whose `FIXED_SIZE` is `None`, a Fenwick tree of the elements' encoded sizes in 32-bit cells, behind a cached total; for a fixed-size `T`, element `i` starts at `i` times its size after the count, and the vector keeps nothing more.
@@ -22,22 +22,22 @@ It lies in cells and implements `Node`, so the element guards that `parts`-like 
 - **`set`** replaces the whole vector.
 - **`cut(i)`, `insert_cut` and `push_cut`** move an element between vectors as [a cut and a paste](../impl/values.md#moving-a-value-between-containers), below.
 
-`T` needs only `Persistable` — no `Clone`, no `Serialize` — since a guard method encodes a value into the record while only borrowing it.
+`T` needs only `Durable` — no `Clone`, no `Serialize` — since a guard method encodes a value into the record while only borrowing it.
 The vector reads through `Deref<Target = [T]>`, so a slice's whole read API works on it.
 
 The tree's field takes 40 bytes even where it is empty or the elements are fixed-size: 24 for its `Vec` and 16 for its cached total and the count's varint length, which it adds when it answers for guards made together.
 Neither number needs a field — the total can live in the tree's allocation, and the count's length is the vector's to pass in — which would leave the 24 bytes of an empty `Vec`, or 8 with a thin one.
 
-## `PersistableString`
+## `DurableString`
 
 **Encoding:** [Text](../spec/schema/type-descriptors.md#text): UTF-8, then `0xFF`.
 **In memory:** a `String`, which it dereferences to as `str`.
 
 `replace_range`, `push_str`, `insert_str`, `truncate` and `set` are each one splice, since text has no count to rewrite; `set` records a `Write` where the new text has the old one's length.
 
-Plain `String` has **no** `Persistable` implementation, by choice: a field's type says that it is durable, and its guard is where its recorded mutations live, so a field typed `String` fails to compile and points the author to `PersistableString`.
+Plain `String` has **no** `Durable` implementation, by choice: a field's type says that it is durable, and its guard is where its recorded mutations live, so a field typed `String` fails to compile and points the author to `DurableString`.
 
-## `PersistableMap<K, V>`
+## `DurableMap<K, V>`
 
 **Encoding:** a Sequence of entries, each a Struct named `Entry` of a field `key` and a field `value`, in the map's order.
 **In memory:** an index map — the entries in a `Vec<(K, V)>`, in their order on file, and a hash table of their indices, its own, with open addressing over 32-bit positions, probed linearly and at most half full — and for variable-size entries a Fenwick tree of their sizes.
@@ -48,7 +48,7 @@ Plain `String` has **no** `Persistable` implementation, by choice: a field's typ
 
 Each key is stored once, in the entries, so `K: Clone` is not required.
 
-## `PersistableBlob<T>`
+## `DurableBlob<T>`
 
 **Encoding:** an [Opaque](../spec/schema/type-descriptors.md#opaque) without a fixed size: the serde payload, prefixed with its length.
 Wraps any `T: Serialize + DeserializeOwned + Default`.

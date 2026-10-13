@@ -1,5 +1,5 @@
 ---
-title: Writing a custom Persistable
+title: Implementing Durable by hand
 ---
 
 *Advanced.*
@@ -18,12 +18,12 @@ The derive macro has no attribute for this yet, so you write an implementation t
 **A container** — something with a non-trivial internal structure, which keeps an index of where its children start.
 This is what the built-in containers do, and it is the hardest case.
 
-If your type is a foreign one you cannot change, you probably want [`PersistableBlob<T>`](containers.md#persistableblobt) instead, and to accept its costs.
+If your type is a foreign one you cannot change, you probably want [`DurableBlob<T>`](containers.md#durableblobt) instead, and to accept its costs.
 
 ## The trait
 
 ```rust
-pub trait Persistable: Sized {
+pub trait Durable: Sized {
     const FIXED_SIZE: Option<usize>;
 
     fn encoded_len(&self) -> usize;
@@ -68,7 +68,7 @@ A colour of three bytes, with a guard that sets the whole colour or only its red
 <!-- kladde-example: name=rgb file=src/lib.rs deps=kladde -->
 ```rust
 use kladde::{
-    Backend, Bounded, Decoder, Encoder, Error, Field, Guard, Persistable, Region, SchemaBuilder,
+    Backend, Bounded, Decoder, Encoder, Error, Field, Guard, Durable, Region, SchemaBuilder,
     TypeDescriptor,
 };
 
@@ -101,8 +101,8 @@ impl<B: Backend> RgbGuard<'_, B> {
 }
 
 impl<B> Guard for RgbGuard<'_, B> {
-    type Persistable = Rgb;
-    fn as_persistable(&self) -> &Rgb {
+    type Durable = Rgb;
+    fn as_durable(&self) -> &Rgb {
         self.inner
     }
 }
@@ -114,7 +114,7 @@ impl<B> std::ops::Deref for RgbGuard<'_, B> {
     }
 }
 
-impl Persistable for Rgb {
+impl Durable for Rgb {
     const FIXED_SIZE: Option<usize> = Some(3);
 
     fn encoded_len(&self) -> usize {
@@ -143,7 +143,7 @@ impl Persistable for Rgb {
                 .into_iter()
                 .map(|name| Field {
                     name: name.into(),
-                    ty: <u8 as Persistable>::describe(builder),
+                    ty: <u8 as Durable>::describe(builder),
                 })
                 .collect(),
         }

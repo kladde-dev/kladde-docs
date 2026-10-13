@@ -10,10 +10,10 @@ The split is deliberate and worth preserving in a port.
 
 **`kladde-schema` — the model.**
 The descriptor types, the canonical encoding, the fingerprint computation, and a SHA-256 implementation.
-It has **no** connection to the store, to `Persistable`, or to any Rust type system machinery, which is what makes it portable and testable on its own: the conformance vectors for [encoding](../spec/schema/canonical-encoding.md) and [fingerprints](../spec/schema/fingerprints.md) exercise this layer and nothing else.
+It has **no** connection to the store, to `Durable`, or to any Rust type system machinery, which is what makes it portable and testable on its own: the conformance vectors for [encoding](../spec/schema/canonical-encoding.md) and [fingerprints](../spec/schema/fingerprints.md) exercise this layer and nothing else.
 
 **The binding — where Rust types meet the model.**
-A `Persistable` type declares its own descriptor in `describe_local`, and the derive macro generates that declaration.
+A `Durable` type declares its own descriptor in `describe_local`, and the derive macro generates that declaration.
 
 ## The binding
 
@@ -33,7 +33,7 @@ A hand-written implementation of a plain field-sum declares `Struct`, not `Opaqu
 
 The containers declare structural descriptors, so that a tool can decode them: a vector a `Sequence` of its element type, a string `Text`, a map a `Sequence` of a struct `Entry` with fields `key` and `value`.
 `Option<T>` declares an enum `Option` with a one-byte discriminant width, `None` = 0 and `Some` = 1 with a field `"0"`; a tuple a struct `TupleN` with positional fields; `Fixed<T>` a `Fixed` of `T`'s descriptor; and `Box<T>` is *schema-transparent*, reusing `T`'s descriptor, as `#[kladde(transparent)]` types do.
-Only `PersistableBlob` declares `Opaque`, without a fixed size, since its serde payload is not decomposable.
+Only `DurableBlob` declares `Opaque`, without a fixed size, since its serde payload is not decomposable.
 
 ## At create and at open
 

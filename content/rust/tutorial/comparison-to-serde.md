@@ -64,7 +64,7 @@ A postcard blob is opaque without the writing program.
 
 ## They are not exclusive
 
-`PersistableBlob<T>` wraps any serde type as an opaque payload inside a kladde structure.
+`DurableBlob<T>` wraps any serde type as an opaque payload inside a kladde structure.
 
 This is the right escape hatch for a foreign type you cannot change, and the wrong default for anything else: a blob is rewritten in full on every change, so it forfeits exactly the property you came for.
 Use it at the leaves, for things that change rarely.
