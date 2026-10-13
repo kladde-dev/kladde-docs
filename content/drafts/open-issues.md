@@ -182,3 +182,13 @@ Each of these blocks the prototype only in the sense that a number must be typed
 - **A flush that re-points moved bytes.** The [`Move` record](../spec/journal.md#record-kinds) is specified, and a prototype can fold it like a `Copy` followed by zeroing the source range, giving up only the rewrite it would save; [re-pointing the bytes instead](move-op.md) can wait.
 - **Non-owning references**, application versioning, and concurrency. All marked TBD and none reachable from the prototype's feature list.
 - **Unwind behaviour.** [Poisoning on panic](../rust/transactions.md) is aspirational; the interim contract — reopen the file — is adequate for a prototype.
+
+## Ideas for later
+
+Ideas from kladde-rs's working notes that still apply to the present design and have no page of their own yet.
+
+- **Records that call back into a type.**
+  Some edits are far smaller to describe than their bytes — "draw a black line from X to Y" on an embedded image, or "recompress this image" — and a record naming the type and the edit, replayed by the type's own code, would journal them cheaply.
+  It gives up what [the journal's type-agnosticism](../spec/journal.md#what-the-journal-is) buys: replay without application code and without a type registry, so a reader that lacks the type could not recover the file.
+  At most it could be an optional optimization whose effect is also recorded as bytes at the next flush.
+- **A lint for unusual combinations of wrappers**, once [segments](segments.md) and [capsules](../spec/schema/evolution.md#what-is-tbd) exist beside `DurableBlob`: the derive could suggest `Capsule<Segment<T>>` for a field declared `Segment<Capsule<T>>`, say, and say how to silence the lint, `#[kladde(allow_atypical_...)]`.

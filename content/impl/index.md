@@ -128,6 +128,9 @@ And it keeps the resident set a property of the *file*: nothing obliges a data t
 **Drop the data-page mirror once loading is done.**
 After the load, application reads are served by the values' own in-memory representations and never touch the file, so a span's bytes in a data page are read again only when a flush moves them, merges them with their neighbours, or rewrites a short span an edit cut into — all rare, and all able to afford a fresh read.
 
+**Peak memory comes at open**, while the mirror and the decoded values coexist: about the sequence's size twice over, until the decode ends and the mirror goes.
+Holding the mirror for good instead, and reading values from it rather than decoding them into the host language's vectors and strings, would halve that peak and save every in-memory copy, but it is an open idea: values would no longer be the host language's own, reads would need the store, and the journal's edits would have to reach the mirror too.
+
 **Table pages stay resident by default**, for a reason data pages do not share: `Inline` payloads live inside them, and every flush that restates an inline span copies its payload.
 They are also small next to the sequence.
 Nothing depends on it, though: only the header must stay, being the write buffer, and dropping the leaves after load costs one read per leaf a flush rewrites or restates from.

@@ -56,6 +56,11 @@ Wraps any `T: Serialize + DeserializeOwned + Default`.
 The escape hatch for foreign types that can get neither their own wrapper nor a derive, and deliberately the least attractive option: rewritten in full on every change, opaque to [tooling](../spec/tooling.md), and the only thing in the workspace that needs a serialization dependency — hence the feature gate.
 Its in-place edit is a closure, `update(|value| ...)`, rather than a handle that persists when dropped, since `Drop` cannot report an error.
 
+**It rewrites its whole payload on every change, where it could splice only what changed.**
+It keeps its last serialization, so it could find the changed span by a scan for the common prefix and suffix, and splice it in, which costs a few span entries wherever it lands; editing one nested field of a large blob would then write little.
+How little depends on the serialization: postcard's varints and length prefixes shift everything after a value that changes size, so the saving depends on the workload.
+If that is not done, the blob need keep only its serialization's length rather than the serialization itself.
+
 ## Cuts
 
 **A container's `cut(i)` removes element `i` as `remove(i)` does, and returns a `Cut<T, B>`**: the in-memory value, and the cut's number in the store's open transaction, which the `Cut` holds open, nested in any the application opened, for as long as it lives.

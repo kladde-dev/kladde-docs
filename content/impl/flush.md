@@ -124,6 +124,9 @@ The price of each cut is one entry, and in ordinary flushes the packer [prefers 
 
 A flush writes every span it produces **whole**; the old bytes remain behind as garbage until consolidation reclaims them.
 
+**A large payload is written twice**: once into the journal when its record is appended, and again into data pages when the flush places it — a pasted image, say, or a document the application built outside any guard and brought in whole.
+A flush could instead state spans over the payload's bytes where they already lie, in the journal's pages, turning those pages into data pages, which would halve what a large paste writes; it would need journal pages that hold whole pages of a payload aligned to the data pages' content, and the [reuse rule](../spec/durability.md#the-reuse-rule) to hold for pages that change kind, and is an open idea.
+
 ### Page contiguity buys nothing
 
 **Adjacent pages need exactly as many entries as scattered ones**, because a `Ref` [shows bytes of one page only](../spec/span-table.md#bounds), so a bulk write of many pages is one span per page wherever those pages are.

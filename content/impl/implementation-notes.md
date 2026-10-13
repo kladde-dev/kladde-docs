@@ -4,8 +4,9 @@ title: Implementation notes
 
 What implementing the design in [kladde-rs](../rust/) has shown: where kladde-rs falls short of these documents, and what it chose where they leave a question open.
 
-kladde-rs records these findings in its `implementation-notes.md` as they come up, and this page is a copy of it.
+This page is where kladde-rs's findings are recorded as they come up, and proposed for the other documents from here.
 Paths like `spec/journal.md` are relative to `content/`, the root of these documents.
+Branches of kladde-rs that hold earlier designs, such as `address-table`, keep their own `implementation-notes.md`.
 
 ## Where the implementation falls short
 
@@ -15,7 +16,8 @@ What the code does not do yet, or does less well than kladde-docs or its own goa
   A leaf that names table pages of its own is refused at open.
   The header's room for references to leaves, one or two bytes each, bounds a file to some 2,000 to 4,000 leaves, one to two million spans: a sequence of a few hundred MB in spans of the length the measurements find, and far more than any workload measured, the largest of which takes 21 to 26 leaves.
   Beyond the bound, a flush fails with `Error::OutOfBounds`, and since opening flushes the replayed journal, a file whose journal holds such a flush no longer opens.
-  The fix, interior table pages and the path copy of `impl/consolidation.md#unlinking-an-emptied-page`, is recorded in `later.md`.
+  No workload measured comes near the bound: the world map's sequence of 942 KiB takes 21 to 26 leaves.
+  The fix: write interior table pages when the leaves' references outgrow the header, with the path copy of `impl/consolidation.md#unlinking-an-emptied-page`, and read them at open, which `load.rs` refuses today; test it with the header's capacity settable from tests.
 - **The decode recurses without a limit on its depth**, where `impl/opening.md` asks for a limit or an iterative decode, so a file that nests deeply enough overflows the stack.
 - **A container's index panics on sizes of 4 GiB or more**, where `spec/span-table.md#bounds` asks every limit to fail cleanly: the Fenwick tree keeps sizes in `u32` cells, and converts with `expect`.
 - **The load checks a reached `Ref` against its page's frame, not against the page's `content_size`.**
@@ -26,6 +28,11 @@ What the code does not do yet, or does less well than kladde-docs or its own goa
 - **The vector's index takes 40 bytes even where it is empty or the elements are fixed-size**: a `Vec` of cells, its cached total, and the count's varint length.
   The total can live in the tree's allocation, and the count's length is the vector's to pass in, which would leave 24 bytes, or 8 with a thin vector.
 - **None of the three refinements of `impl/consolidation.md` is implemented**: evacuation writes a victim's spans as they are, splitting the one that crosses the end of the page it fills, and merges no neighbours; the walk merges runs of cold spans and renumbers nothing; and the churn floor, budget controller and free filling are the address-table design's, unchanged, over pages of spans.
+- **Compaction mode counts holes by scanning the page table once per flush.**
+  `impl/consolidation.md#compaction-mode` promises `O(1)` amortised; kladde-rs keeps the cached index of the highest live page it describes, but counts the reusable pages below it in `O(pages)` at the start of every flush, which is small next to what a flush writes.
+- **The budget loop never continues the last page of `pack`.**
+  `impl/consolidation.md#the-budget-loop` lets that page cut a victim's span whenever the loop opens another page, so that only the flush's very last data page can close short; kladde-rs's loop always opens fresh pages, so `pack`'s last page is filled by free filling alone, and can close short even when the loop goes on.
+- **What `rust/tutorial/durability.md` says about `close()` was measured on the address-table design, and has not been checked since**: that `close` truncates after the last live page only, so that a freshly created file keeps free pages below its data until a flush or two have consolidated them.
 - **The header's eviction ranks by heat alone**, rather than evicting the coldest runs contiguous in id, and merges each evicted span with its neighbours in the sequence, extending each run while a neighbour whose entry also goes to a leaf makes a pair shorter than the bound.
 - **A value is encoded into a buffer of its own, which the store copies into the record**, a copy that a store method taking an encoding closure would save.
 - **Cuts exist on the vector only**: `DurableVec`'s `cut`, `insert_cut` and `push_cut`; the map, fields, `Option` and enums neither make nor take them.
@@ -56,3 +63,6 @@ Where kladde-docs leaves a question open, or allows any answer, and what the imp
   Counting only live pages would let holes go unnoticed.
 - **A page's record holds what its state has, and nothing else**: an enum over the page states, with a state of its own, filling, for pages a flush takes, and journal pages apart from live ones; only a live page has an epoch and a victim bucket.
 - **The churn floor also bounds each victim**, and an offer takes whole victims by score, not by best fit.
+- **Free filling moves part of at most one victim per page, and the victim stays eligible.**
+  `impl/consolidation.md#packing-in-sequence-order-with-look-ahead` lists part of a victim too big to take whole as the last filler without saying how many victims to try; one per page is enough, and excluding a victim after a partial move would starve the budget loop of exactly the sparse pages it wants.
+- **`Kladde::create_in` and `Kladde::open_in` take any `Storage` and `Options`**; `Kladde::create` and `Kladde::open` use a file and the default options, and `Kladde::new` is `create_in` with a `MemoryStorage`, which returns no `Result`, since a file in memory cannot fail to be created.

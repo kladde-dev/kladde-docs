@@ -6,7 +6,7 @@ For people who want to *use* kladde in a Rust application.
 Assumes ordinary Rust knowledge and no prior exposure to kladde.
 
 1. **[Getting started](getting-started.md)** — your first durable value, and the mental model.
-2. **[The built-in containers](containers.md)** — vector, hash map, string, blob.
+2. **[The built-in containers](containers.md)** — vector, map, string, blob.
 3. **[Deriving your own types](deriving.md)** — structs and enums.
 4. **[Compared to serde](comparison-to-serde.md)** — when you want kladde and when you want serde, and why they are not competitors.
 5. **[Durability and flushing](durability.md)** — what is guaranteed when, what a crash costs you, and transactions.
