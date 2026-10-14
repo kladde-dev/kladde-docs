@@ -34,7 +34,7 @@ What it gives up is the ability to collapse operations that cancel only at the s
 | `Write(position, bytes)` | overwrites `[position, position + bytes.len())` |
 | `Splice(position, removed, bytes)` | replaces the `removed` bytes at `position` with `bytes`, shifting what follows |
 | `Move(from, length, to)` | cuts `[from, from + length)` and inserts it at `to`, a position in the sequence without the cut bytes |
-| `Paste(position, removed, cut)` | replaces the `removed` bytes at `position` with the bytes of a cut that an earlier record of the same transaction made |
+| `Paste(position, removed, cut)` | replaces the `removed` bytes at `position` with the bytes of a cut that an earlier record of the same journal made |
 
 Records take effect in the order they were recorded, and a record's positions refer to the sequence as the records before it left it.
 To move `bc` between `d` and `e` in `abcde`, giving `adbce`, `from` is 1 and `length` 2, which leaves `ade`, and `to` is 2, between `d` and `e` there: `Move(1, 2, 2)`.
@@ -50,23 +50,29 @@ Duplicating a value writes its encoding: the flush would have to write a copy's 
 
 ### Cuts
 
-**Every record that removes bytes — a `Write`, and a `Splice` that removes some — makes a *cut* of them, which a later `Paste` of the same transaction may insert elsewhere, once, and which is gone when the transaction ends.**
+**Every record that removes bytes — a `Write`, and a `Splice` that removes some — makes a *cut* of them, which a later `Paste` of the same journal may insert elsewhere, once, and which is gone when the journal is folded.**
 
-- A `Paste` names its cut by how many cuts of the transaction were made after it: 0 for the latest.
+- A `Paste` names its cut by how many cuts of the journal were made after it: 0 for the latest.
   With `removed` equal to the cut's length it overwrites, and with 0 it inserts.
 - A cut is pasted at most once, so that no data byte is shown twice.
-  A reader refuses a `Paste` that names a cut already pasted, or one its transaction did not make.
+  A reader refuses a `Paste` that names a cut already pasted, or one its journal did not make.
 - A cut that nothing pastes is removed bytes, as after any splice: nothing frees it, and nothing can leak.
 - A `Write` is a `Splice` that removes as many bytes as it inserts, a byte shorter in the journal, so a writer records a `Write` wherever the lengths agree; that its overwritten bytes make a cut too keeps that choice from deciding whether the old value can be pasted elsewhere.
 - A `Write` of no bytes makes no cut, and neither does a `Splice` that removes nothing.
-- Cuts belong to the journal's transaction, which an implementation's [nesting and batching](../impl/transactions-and-batches.md#nesting) may make larger than any the application opened; naming them by distance keeps that invisible to the records.
+- A cut and its paste may lie in different transactions, as long as both lie in one journal; recovery replays a journal from its start, so every cut that a recovered `Paste` names is among the transactions it replays.
 - `Move(from, length, to)` is `Splice(from, length, [])` followed by `Paste(to, 0, 0)`, and stays as the shorter way to write it.
 
 *Why cuts.*
 Every value is its bytes, so moving a value from one container to another would otherwise mean writing its encoding again, and the journal and the flush would carry all of its bytes.
 A cut and its paste carry none: the flush resolves them as a move, which states three to six spans however large the value is.
-Naming cuts by distance rather than popping them off a stack lets a transaction paste its cuts in any order, so two values that swap containers need no care about which is pasted first.
-The price is that a reader keeps the length of every cut of the open transaction, to check the positions after it, and an implementation keeps the cut bytes until the transaction ends.
+Naming cuts by distance rather than popping them off a stack lets a writer paste its cuts in any order, so two values that swap containers need no care about which is pasted first.
+
+*Why as long as the journal, and not longer.*
+Within one journal every cut is still at hand: its bytes lie in the committed sequence or in the journal itself, which the fold and recovery both read, so a cut can outlive its transaction at no cost to the file.
+That serves an application that removes a value in one transaction and inserts it again in a later one — undoing a deletion is the common case — which would otherwise write the value's encoding again.
+A cut that outlived its journal would need its bytes kept reachable from the header, as content of their own, after the flush that folds their removal; deleted content would then stay in the file, which is not what an application deleting it expects.
+So a cut is a *weak* promise: [an implementation](../impl/values.md#moving-a-value-between-containers) pastes it while its journal lasts, and encodes the value again otherwise.
+The price is that a reader keeps the length of every cut of the journal, to check the positions after it, which the journal's length bounds, and an implementation keeps what it needs to resolve the journal's cuts until the journal is folded.
 
 ## Transactions
 
@@ -121,7 +127,7 @@ It starts at 0 at the start of each epoch's journal, which is always replayed fr
 **A `Write` of no bytes is reserved as the escape to a fifth kind of record**, since it changes nothing; a reader refuses it until a revision defines one.
 
 Every position, `removed` count, `length` and `to` is below `2^48` ([bounds](span-table.md#bounds)), and a record's range must lie inside the sequence.
-A `Paste`'s `cut` must name a cut of its own transaction that is not pasted yet; its length is the cut's.
+A `Paste`'s `cut` must name a cut of its own journal that is not pasted yet; its length is the cut's.
 
 *Why relative positions.*
 Edits mostly land near the one before, so a delta from −16 to 15 fits in the head's one byte with the kind, where an absolute position takes three bytes in a sequence of 50 KB and four in one of 100 MB, besides a byte for the kind.

@@ -18,7 +18,7 @@ It carries no flags and no reserved bits — every bit is hash output.
 **SHA-256, truncated to its leading 128 bits** — the first 16 bytes of the digest, byte 0 first.
 
 SHA-256 is chosen for exact cross-language reproducibility.
-It is present in every mainstream language's standard library, has universal test vectors, and "compute SHA-256, keep the first 16 bytes" is trivial to reimplement identically.
+It has universal test vectors, it is in the standard library of most languages and a few hundred lines of code in those without one, such as C and C++, and "compute SHA-256, keep the first 16 bytes" is trivial to reimplement identically.
 128 bits gives a negligible accidental-collision probability for any realistic number of distinct schemas.
 
 Cryptographic strength is deliberately **not** relied upon.
@@ -85,8 +85,9 @@ A memoized fingerprint is reused wherever its node is met again; for a node insi
 | type graph, root first | fingerprint |
 | --- | --- |
 | `[0] Struct "Point" { x: [1], y: [1] }`, `[1] i32` | `0d91791f5827efadfa8150af9812fad6` |
-| `[0] Enum "List"`, width 4, `{ 0 "Nil" {}, 1 "Cons" { "0": [1], "1": [0] } }`, `[1] i32` | `af12af0167771e03506952fff8a274fd` |
+| `[0] Enum "List"`, width 4, `{ 0 "Nil": [2], 1 "Cons": [3] }`, `[1] i32`, `[2] Struct "Unit" {}`, `[3] Struct "Cons" { "0": [1], "1": [0] }` | `abdbb8e6f2b104819c9b608dd77aaedf` |
 | `[0] Opaque "lib" "T"`, version 1.2.3, fixed size 8, no parameters | `81a2a3d8b939f4f216a344cf10758953` |
+| `[0] Map { key: [1], value: [2] }`, `[1] Text`, `[2] u32` | `6a33dc4a1e560e465f7a50543f62c492` |
 
 Hex, byte 0 first.
 The Point's hash input, for instance, is `80 02 01 78 00 <16 bytes of i32's fingerprint> 01 79 00 <the same 16 bytes>`, and `i32`'s is the single byte `06`.

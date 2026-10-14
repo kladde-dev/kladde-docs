@@ -340,7 +340,7 @@ Rust enforces that by borrowing the parent exclusively; C++ cannot, so it is a d
 Debug builds check it, with a stack of the live handles in the store that a write pops down to the handle it went through — the discipline that Miri's stacked borrows check for Rust — so a stale handle fails an assertion rather than writing at the wrong position.
 Release builds pay nothing.
 
-[Guards made together](../impl/values.md#guards-made-together) carry over unchanged: `parts()` hands out handles that compute their start at every write, so that writing one field and then another works whatever the first did to its size.
+[Guards made together](../impl/values.md#handles-made-together) carry over unchanged: `parts()` hands out handles that compute their start at every write, so that writing one field and then another works whatever the first did to its size.
 
 ### Long-lived references
 
@@ -357,7 +357,7 @@ With a Fenwick tree, each element keeps its own index instead, and an insertion 
 In return an element costs 4 bytes of the tree and 4 of its own index instead of a tree node of 24 to 40, and finding its rank is a load rather than a climb.
 An Inkscape element has tens to a few thousand siblings, for which renumbering costs microseconds; a tree would pay only for lists of hundreds of thousands that are edited in the middle, and can be an option for them, as it is for the vector.
 
-That is `O(depth · log m)` per write, the cost of [guards made together](../impl/values.md#guards-made-together) at every level, and a change of size updates the same path back up.
+That is `O(depth · log m)` per write, the cost of [guards made together](../impl/values.md#handles-made-together) at every level, and a change of size updates the same path back up.
 It costs a parent link, an index and a cell of the siblings' Fenwick tree per element, about 16 bytes, which a document tree whose elements each hold a name, attributes and children affords.
 
 So `kladde::Vector` and `kladde::List` differ the way `std::vector` and `std::list` do — compact, or stable — and an application chooses per container.

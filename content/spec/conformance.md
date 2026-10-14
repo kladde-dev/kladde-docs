@@ -35,7 +35,7 @@ Placement, compaction, and fold timing are all free, so two implementations will
 - **The start of a session.** Fold a non-empty recovered journal before appending to it, and write the journal page that a session's first flush names ([the start of a session](journal.md#the-start-of-a-session)).
 - **Transaction atomicity.** Replay every transaction completely or not at all.
 - **Valid transaction boundaries.** Group records so that every transaction takes a sequence that decodes to one that decodes ([ordering](journal.md#ordering)).
-- **Cuts.** Paste only cuts of the same transaction, each at most once, and refuse a journal that does otherwise ([cuts](journal.md#cuts)).
+- **Cuts.** Paste only cuts of the same journal, each at most once, and refuse a journal that does otherwise ([cuts](journal.md#cuts)).
 - **Bounds.** Support the [stated bounds](span-table.md#bounds), and fail cleanly rather than wrap when an application exceeds them.
 - **Entries.** Keep [the rules for writers](span-table.md#rules-for-writers) — one entry per span id and epoch, and the reach rule — and refuse a file that [resolution](span-table.md#resolution) finds invalid: a chain that names an id no entry describes, reaches a span twice, or shares a span with another chain, or a reached `Ref` outside a data page's content.
 - **Descriptor encoding.** Produce byte-identical output to the [canonical encoding](schema/canonical-encoding.md) for the same type graph.

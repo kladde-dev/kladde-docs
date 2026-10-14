@@ -63,7 +63,7 @@ If yes, it stays free.
 
 ## Guarantees an implementation must provide
 
-Beyond byte-level agreement, a conforming implementation owes the application four things.
+Beyond byte-level agreement, a conforming implementation owes the application five things.
 
 **Durability.**
 When a mutating call returns, the mutation survives an application crash.
@@ -87,6 +87,15 @@ The format is designed so that these are achievable, and an implementation that 
 
 The live pages can be held at a constant multiple of the sequence's length, at a constant cost in bytes written per modification: [the reference algorithms](../impl/index.md#overhead-and-work-independent-of-size) show how.
 Nothing may require a scan of the file at run time, and nothing may require a stop-the-world pause: reclamation is incremental by construction, and a flush's work is bounded by a budget the implementation chooses.
+
+**Replacing a whole value records only what changed.**
+When an application replaces a whole Text, or a whole Opaque value without a fixed size, with a new one, the records appended rewrite at most the smallest range of the old content that holds every changed byte, and, for an Opaque whose length changes, its length prefix.
+The implementation may rewrite the prefix and that range as one range, together with what lies between them, where it judges that cheaper — when the change lies near the start, say.
+Whether it goes further and finds several changed ranges far apart is its own choice.
+
+*Why.*
+An application often sets a whole string where only part of it changed, because that is the easy thing to write: a drawing program that writes a path's whole `d` attribute for every step of a dragged control point, or a form that stores its whole text at every keystroke.
+Comparing the old content with the new costs a pass over memory the application has just written, and turns a rewrite of the whole value into a splice of a few bytes; guaranteeing it lets applications write the easy code without paying for it in the journal.
 
 **Crash atomicity of transactions.**
 A transaction is all-or-nothing under both an application crash and a power cut, and ordering is preserved: if a transaction survives a crash or power cut, then all previous transactions survive too, in their recorded order.

@@ -81,7 +81,7 @@ Three ideas made them up:
 - each capsule upgrades on its own, at first touch, or keeps its version for as long as nothing writes it.
 
 In one sequence a value's size concerns nothing but positions in memory, so a capsule is inline: its version's index as a varint, then `T`'s encoding in that version.
-Upgrading one at first touch is a splice of its region, with the new index, in the same transaction as the write that touched it; the capsule's guard, or whatever a binding has in its place, is where that happens.
+Upgrading one at first touch is a splice of its region, with the new index, in the same transaction as the write that touched it; the capsule's handle, or whatever a binding has in its place, is where that happens.
 The schema chain would hold the table of versions in use: a session whose types are missing from it adds them in the flush at open, before any capsule names them, and a count of capsules per version, built at open, says when a flush may drop a version.
 Nothing in the span format or the journal would change: capsules are a matter of the schema and of one wrapper type, and can come later.
 They would let a large file whose element type changed upgrade a part at a time rather than every element at the first open.

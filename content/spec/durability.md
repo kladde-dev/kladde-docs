@@ -12,7 +12,7 @@ This is the layer that makes durability a **guarantee by prevention** rather tha
 The journal's pages remain in the OS page cache and are written back on the OS's own schedule, which an application crash does not interrupt.
 
 **Under a reported error** the same holds, for a simpler reason: the process is still running.
-An implementation that cannot complete an operation reports the failure and refuses further work — in Rust by returning `Result::Err` and poisoning the `Kladde<T>`, in C++ by throwing — and every mutation that returned successfully before that is in the journal exactly as if nothing had gone wrong.
+An implementation that cannot complete an operation reports the failure, by whatever means its language makes idiomatic, and refuses further work — and every mutation that returned successfully before that is in the journal exactly as if nothing had gone wrong.
 The exception is [a failed `fsync`](#fsync-failure-is-fatal), after which the page cache may have discarded writes the kernel had already reported as clean; that is why a failed `fsync` ends the session instead of being reported as an ordinary error.
 
 **Under a power cut**, recovery reaches the state of some **transaction boundary**, including at least every transaction folded by the last completed `flush()`.

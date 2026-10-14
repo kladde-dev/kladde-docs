@@ -33,11 +33,10 @@ The pieces sit in a counted tree, as the [rope](in-memory-state.md#2-the-rope) d
 | `Paste(pos, removed, cut)` | take `[pos, pos + removed)` out and drop it; insert the cut's tree |
 
 Taking a range out is two splits and a join, and returns the range as a tree of its own; inserting is a split and two joins.
-**A transaction's cuts are kept as those trees until the transaction ends**, so a paste inserts the pieces its cut removed and the flush states three to six spans for the two, however large the value, and writes none of its bytes; replay at open does the same.
-The cuts of a transaction are freed when the next transaction starts, or the fold ends.
+**A journal's cuts are kept as those trees until the fold ends**, so a paste inserts the pieces its cut removed and the flush states three to six spans for the two, however large the value, and writes none of its bytes, whichever transactions of the journal the cut and the paste lie in; replay at open does the same.
 
 At the end, the fold lists the new sequence as pieces, merging adjacent pieces that continue each other.
-A record whose range does not lie inside the sequence, or a paste of a cut its transaction did not make or already pasted, makes the journal invalid.
+A record whose range does not lie inside the sequence, or a paste of a cut its journal did not make or already pasted, makes the journal invalid.
 
 **What falls out unasked:**
 
@@ -124,7 +123,7 @@ The price of each cut is one entry, and in ordinary flushes the packer [prefers 
 
 A flush writes every span it produces **whole**; the old bytes remain behind as garbage until consolidation reclaims them.
 
-**A large payload is written twice**: once into the journal when its record is appended, and again into data pages when the flush places it — a pasted image, say, or a document the application built outside any guard and brought in whole.
+**A large payload is written twice**: once into the journal when its record is appended, and again into data pages when the flush places it — a pasted image, say, or a document the application built outside any handle and brought in whole.
 A flush could instead state spans over the payload's bytes where they already lie, in the journal's pages, turning those pages into data pages, which would halve what a large paste writes; it would need journal pages that hold whole pages of a payload aligned to the data pages' content, and the [reuse rule](../spec/durability.md#the-reuse-rule) to hold for pages that change kind, and is an open idea.
 
 ### Page contiguity buys nothing

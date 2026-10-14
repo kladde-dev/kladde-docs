@@ -18,7 +18,7 @@ This document is normative.
 
 ## The kinds
 
-A descriptor is one of eight kinds: **Primitive**, **Struct**, **Enum**, **Array**, **Sequence**, **Text**, **Opaque**, and **Fixed**.
+A descriptor is one of nine kinds: **Primitive**, **Struct**, **Enum**, **Array**, **Sequence**, **Map**, **Text**, **Opaque**, and **Fixed**.
 Every type has **one encoding**, which a reader decodes front to back from the type's descriptor, [below](#encodings).
 
 ### Primitive
@@ -74,19 +74,28 @@ A positional (tuple) field's name is the decimal rendering of its position — `
 
 ### Enum
 
-A discriminated union: a discriminant, followed by the fields of the variant it selects.
+A discriminated union: a discriminant, followed by the value that the variant it selects holds, its **payload**.
 
 Carries:
 
 - `name`: UTF-8, diagnostics only.
 - `discriminant_width`: the bytes the discriminant takes in the **fixed form** — 1, 2, 4, or 8; every discriminant value must fit in it.
   The encoding itself writes the discriminant as a varint.
-- `variants`: each `(discriminant_value, variant_name, fields)`, canonically ordered by ascending `discriminant_value`; discriminant values are distinct.
+- `variants`: each `(discriminant_value, variant_name, payload)`, canonically ordered by ascending `discriminant_value`; discriminant values are distinct, and `payload` is a reference.
 
-Each discriminant value, each variant name, and each variant's field list is significant.
+Each discriminant value, each variant name, and each variant's payload type is significant.
 Variant *declaration* order is **not**: a value's encoding is selected by the stored discriminant, not by a variant's position, so reordering variants in the source without changing their discriminants changes neither the encoding nor the fingerprint.
 
-An `Option<T>` is an enum, `None` with discriminant 0 and no fields, and `Some` with discriminant 1 and one field `"0"`.
+**Every variant holds exactly one value.**
+A variant that holds nothing holds the empty Struct, which encodes to no bytes; a variant that holds several fields holds a Struct of them; and a variant that holds one value of any type holds that type directly.
+So in Rust, a unit variant `Nil` holds the empty Struct, a tuple variant `Element(Element)` or `Text(String)` holds its field's type, a struct variant `Point { x: f32, y: f32 }` holds a Struct of its fields named after the variant, and a tuple variant of several fields `Pair(u8, u8)` a Struct of positional fields.
+
+*Why one value, always.*
+Languages disagree about what a variant holds: Rust has unit, tuple and struct variants, while a C++ `std::variant`, a C++ class hierarchy, Swift's enums with associated values and TypeScript's discriminated unions all hold exactly one value per alternative.
+Describing a variant by one payload lets every one of them map to the same descriptor with no choice left to the programmer: Rust's `Element(Element)` and a struct variant with `Element`'s fields describe the same bytes and get the same fingerprint, as a struct's own name already does not matter.
+And holding *always* one value, rather than at most one, keeps every variant the same shape: a valueless variant, a C++ alternative that is an empty struct and Rust's `()` all hold the empty Struct, and need no rule to say they agree.
+
+An `Option<T>` is an enum, `None` with discriminant 0 holding the empty Struct, and `Some` with discriminant 1 holding a `T`.
 
 ### Array
 
@@ -101,7 +110,18 @@ The kind exists to avoid spelling out a large `len` as that many fields.
 Any number of values of one element type: their count, then the values.
 
 Carries `element` (a reference).
-A vector is a Sequence; a map is a Sequence of entries in the order its library keeps them, each entry a Struct of its key and its value.
+A vector is a Sequence; a map is a [Map](#map).
+
+### Map
+
+Any number of entries, each a key and a value: their count, then each entry's key and value.
+
+Carries `key` and `value` (references).
+The entries are in the order the writing library keeps them; the format neither sorts them nor checks that keys are distinct, which is the library's business, as is how it finds a key in memory.
+
+*Why a kind of its own.*
+A Map encodes exactly as a Sequence of two-field Structs would, but every language has a native map that a reader can decode one into, and a tool can render one as a JSON object rather than as an array of pairs.
+It also leaves nothing to agree on: a Sequence of Structs would need every implementation to name the two fields alike, or the same map would get two fingerprints.
 
 ### Text
 
@@ -154,9 +174,10 @@ It applies to all of `T` and not to what wraps it: `Fixed(Option<u32>)` takes fi
 | --- | --- |
 | Primitive | as [its code](#primitive) gives |
 | Struct | its fields' encodings, concatenated, in declaration order |
-| Enum | the discriminant as unsigned LEB128, then the selected variant's fields' encodings |
+| Enum | the discriminant as unsigned LEB128, then the selected variant's payload's encoding |
 | Array | `len` element encodings |
 | Sequence | the number of elements as unsigned LEB128, then the element encodings |
+| Map | the number of entries as unsigned LEB128, then each entry's key's encoding and its value's |
 | Text | the UTF-8 bytes, then `0xFF` |
 | Opaque | `fixed_size` bytes, or, without a fixed size, the number of bytes as unsigned LEB128 and then the bytes |
 | Fixed | the target's fixed form, below |
@@ -167,12 +188,12 @@ It applies to all of `T` and not to what wraps it: `Fixed(Option<u32>)` takes fi
 | --- | --- |
 | Primitive | the fixed form of [its code](#primitive) |
 | Struct | its fields' fixed forms, concatenated |
-| Enum | the discriminant in `discriminant_width` bytes, little-endian, then the variant's fields' fixed forms, then zeros up to the size of the largest variant's |
+| Enum | the discriminant in `discriminant_width` bytes, little-endian, then the variant's payload's fixed form, then zeros up to the size of the largest payload's |
 | Array | `len` element fixed forms |
 | Opaque | its encoding, if it has a fixed size |
 | Fixed | the target's fixed form |
 
-Sequence, Text, and an Opaque without a fixed size have **no** fixed form, and neither has any type that holds one of them, or itself.
+Sequence, Map, Text, and an Opaque without a fixed size have **no** fixed form, and neither has any type that holds one of them, or itself.
 
 **The canonical encoding** is the only one a writer may produce, and a reader refuses any other: varints are minimal, text is valid UTF-8, discriminants name variants, integers lie in range of their type — a `u16`'s varint at most `2^16 − 1`, an `i16`'s zigzag likewise — `bool`s are 0 or 1, a `char`'s fixed form is a Unicode scalar value, and an enum's padding in the fixed form is zeros.
 So a value has exactly one encoding, and the [sequence](../sequence.md#what-a-valid-sequence-is) is a function of the root value.
@@ -195,11 +216,11 @@ and `Fixed(Option<u32>)` holding `Some(300)` as `01 2C 01 00 00`: the discrimina
 
 - `u8`, `i8`, `bool`, `f32` and `f64` are, with sizes 1, 1, 1, 4 and 8; the other primitives are varints or UTF-8, and are not;
 - a Struct is if all its fields are, with the sum of their sizes;
-- an Enum is if every discriminant is below 128, so that its varint takes one byte, and every variant's fields are fixed-size with the same sum: its size is 1 plus that sum;
+- an Enum is if every discriminant is below 128, so that its varint takes one byte, and every variant's payload is fixed-size with the same size: its size is 1 plus that size;
 - an Array is if its element is, with `len` times the element's size;
 - an Opaque is if it declares a fixed size;
 - a `Fixed` always is, with the size of its target's fixed form;
-- Sequence and Text never are, nor is a type that holds itself.
+- Sequence, Map and Text never are, nor is a type that holds itself.
 
 A fixed-size type's fixed form is its encoding byte for byte, except where an enum's `discriminant_width` exceeds the one byte its encoding spends on the discriminant: a writer may set a wider width so that the fixed form keeps its size when variants are added.
 
@@ -208,7 +229,7 @@ A fixed-size type's fixed form is its encoding byte for byte, except where an en
 A table must keep two rules, which a reader checks when it decodes one:
 
 - **A `Fixed` holds a type that has a fixed form.**
-- **A type reaches itself only through an Enum or a Sequence**, whose discriminant or count can end the recursion, and never through Structs, Arrays and `Fixed` alone, whose values would be infinite.
+- **A type reaches itself only through an Enum, a Sequence or a Map**, whose discriminant or count can end the recursion, and never through Structs, Arrays and `Fixed` alone, whose values would be infinite.
   A tree whose nodes hold their children inline is a Struct holding a Sequence of itself; a list is an Enum one of whose variants holds itself.
 
 A decoder of a recursive type nests as deeply as the file says, so it limits its depth, or does not recurse, and refuses a file beyond its limit rather than overflow its stack.
@@ -216,7 +237,7 @@ A decoder of a recursive type nests as deeply as the file says, so it limits its
 ## References and the root
 
 A **reference** is an index into the descriptor table.
-Every field type, `element`, `target`, and parameter is a reference.
+Every field type, payload, `element`, `key`, `value`, `target`, and parameter is a reference.
 
 By convention the descriptor at **index 0 is the root** — the type actually stored in the file.
 

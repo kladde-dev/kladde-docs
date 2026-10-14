@@ -58,7 +58,7 @@ The contract between them is deliberately narrow and deliberately strict:
 
 Everything the specification does not pin down is free to vary, and implementations are expected to differ substantially beyond the normative part (e.g., how aggressively they consolidate free space).
 Each language should get an API that is idiomatic for that language rather than a transliteration of the Rust one.
-For example, the Rust implementation of kladde needs an explicit `Guard` type to intercept field assignments; by contrast, a Python implementation of kladde should intercept field assignments via property hooks so that `doc.title = "..."` simply persists.
+For example, the Rust implementation of kladde needs an explicit `Mut` type to intercept field assignments; by contrast, a Python implementation of kladde should intercept field assignments via property hooks so that `doc.title = "..."` simply persists.
 
 ## Language-independent tooling
 
@@ -73,7 +73,7 @@ See [Tooling](spec/tooling.md) for how far each of those goes.
 | --- | --- | --- |
 | **[Specification](spec/)** | the normative, language-independent description: what a kladde file is, what invariants it must uphold, and what guarantees an implementation must provide | implementers porting kladde to a new language; tool authors |
 | **[Implementation](impl/)** | the reference algorithms and data structures — what must be maintained in memory to satisfy the spec, and how — stated in language-agnostic pseudocode | anyone building an implementation in any language |
-| **[kladde-rs](rust/)** | everything specific to the Rust implementation: crate layout, traits, guards, macros, and the Rust-specific half of the algorithms | Rust users, and Rust contributors |
+| **[kladde-rs](rust/)** | everything specific to the Rust implementation: crate layout, traits, `Mut` handles, macros, and the Rust-specific half of the algorithms | Rust users, and Rust contributors |
 | **[Evaluation](evaluation/)** | measurements of kladde-rs on realistic workloads, and what they say about the design | anyone judging the design or choosing its constants |
 | **[Superseded](superseded/)** | designs that were worked out and then rejected, kept for the reasoning | anyone tempted to re-propose one of them |
 | **[Drafts](drafts/)** | half-baked ideas in progress, not yet held to the separation the other sections observe | the authors |

@@ -48,7 +48,7 @@ impl<'r, B: Backend> PointGuard<'r, B> {
 **A field's accessor makes a child region at the sum of the sizes of the fields before it**: a constant up to the first field whose `FIXED_SIZE` is `None`, folded by the compiler, and after that the sum of the earlier fields' encoded sizes, which the in-memory values give in constant time.
 The child region reports a change of the field's size to the struct's region, which passes it on up.
 
-**`parts()` makes every field's guard at once**, from a `FieldSizes` node it fills with the fields' sizes: a field after the first variable-size one is *indexed*, and looks its start up in the node at every write, so that a sibling before it may change size meanwhile ([guards made together](../impl/values.md#guards-made-together)).
+**`parts()` makes every field's guard at once**, from a `FieldSizes` node it fills with the fields' sizes: a field after the first variable-size one is *indexed*, and looks its start up in the node at every write, so that a sibling before it may change size meanwhile ([guards made together](../impl/values.md#handles-made-together)).
 
 ## The aggregate records nothing of its own
 

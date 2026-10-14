@@ -53,7 +53,7 @@ This is what makes "why won't my application open this file?" a diagnosable ques
 Requires: additionally decoding the sequence by the descriptors.
 Requires no application knowledge.
 
-A tool at this level can render the whole content as text by decoding the sequence from the root descriptor, front to back: primitives decode by their code, structs by their fields, enums by their discriminant, sequences by their count, text up to its terminator.
+A tool at this level can render the whole content as text by decoding the sequence from the root descriptor, front to back: primitives decode by their code, structs by their fields, enums by their discriminant, sequences and maps by their count, text up to its terminator.
 Every container is described structurally, there is no pointer graph to follow, and nothing can be unreachable, so the export is complete.
 
 It stops only at **Opaque** types, whose content is by definition not decomposable: a tool can report their identity and version, and dump their bytes, which the encoding delimits, but not interpret them.

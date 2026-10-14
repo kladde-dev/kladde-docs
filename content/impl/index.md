@@ -17,7 +17,7 @@ Those decisions are documented in the language-specific documentations (currentl
 | --- | --- |
 | [In-memory state](in-memory-state.md) | the structures a loaded file is held in: the span table, the rope, the page table, the reverse index, and the span id allocator |
 | [Opening a file](opening.md) | the steps from the headers to a decoded root value |
-| [Values and their positions](values.md) | regions, what each container keeps to find its children, what a guard costs, the built-in containers, and moving values between containers |
+| [Values and their positions](values.md) | regions, what each container keeps to find its children, what a handle costs, handles that outlive edits elsewhere, the built-in containers, and moving values between containers |
 | [Write-phase state](write-phase-state.md) | what is tracked between flushes, and why it is derived from the journal |
 | [The flush](flush.md) | folding the journal into pages: the piece table, mapping pieces to spans, the span policy, placement, and the cut of the span table |
 | [Consolidation](consolidation.md) | reclaiming garbage: victim selection, evacuation, the page rewrite, merging spans, and the budget |
@@ -94,7 +94,7 @@ In steady state, a flush frees about as many pages as it writes, so with `p` pag
 So a large file carries some 25 pages besides its live ones, about 100 KB, which is 0.1 % of a sequence of 100 MB and vanishes as `n` grows; for a file of a few pages, the same pages are most of the file.
 
 **Everything else is constant or logarithmic.**
-A splice, an overwrite and a move state a constant number of spans; a moved byte restates its span and nothing else, since no key changes; the rope finds and edits spans in `O(log k)`; a guard is made from its parent's with one lookup in the parent's index, and a change of size updates one entry per level ([what a guard costs](values.md#what-a-guard-costs)); victims come from bucket queues in `O(1)`, and their spans from a reverse index in `O(1)` each; and the table pages' directory changes `O(depth)` pages per leaf added or removed, amortized over the entries a leaf holds.
+A splice, an overwrite and a move state a constant number of spans; a moved byte restates its span and nothing else, since no key changes; the rope finds and edits spans in `O(log k)`; a handle is made from its parent's with one lookup in the parent's index, and a change of size updates one entry per level ([what a handle costs](values.md#what-a-handle-costs)); victims come from bucket queues in `O(1)`, and their spans from a reverse index in `O(1)` each; and the table pages' directory changes `O(depth)` pages per leaf added or removed, amortized over the entries a leaf holds.
 
 So the live pages' overhead is `c / L̄ + G / n + 0.004`, set by `L` and `u`, the file adds `2p` pages and the journal's, and the work per modification is `O(w + L)` bytes for `w` bytes written and `O(log n)` time in the store, plus the walk from the root to the modified value, which the application makes anyway.
 

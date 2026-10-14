@@ -27,15 +27,16 @@ The descriptor has no further content.
 | tag | kind | content |
 | --- | --- | --- |
 | 128 | Struct | `string(name) varint(field_count)`, then per field `string(field_name) reference(type)` |
-| 129 | Enum | `string(name) byte(discriminant_width) varint(variant_count)`, then per variant `varint(discriminant_value) string(variant_name) varint(field_count)`, then per field `string(field_name) reference(type)` |
+| 129 | Enum | `string(name) byte(discriminant_width) varint(variant_count)`, then per variant `varint(discriminant_value) string(variant_name) reference(payload)` |
 | 130 | Opaque | `string(library_name) string(type_name) varint(major) varint(minor) varint(patch) varint(size_mode) varint(param_count)`, then per parameter `reference(type)` |
 | 131 | Array | `reference(element) varint(len)` |
+| 132 | Map | `reference(key) reference(value)` |
 | 133 | Sequence | `reference(element)` |
 | 134 | Text | nothing |
 | 135 | Fixed | `reference(target)` |
 
 An Opaque's `size_mode` is `0` for a value prefixed with its length, and one more than the size for a type with a fixed size: `n + 1` for `n` bytes.
-Tag `132` is unassigned, as are tags `136..=255`; all are reserved for future kinds, and a reader refuses a table that uses one.
+Tags `136..=255` are unassigned and reserved for future kinds, and a reader refuses a table that uses one.
 
 A decoded table must also keep the [rules of nesting](type-descriptors.md#rules-of-nesting), and every enum's discriminant values must fit its `discriminant_width`; a reader refuses one that does not.
 
@@ -50,7 +51,7 @@ A field's position determines its byte offset, so this order is part of the repr
 A variant's position does not affect any value's layout, so declaration order is discarded in favour of this canonical order.
 Two enums differing only in the source order of their variants encode identically.
 
-**Opaque parameters** keep their given order, being positional type arguments; an Array, a Sequence and a `Fixed` have one reference each.
+**Opaque parameters** keep their given order, being positional type arguments; a Map emits its key before its value, and an Array, a Sequence and a `Fixed` have one reference each.
 
 ## Table encoding
 

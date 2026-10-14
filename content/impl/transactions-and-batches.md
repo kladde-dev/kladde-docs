@@ -39,7 +39,7 @@ A batch is the middle ground: the backend decides how to divide the sequence, re
   But remember that **batches delay persistence**: they are only guaranteed committed when ended, so holding one open for a long time defeats the point of immediate persistence.
 - Use **transactions** when application logic requires atomicity, and keep them short.
   Needing a very long transaction almost always means either that the application's state transitions pass through too many invalid intermediate states, or that the wrong data type was chosen — a vector where a rope or an ordered tree belongs.
-  When atomicity is genuinely required for a large mutation, it can usually be imposed at the application level instead: build the value in memory, outside any guard, then insert it in one operation, which encodes it into one buffer and splices it in.
+  When atomicity is genuinely required for a large mutation, it can usually be imposed at the application level instead: build the value in memory, outside any handle, then insert it in one operation, which encodes it into one buffer and splices it in.
 - For a long sequence where *some parts* need atomicity, use a **batch with a few smaller transactions inside**.
   This is the pattern the design is arranged around.
 
@@ -70,7 +70,7 @@ Recovery decodes the journal's complete transactions into the buffer, and `open`
 
 **In kladde-rs, the buffer is a `VecDeque` of records, beside a byte arena, also a `VecDeque`, that holds their payloads.**
 Positions in both are counted from the start of the session rather than from the buffer's front, so that discarding the folded prefix after a flush moves the front and nothing else: no record moves, and every position held elsewhere — a record's payload, a pending fragment of the flush pointing into the arena — stays valid.
-A transaction's cuts are positions in it too: a paste names its cut by distance among the records of its own transaction, so no cursor moves them.
+A journal's cuts are positions in it too: a paste names its cut by distance among the cuts of its journal, which the records keep in order, so no cursor moves them.
 
 Three cursors, `front <= committed_cursor <= ready_cursor <= end`, divide the buffer into three spans:
 
@@ -154,6 +154,7 @@ A transaction that does not fit even into an empty journal is **overlong**.
 1. **The candidate is `ops[committed_cursor..end]`:** `X` alone outside a batch, where `ready` is empty, and `ready` followed by `X` inside one, to be appended as one transaction.
 2. **If the candidate does not fit, the batch is cut before `X`:** append `ready` as one transaction if it is not empty, which it [always fits](#why-ready-always-fits), and flush, unless the journal is empty.
    The candidate is now `X` alone, in an empty journal.
+   A paste in `X` that names a cut of the journal just folded becomes a `Splice` of its value's bytes, since that cut has ended ([moving values](values.md#moving-a-value-between-containers)), and `X`'s size is computed again.
 3. **Inside a batch, a candidate that fits stays in memory as the new `ready`**, which the batch holds back until its next cut or its end.
 4. **Otherwise, the candidate is appended as one transaction, and if that took the journal past its budget, flush again.**
    Only an overlong `X` can do that, since step 2 left it an empty journal.
@@ -164,6 +165,9 @@ The other triggers:
   It fits, so no flush follows.
 - **An explicit `flush()`:** append `ready` if it is not empty, then flush — on an empty journal too, since a flush also consolidates.
   An open transaction stays in the buffer, past `committed_cursor`.
+- **A flush when the application is idle:** `flush_if_journal_exceeds(fraction)` appends `ready` and flushes if the journal pages then hold at least that fraction of the budget, and does nothing otherwise; the check is a subtraction of two cursors.
+  An interactive application calls it from its event loop's idle callback, so that the automatic flush, whose `fsync` blocks the mutating call that triggers it, rarely fires in the middle of a gesture.
+  The fraction should stay well above zero: an idle flush ends the journal, and with it the [cuts](values.md#moving-a-value-between-containers) its records made.
 - **Opening a file:** kladde-rs folds a non-empty recovered journal before `open` returns, since reads see the flushed state only.
   That also keeps [the journal's rule](../spec/journal.md#the-start-of-a-session) that nothing is appended to a non-empty recovered journal, and no state outlives `open`.
 
@@ -192,7 +196,7 @@ An open transaction is held in memory in full, whatever the budget, because noth
 ### Consequence for write-phase state
 
 **A flush may run while operations are still in the buffer past `committed_cursor`**: the `X` that step 2 holds back, or, at an explicit `flush()`, an open transaction.
-The [write-phase state](write-phase-state.md) — the sequence's length and the open transaction's cuts — describes them as well, so a flush leaves it as it was, and the flush folds only the records before `committed_cursor`, whose positions refer to the sequence as it stood before the held-back ones.
+The [write-phase state](write-phase-state.md) — the sequence's length and the journal's cuts — describes them as well, so a flush leaves it as it was, and the flush folds only the records before `committed_cursor`, whose positions refer to the sequence as it stood before the held-back ones.
 
 Discarding operations moves the length and the cuts back to what they were where the discarded operations began.
 
@@ -210,12 +214,21 @@ Two consequences follow:
 
 **Flush needs only shared access to the backend.**
 The auto-checkpoint fires from inside a mutating call, which holds no exclusive reference to the whole structure.
-This is safe: guards hold positions in the sequence, which a flush does not change, since it rewrites only where the sequence's bytes lie on file.
+This is safe: handles hold positions in the sequence, which a flush does not change, since it rewrites only where the sequence's bytes lie on file.
 Note that it is a *reentrant* call, so no write path may hold an interior borrow across a callback.
 
 **The trigger belongs at operation boundaries**, not at append time.
 A check on append can fire between two records of one logical mutation.
 An operation is the natural atomic unit, being the smallest thing an application author perceives as one change.
+
+## A flush off the caller's thread
+
+**The automatic flush blocks the mutating call that triggers it until its `fsync` returns, and a flush on a thread of its own would not, but it needs a change to the journal.**
+Folding a journal and writing a flush's pages take well under a millisecond for files of the sizes kladde is meant for, while the `fsync` takes milliseconds on an SSD and more on a slow disk, which an interactive application feels as a stall in the middle of a gesture.
+Handing the `fsync` and the header write to a thread of their own would end the stall, if the application could go on appending meanwhile; but transactions appended while the flush runs would go to the next journal, which only the flush's own header names, so an application crash before that header is written would lose them, although their calls had returned.
+A journal that could end in a seal naming where the next journal begins would close that gap, and recovery would follow the seal from either header.
+
+This is a possible improvement, pending experience with the idle flush of [flush triggers](#flush-triggers) in an interactive application; until then the flush runs on the calling thread.
 
 ## Open questions
 
