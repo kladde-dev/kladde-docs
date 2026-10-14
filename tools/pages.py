@@ -53,7 +53,7 @@ ORDER = [
     "rust/tutorial/durability.md",
     "rust/tutorial/custom-durable.md",
     "rust/crates.md",
-    "rust/durable-and-guards.md",
+    "rust/durable-and-mut.md",
     "rust/containers.md",
     "rust/derive-macro.md",
     "rust/transactions.md",

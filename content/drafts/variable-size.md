@@ -304,7 +304,7 @@ A guard that carried the choice as a flag would instead branch on it at every fi
 **Kladde [reads in bulk and searches nothing on disk](../impl/index.md#the-shape-of-an-implementation), and that is what makes packed layouts cheap here.**
 A format that looked values up on disk would need offsets on disk — an offset table per packed vector, or a stride — to find element `i` without decoding the elements before it.
 Kladde needs offsets only in memory, where they are built during the load that decodes everything anyway.
-That load is already [sequential](../rust/durable-and-guards.md), one field after another, so decoding a packed value front to back costs it nothing, and neither does decoding a varint into the integer the application declared, or reading a small string's content from beside its tag rather than from an allocation.
+That load is already [sequential](../rust/durable-and-mut.md), one field after another, so decoding a packed value front to back costs it nothing, and neither does decoding a varint into the integer the application declared, or reading a small string's content from beside its tag rather than from an allocation.
 A packed vector's length needs no field either, just as a slotted vector's does not: the load decodes elements until the allocation ends.
 
 ## What else it touches

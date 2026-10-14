@@ -34,7 +34,7 @@ Another kladde implementation can read it; nothing else can.
 
 **Type coverage.**
 Serde works on essentially any Rust type, including `String`, `Vec<T>`, `HashMap`, and third-party types with derives.
-Kladde needs its own container types.
+Kladde takes `String` and a `Vec` of fixed-size elements as they are, but needs its own container types for maps and for vectors of anything else.
 
 **Maturity.**
 Serde is one of the most-used crates in the ecosystem.
@@ -66,7 +66,7 @@ A postcard blob is opaque without the writing program.
 
 `DurableBlob<T>` wraps any serde type as an opaque payload inside a kladde structure.
 
-This is the right escape hatch for a foreign type you cannot change, and the wrong default for anything else: a blob is rewritten in full on every change, so it forfeits exactly the property you came for.
+This is the right escape hatch for a foreign type you cannot change, and the wrong default for anything else: a blob is serialized again in full on every change, so each edit costs time in proportion to the blob's size, the very cost you came to kladde to avoid, even though only the bytes that changed reach the file.
 Use it at the leaves, for things that change rarely.
 
 ## Choosing

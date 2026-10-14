@@ -28,20 +28,20 @@ after:
 ```rust
 use kladde::Kladde;
 use kladde::Durable;
-use kladde_types::{DurableString, DurableVec};
+use kladde_types::DurableVec;
 
 #[derive(Durable)]
 struct Notes {
-    title: DurableString,
-    lines: DurableVec<DurableString>,
+    title: String,
+    lines: DurableVec<String>,
 }
 
 let mut notes = Kladde::new(Notes {
-    title: DurableString::from("today"),
+    title: String::from("today"),
     lines: DurableVec::new(),
 });
 
-notes.guard().lines_mut().push(DurableString::from("wrote a doc"))?;
+notes.get_mut().lines_mut().push(String::from("wrote a doc"))?;
 ```
 
 The `push` updates the in-memory vector and appends the change to the journal before it returns.
@@ -56,19 +56,19 @@ Every comparable system relies on exactly such a hook: Python has `__setattr__`,
 Those systems make persistence syntactically invisible — `self.foo = bar` just works — because the language hands them a place to stand.
 
 Rust hands them nothing.
-So kladde-rs makes the recording point **explicit and unforgeable** instead: the only mutating API is the one that records, and it is reached through a `Guard`.
+So kladde-rs makes the recording point **explicit and unforgeable** instead: the only mutating API is the one that records, and it is reached through a `Mut`.
 
 Everything idiosyncratic about this layer follows from that one constraint, and it is the single largest thing a port should expect to redesign.
-A Python implementation should use property hooks and have no guards at all.
+A Python implementation should use property hooks and have no `Mut`s at all.
 
 ## The documents
 
 | document | contents |
 | --- | --- |
 | [Crate layout](crates.md) | the workspace, the dependency direction, and where the seam falls |
-| [Durable and guards](durable-and-guards.md) | the central traits, regions, `Fixed`, why mutation needs a guard, and why it returns a `Result` |
+| [Durable and Mut](durable-and-mut.md) | the central traits, regions, `Fixed`, why mutation needs a `Mut`, and why it returns a `Result` |
 | [Containers](containers.md) | how the built-in containers are encoded and indexed, and cuts |
-| [The derive macro](derive-macro.md) | what it generates, fixed forms, enums in place of trait objects, and why guards are generated per type |
+| [The derive macro](derive-macro.md) | what it generates, fixed forms, enums in place of trait objects, and why `Mut`s are generated per type |
 | [Transactions](transactions.md) | the RAII types, and what happens on unwind |
 | [Schema binding](schema-binding.md) | how a Rust type declares its descriptor, and the check at open |
 | [The store](store.md) | the Rust-specific half of the storage layer: interior mutability, I/O, and the in-memory structures |
@@ -83,7 +83,7 @@ Where the implementation departs from the [reference algorithms](../impl/), or f
 | --- | --- |
 | Schema descriptors, encoding, fingerprints, rules of nesting | implemented and specified |
 | The encoding of values; schema binding to Rust types; fingerprint check at open | implemented |
-| Containers, derive macro, guards, regions, `Fixed` | implemented |
+| Containers, derive macro, `Mut`s, regions, `Fixed` | implemented |
 | File format, span table, journal, recovery | implemented, with a span table of [two levels](../impl/implementation-notes.md) |
 | Flush, span policy and consolidation | implemented |
 | Transactions, batches, and cuts | implemented; cuts on the vector only |

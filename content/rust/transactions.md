@@ -14,7 +14,7 @@ The public API provides them through RAII types instead:
 - `Kladde::batch()` returns a `Batch`, and `Batch::end(self)` ends it;
 - `Batch::transaction()` opens a transaction inside the batch — the nesting [the design is arranged around](../impl/transactions-and-batches.md#recommendations).
 
-Each offers `guard()`, so mutations go through the scope rather than around it, and `commit` and `end` return a `Result`, since ending a scope appends to the journal.
+Each offers `get_mut()`, so mutations go through the scope rather than around it, and `commit` and `end` return a `Result`, since ending a scope appends to the journal.
 Because the scope object borrows the `Kladde` mutably and an inner scope borrows the outer one, a scope cannot be ended while a scope nested inside it is still open: the interleaving errors of the [state table](../impl/transactions-and-batches.md#transitions-in-detail) do not compile.
 
 Dropping a scope without ending it ends it, and a failure to end it there — where no error can be returned — poisons the store, since the in-memory mutations have then already happened and the journal does not hold them.

@@ -27,12 +27,12 @@ after:
 -->
 ```rust
 use kladde::{Kladde, Durable};
-use kladde_types::{DurableString, DurableVec};
+use kladde_types::DurableVec;
 
 #[derive(Durable)]
 struct Journal {
-    owner: DurableString,
-    entries: DurableVec<DurableString>,
+    owner: String,
+    entries: DurableVec<String>,
 }
 
 fn main() -> kladde::Result<()> {
@@ -40,15 +40,15 @@ fn main() -> kladde::Result<()> {
     let mut journal = Kladde::create(
         &path,
         Journal {
-            owner: DurableString::from("ada"),
+            owner: String::from("ada"),
             entries: DurableVec::new(),
         },
     )?;
 
     journal
-        .guard()
+        .get_mut()
         .entries_mut()
-        .push(DurableString::from("first entry"))?;
+        .push(String::from("first entry"))?;
     println!("{} entries", journal.get().entries.len());
     journal.close()?;
 
@@ -66,11 +66,11 @@ Everything reachable from it is durable; a value you construct outside it is not
 
 **Reading goes through `get()`**, which hands you `&T` — the plain value.
 From there you use ordinary methods: `len()`, `iter()`, indexing.
-No guard, no file access, no cost beyond the read itself.
+No `Mut`, no file access, no cost beyond the read itself.
 
-**Writing goes through `guard()`**, which hands you a `JournalGuard`.
-Every field of a derived type gets a `_mut()` accessor on its guard, which reborrows the same backend one level deeper.
-So `journal.guard().entries_mut()` is a `DurableVecGuard`, and `push` on it both records the change and mutates the vector.
+**Writing goes through `get_mut()`**, which hands you a `JournalMut`.
+Every field of a derived type gets a `_mut()` accessor on its `Mut`, which reborrows the same backend one level deeper.
+So `journal.get_mut().entries_mut()` is a `DurableVecMut`, and `push` on it both records the change and mutates the vector.
 It returns a `Result`, because recording is I/O.
 
 **`open` reads it all back.**
@@ -78,14 +78,15 @@ It returns a `Result`, because recording is I/O.
 
 `Kladde::new(value)` does the same as `create` with a file that lives only in memory, which is handy for tests and for trying things out.
 
-## Why the guard exists
+## Why the `Mut` exists
 
 In Python, `journal.entries.append(x)` could persist automatically, because Python lets a library intercept attribute access.
 Rust does not.
 There is no hook that fires when you assign to a field.
 
-The guard is the substitute.
-It is an RAII token — exactly the relationship `MutexGuard` has to `Mutex` — that proves you have exclusive, recording access, and it carries two things a plain `&mut` could not: the backend to record into, and the *region* of the file's content that this particular field occupies — where its encoding starts in the file's one sequence of bytes, and how long it is.
+The `Mut` is the substitute.
+It stands where a `&mut` would — `get_mut()` hands it out as `Vec::get_mut` hands out a `&mut T`.
+It is an RAII token that proves you have exclusive, recording access, and it carries two things a plain `&mut` could not: the backend to record into, and the *region* of the file's content that this particular field occupies — where its encoding starts in the file's one sequence of bytes, and how long it is.
 
 This is why you cannot mutate a durable value through a plain `&mut`.
 There is no such method.
@@ -93,23 +94,22 @@ Persistence is not something you can forget, because the only mutating API is th
 
 ## Nesting
 
-Guards compose to arbitrary depth, and each level reborrows the same backend:
+`Mut`s compose to arbitrary depth, and each level reborrows the same backend:
 
 <!-- kladde-example: name=journal file=src/nesting.rs
 before:
   use crate::Journal;
   use kladde::Kladde;
-  use kladde_types::DurableString;
   fn nesting(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
 after:
   Ok(())
   }
 -->
 ```rust
-let mut guard = journal.guard();
-let mut entries = guard.entries_mut();
-entries.push(DurableString::from("second"))?;
-entries.push(DurableString::from("third"))?;
+let mut journal_mut = journal.get_mut();
+let mut entries = journal_mut.entries_mut();
+entries.push(String::from("second"))?;
+entries.push(String::from("third"))?;
 ```
 
 Or in one chain, when you only need one mutation:
@@ -124,28 +124,27 @@ after:
   }
 -->
 ```rust
-journal.guard().owner_mut().set("grace")?;
+journal.get_mut().owner_mut().set("grace")?;
 ```
 
-Each `_mut()` borrows the guard it is called on, so a guard hands out one field's guard at a time.
-To mutate several fields together, `parts()` hands out a guard for every field at once, in a struct named after yours:
+Each `_mut()` borrows the `Mut` it is called on, so a `Mut` hands out one field's `Mut` at a time.
+To mutate several fields together, `parts()` hands out a `Mut` for every field at once, in a struct named after yours:
 
 <!-- kladde-example: name=journal file=src/parts.rs
 before:
   use crate::{Journal, JournalParts};
   use kladde::Kladde;
-  use kladde_types::DurableString;
   fn parts(journal: &mut Kladde<Journal>) -> kladde::Result<()> {
 after:
   Ok(())
   }
 -->
 ```rust
-let mut guard = journal.guard();
-let JournalParts { mut owner, mut entries } = guard.parts();
+let mut journal_mut = journal.get_mut();
+let JournalParts { mut owner, mut entries } = journal_mut.parts();
 owner.set("grace")?;
-entries.push(DurableString::from("handed over"))?;
+entries.push(String::from("handed over"))?;
 ```
 
-Hold a guard only as long as you need it.
+Hold a `Mut` only as long as you need it.
 It borrows the root, so nothing else can touch the structure while it is alive.

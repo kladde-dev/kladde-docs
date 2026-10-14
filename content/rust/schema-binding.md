@@ -31,8 +31,9 @@ A struct declares a `Struct` descriptor with its fields in declaration order; an
 A hand-written implementation declares **whatever descriptor matches the bytes it actually reads and writes** — which is the rule that most often trips people up.
 A hand-written implementation of a plain field-sum declares `Struct`, not `Opaque`; "hand-written" and "opaque" are different axes, see [the guiding principle](../spec/schema/index.md#the-guiding-principle).
 
-The containers declare structural descriptors, so that a tool can decode them: a vector a `Sequence` of its element type, a string `Text`, a map a `Sequence` of a struct `Entry` with fields `key` and `value`.
-`Option<T>` declares an enum `Option` with a one-byte discriminant width, `None` = 0 and `Some` = 1 with a field `"0"`; a tuple a struct `TupleN` with positional fields; `Fixed<T>` a `Fixed` of `T`'s descriptor; and `Box<T>` is *schema-transparent*, reusing `T`'s descriptor, as `#[kladde(transparent)]` types do.
+The containers declare structural descriptors, so that a tool can decode them: a `Vec<T>` and a `DurableVec<T>` alike a `Sequence` of the element type, a `String` `Text`, and a map a `Map` of its key type and its value type.
+An enum's variant holds one payload: `()`, the empty struct, for a unit variant, the field's type for a variant of one unnamed field, and otherwise an anonymous struct of its fields named after the variant ([the derive](derive-macro.md#enums)).
+`Option<T>` declares an enum `Option` with a one-byte discriminant width, `None` = 0 holding `()` and `Some` = 1 holding a `T`; a tuple a struct `TupleN` with positional fields; `Fixed<T>` a `Fixed` of `T`'s descriptor; and `Box<T>` is *schema-transparent*, reusing `T`'s descriptor, as `#[kladde(transparent)]` types do.
 Only `DurableBlob` declares `Opaque`, without a fixed size, since its serde payload is not decomposable.
 
 ## At create and at open

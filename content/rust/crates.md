@@ -9,10 +9,10 @@ The workspace, what depends on what, and where the language-neutral half ends.
 | crate | role |
 | --- | --- |
 | `kladde-store` | the storage layer: the file, pages, the span table, the journal, the flush, and consolidation, behind the `WriteBackend` trait. Type-agnostic; knows nothing about serialization. |
-| `kladde-persist` | the serialization layer: `Durable`, `Bounded`, `Guard`, `Region`, `Encoder` and `Decoder`, the scalars, tuples, `Option`, `Box` and `Fixed`, cuts, and the schema binding. |
+| `kladde-persist` | the serialization layer: `Durable`, `Bounded`, `Mut`, `Region`, `Encoder` and `Decoder`, the scalars, `String`, `Vec` of fixed-size elements, tuples, `Option`, `Box` and `Fixed`, cuts, and the schema binding. |
 | `kladde-schema` | type descriptors, their canonical encoding, fingerprints, and the rules of nesting. Depends on nothing but `kladde-varint`. |
 | `kladde-varint` | LEB128 varints and zigzag. |
-| `kladde-types` | the built-in containers: vector, map, string, blob. The default collection, not a layer — it uses only the public API any library could. |
+| `kladde-types` | the built-in containers that keep an index or a serialization in memory: `DurableVec`, `DurableMap`, `DurableBlob`. The default collection, not a layer — it uses only the public API any library could. |
 | `kladde-derive` | the `#[derive(Durable)]` macro, and the `#[kladde::dispatch]` attribute with which a derived enum stands in for a trait object. Reached through `kladde`'s `derive` feature; applications do not depend on it directly. |
 | `kladde` | the application-facing entry point: creating and opening files, the root value, transactions and batches. Re-exports the derive macro and everything a `Durable` impl names, so an application needs this crate and nothing below it. |
 
@@ -26,7 +26,7 @@ graph TD
   K["<strong>kladde</strong><br/>Kladde, Transaction, Batch"]
   T["<strong>kladde-types</strong><br/>containers"]
   D["<strong>kladde-derive</strong><br/>derive macro"]
-  P["<strong>kladde-persist</strong><br/>Durable, Guard, Region"]
+  P["<strong>kladde-persist</strong><br/>Durable, Mut, Region"]
   S["<strong>kladde-schema</strong><br/>descriptors, encoding, fingerprints"]
   V["<strong>kladde-varint</strong><br/>LEB128"]
   H["<strong>kladde-store</strong><br/>Store, journal, span table, pages,<br/>WriteBackend"]
@@ -54,7 +54,7 @@ See [The store](store.md) for the Rust-specific half.
 ### `kladde-persist` — the serialization layer
 
 Where types meet bytes.
-`Durable` and `Bounded`, the `Guard` counterpart, `Region` and the `Node` a container keeps for its children, the `Encoder` and `Decoder`, `Cut`, and the implementations for scalars, tuples, `Option`, `Box` and `Fixed`.
+`Durable` and `Bounded`, the `Mut` counterpart, `Region` and the `Node` a container keeps for its children, the `Encoder` and `Decoder`, `Cut`, and the implementations for scalars, `String`, `Vec` of fixed-size elements, tuples, `Option`, `Box` and `Fixed`.
 Knows about the store's `WriteBackend`; knows nothing about any particular container or derived type.
 
 ### `kladde-schema` — type descriptors
@@ -73,7 +73,7 @@ The macro is re-exported from `kladde`, not from `kladde-types`, so that an appl
 ### `kladde` — the entry point
 
 `Kladde<T>` pairs a root value with a `Store`, and is what application code holds.
-It writes the root's descriptor table and fingerprint into the file at creation, checks the fingerprint at open, and hands out guards, transactions, and batches.
+It writes the root's descriptor table and fingerprint into the file at creation, checks the fingerprint at open, and hands out `Mut`s, transactions, and batches.
 
 ## The seam
 
@@ -84,18 +84,18 @@ The span table, the journal, the flush, the consolidation policy, the schema mod
 
 **At and above `kladde-persist`, the design is Rust-specific and should be redone.**
 
-- `Durable`/`Guard` exists because Rust cannot intercept a field assignment.
-- `WriteBackend` takes `&self` because sibling guards share one backend by reborrow, which Rust's borrow checker otherwise forbids.
+- `Durable`/`Mut` exists because Rust cannot intercept a field assignment.
+- `WriteBackend` takes `&self` because sibling `Mut`s share one backend by reborrow, which Rust's borrow checker otherwise forbids.
 - `FIXED_SIZE` as an associated constant exists because Rust can compute field offsets at compile time.
   A language without compile-time constant folding will compute them some other way — probably once per type at startup, which is fine, but it changes the shape of the code.
 - `Bounded` is a subtrait so that `Fixed<T>` fails to compile for a `T` without a fixed form; another language checks it however its type system allows.
 
-A Python port should keep the storage layer almost verbatim and throw away the guards entirely, intercepting assignments with property hooks.
+A Python port should keep the storage layer almost verbatim and throw away the `Mut`s entirely, intercepting assignments with property hooks.
 A C++ one might use proxy objects with `operator=`; a Java one might use bytecode enhancement, which is what db4o did.
 
 ## Cross-cutting concerns
 
-**Crash consistency** is a property of the journal and the flush, and of the one rule a container must keep: every edit it makes, such as an element and its count, goes into one transaction ([ordering](../spec/journal.md#ordering)); the guards wrap every mutation in one.
+**Crash consistency** is a property of the journal and the flush, and of the one rule a container must keep: every edit it makes, such as an element and its count, goes into one transaction ([ordering](../spec/journal.md#ordering)); the `Mut`s wrap every mutation in one.
 
 **Schema evolution** touches the load path, the mutation path, and the flush, because a value read in a foreign schema must not then be written in the native one unless the file is upgraded; see [the specification](../spec/schema/evolution.md).
 Until it exists, a file whose root fingerprint differs from the application's is refused at open.

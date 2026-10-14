@@ -9,13 +9,14 @@ None of this changes what the structures *mean*; it is about realising them in R
 ## The interface
 
 `kladde-store` is a persistent store of one byte sequence, usable on its own: `Store` implements `WriteBackend`, whose methods are the journal's records — `write`, `splice`, `move_range` and `paste` — and the transaction calls, plus `len`.
-`write` and `splice` return the cut of what they removed, an `Option<CutId>`, inside a transaction, and `splice` records a `Write` wherever the lengths agree.
-`Store::flush`, `read_all`, `schema` and `set_schema`, `private` and `set_private`, and `stats` complete it; the schema and private chains are byte strings the next flush writes.
+`write` and `splice` return the cut of what they removed, an `Option<CutId>`, and `splice` records a `Write` wherever the lengths agree.
+A cut lives as long as the journal that made it: `is_alive` says whether that journal is still unfolded, and `paste` takes the cut's bytes along with it, which it records as a `Paste` while the cut lives and as an ordinary splice of those bytes after.
+`Store::flush`, `flush_if_journal_exceeds`, `read_all`, `schema` and `set_schema`, `private` and `set_private`, and `stats` complete it; the schema and private chains are byte strings the next flush writes.
 
 ## Interior mutability
 
 **`Store` keeps all of its state behind one `RefCell`, and borrows it for the length of one call.**
-`WriteBackend`'s methods take `&self` so that sibling guards can share a backend, which forces interior mutability somewhere, and one cell is enough: no store method calls out into user code, so no borrow is ever held across a callback, and a single dynamic borrow per call costs nothing measurable next to the journal append it guards.
+`WriteBackend`'s methods take `&self` so that sibling `Mut`s can share a backend, which forces interior mutability somewhere, and one cell is enough: no store method calls out into user code, so no borrow is ever held across a callback, and a single dynamic borrow per call costs nothing measurable next to the journal append it guards.
 
 The one reentrant path is the [automatic flush](../impl/transactions-and-batches.md#flush-triggers), which runs inside the mutating call whose transaction would not fit in what is left of the journal's budget.
 It runs after that call's own borrow has ended, and takes the cell again for itself.
@@ -47,7 +48,7 @@ A bitmap of used ids beside it serves the [id allocator](../impl/in-memory-state
 ### The treap
 
 **The rope is an implicit treap, not a counted B-tree**: a randomized binary tree in an arena of nodes, each knowing its parent and the total length below it, `O(log k)` expected steps per operation and 40 bytes per node.
-It is there for ease of implementation: a split at a position and a join of two trees are all that the rope, the fold's piece table and a transaction's cuts need, so one arena type of under 400 lines serves all three, while splitting and joining whole B-trees at a position is the intricate part of a counted B-tree.
+It is there for ease of implementation: a split at a position and a join of two trees are all that the rope, the fold's piece table and the journal's cuts need, so one arena type of under 400 lines serves all three, while splitting and joining whole B-trees at a position is the intricate part of a counted B-tree.
 Its priorities come from a seeded generator, so runs reproduce.
 With the treap's node, a span costs about 90 bytes in memory, against the 32 of the reference algorithms; for the files measured that is a fraction of a megabyte, and a B-tree is the better choice once memory per span matters.
 

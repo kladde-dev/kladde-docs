@@ -48,7 +48,7 @@ Building with `--release` skips the assertions, so the tests are meant for debug
 | | `tests/consolidation.rs` | that consolidation keeps a file near its live size under overwrites, appends and a mass free, without changing what it reads |
 | | `tests/churn.rs`, `tests/restate.rs`, `tests/sizes.rs` | id recycling, bytes that splices shift within an allocation, and the newest size rule, each checked in a reopened file |
 | | unit tests | the CRC, the fold, loading, pages, the journal, and the encoding of statements |
-| `kladde-types` | `tests/packed.rs`, `tests/small.rs` | packed vectors and small values under random edits through every path a guard offers, against a model after every edit and a reopened file after every few |
+| `kladde-types` | `tests/packed.rs`, `tests/small.rs` | packed vectors and small values under random edits through every mutating method they offer, against a model after every edit and a reopened file after every few |
 | | the other `tests/` | the whole stack through `Kladde`, enums' `parts()`, `move_element`, schemas, tuples |
 | `kladde-derive` | `tests/`, and `compile_fail` examples | what `#[derive(Persistable)]` generates, and what it must refuse to compile |
 | `kladde-schema`, `kladde-persist`, `kladde-varint`, `kladde` | unit tests | descriptors, canonical encoding and fingerprints; the serialization layer; varints; the facade |
@@ -128,7 +128,7 @@ The files go to `files/` in the output directory and are removed when the run is
 | `append` | 16 MiB | 512 logs, appended to in records of 16 to 240 bytes and truncated to nothing once a record would take one past 64 KiB | the records | `on`, `off` |
 | `churn` | 16 MiB | values of 16 to 128 bytes, or one in five of 1 to 8 KiB, replaced by a new allocation, rewritten whole, or patched in 1 to 64 bytes | the bytes written | `on`, `off` |
 | `shrink` | 64 MiB | allocations of 64 KiB, three quarters of them freed at once, then 400 flushes of 100 patches of 1 to 64 bytes | the patches | `on`, `no-compaction`, `off` |
-| `typed` | 16 MiB | a `Kladde<PersistableHashMap<u64, PersistableString>>` of strings of 50 to 500 bytes, through the guards: 40 % replace a string, 30 % append to one, 20 % insert one, 10 % remove one | the strings' bytes | `on` |
+| `typed` | 16 MiB | a `Kladde<PersistableHashMap<u64, PersistableString>>` of strings of 50 to 500 bytes, through the typed layers: 40 % replace a string, 30 % append to one, 20 % insert one, 10 % remove one | the strings' bytes | `on` |
 | `tuning` | 8 and 16 MiB | `uniform` and `skewed` at 8 MiB with a churn floor of 0.5 or 2, or a target fill of 0.6 or 0.5; `append` with 4 and 16 pages of defragmentation share | as above | one table per workload, `tuning-<workload>.csv`, with the default among the variants |
 
 With `quick`, every live size is 1 MiB, and `shrink`'s 4 MiB.

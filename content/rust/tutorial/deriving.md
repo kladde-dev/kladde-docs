@@ -24,33 +24,33 @@ Here is a complete program:
 <!-- kladde-example: name=phonebook file=src/main.rs mode=run deps=kladde,kladde-types -->
 ```rust
 use kladde::{Kladde, Durable};
-use kladde_types::{DurableString, DurableVec};
+use kladde_types::DurableVec;
 
 #[derive(Durable)]
 enum PhoneNumber {
-    Mobile(DurableString),
-    Landline(DurableString),
+    Mobile(String),
+    Landline(String),
 }
 
 #[derive(Durable)]
 struct Contact {
-    email: DurableString,
+    email: String,
     phones: DurableVec<PhoneNumber>,
     starred: bool,
 }
 
 fn main() -> kladde::Result<()> {
     let mut contact = Kladde::new(Contact {
-        email: DurableString::from("ada@example.com"),
+        email: String::from("ada@example.com"),
         phones: DurableVec::new(),
         starred: false,
     });
 
-    let mut guard = contact.guard();
-    guard.starred_mut().set(true)?;
-    guard
+    let mut contact_mut = contact.get_mut();
+    contact_mut.starred_mut().set(true)?;
+    contact_mut
         .phones_mut()
-        .push(PhoneNumber::Mobile(DurableString::from("555-0100")))?;
+        .push(PhoneNumber::Mobile(String::from("555-0100")))?;
     Ok(())
 }
 ```
@@ -61,36 +61,35 @@ If you need to name the trait explicitly in the same file, import it under an al
 
 ## Structs
 
-The macro generates a guard type — `ContactGuard` — with a `_mut()` accessor per field, and a `set` that replaces the whole value:
+The macro generates a `Mut` type — `ContactMut` — with a `_mut()` accessor per field, and a `set` that replaces the whole value:
 
 ```rust
-let mut contact = /* ... a ContactGuard ... */;
+let mut contact = /* ... a ContactMut ... */;
 contact.starred_mut().set(true)?;
 contact.phones_mut().push(number)?;
 ```
 
-It also generates a `ContactParts` struct, and a `parts()` method on the guard that returns the guards of all fields at once, for when you need more than one at a time.
+It also generates a `ContactParts` struct, and a `parts()` method on the `Mut` that returns the `Mut`s of all fields at once, for when you need more than one at a time.
 A tuple struct's accessors are named by position — `field_0_mut()`, `field_1_mut()` — and its `parts()` returns a tuple struct.
 
 **A struct is its fields' encodings, back to back**, inline in whatever contains it.
-A field's guard finds where the field starts: at a constant offset up to the first field whose size depends on its value — a varint, text, a container — and after that at the sum of the encoded sizes of the fields before it, which the in-memory values know.
+A field's `Mut` finds where the field starts: at a constant offset up to the first field whose size depends on its value — a varint, text, a container — and after that at the sum of the encoded sizes of the fields before it, which the in-memory values know.
 Integers wider than a byte are varints, so a `u32` takes one byte below 128 and up to five above.
 
 That includes primitive fields.
 `bool`, `i32`, `char` and friends all implement `Durable`, specifically so the macro can treat every field uniformly rather than special-casing leaves.
-So do tuples of up to twelve `Durable` types, encoded like a tuple struct, `Option<T>`, and `Box<T>`, which is persisted as the `T` it holds.
+So do tuples of up to twelve `Durable` types, encoded like a tuple struct, `Option<T>`, `Box<T>`, which is persisted as the `T` it holds, `String`, and `Vec<T>` of fixed-size elements.
 
 ## Fixed-size values
 
 **`Fixed<T>` keeps a value at the same size whatever it is**: every integer at its full width, every `char` in four bytes, and every enum with its discriminant at a fixed width and its variant padded with zeros to the largest.
-Use it for a field that changes often, such as a counter, which would otherwise change size whenever it crosses a power of 128, and for the elements of a large vector, which then finds element `i` by multiplication and keeps no index of where its elements start.
+Use it for a field that changes often, such as a counter, which would otherwise change size whenever it crosses a power of 128, and for the elements of a large vector, which then finds element `i` by multiplication, keeps no index of where its elements start, and may be a plain `Vec`.
 
 A derived type can be wrapped in `Fixed` only if it is marked `#[kladde(bounded)]`, which requires every field's type to have a fixed form too:
 
-<!-- kladde-example: name=fixed file=src/lib.rs deps=kladde,kladde-types
+<!-- kladde-example: name=fixed file=src/lib.rs deps=kladde
 before:
   use kladde::{Fixed, Durable};
-  use kladde_types::DurableVec;
   #[derive(Durable)]
   #[kladde(bounded)]
   enum ShapeKind {
@@ -109,12 +108,12 @@ struct Shape {
 
 #[derive(Durable)]
 struct Drawing {
-    shapes: DurableVec<Fixed<Shape>>,   // eight bytes per shape, plus the kind's
+    shapes: Vec<Fixed<Shape>>,   // eight bytes per shape, plus the kind's
     revision: Fixed<u64>,
 }
 ```
 
-`Fixed<T>`'s guard replaces the value whole, with `set(Fixed(...))`: changing one field means building the whole value, and writing all of it, which for a fixed-size value is an overwrite in place.
+`Fixed<T>`'s `Mut` replaces the value whole, with `set(Fixed(...))`: changing one field means building the whole value, and writing all of it, which for a fixed-size value is an overwrite in place.
 Types holding text, a container, or themselves have no fixed form, and wrapping one in `Fixed` fails to compile with an error that says so.
 A generic type marked `#[kladde(bounded)]` has a fixed form wherever its parameters do.
 
@@ -132,51 +131,52 @@ before:
 struct Meters(u32);
 
 fn walk(distance: &mut Kladde<Meters>) -> kladde::Result<()> {
-    distance.guard().get_mut().set(42)
+    distance.get_mut().get_mut().set(42)
 }
 ```
 
-Its guard's `get_mut()` returns the field's guard.
+Its `Mut`'s `get_mut()` returns the field's `Mut`.
 
 ## Enums
 
 An enum is its discriminant, as a varint, followed by the selected variant's fields, each variant encoded like a struct in its own right.
 So a value takes the size of its own variant, not of the largest.
-Positional fields are named by their position: `Mobile(DurableString)` has a field called `"0"`.
 
-**To mutate the current variant in place, match on the guard's `parts()`.**
-It hands out the guards of the current variant's fields, in an enum named after yours, `PhoneNumberParts`, with the same variants:
+**In the schema, every variant holds exactly one value**: a unit variant holds `()`, a variant with one unnamed field such as `Mobile(String)` holds that field's type, and any other variant holds a struct of its fields, named after the variant, its positional fields named by position, `"0"`, `"1"`.
+So moving a variant's fields into a struct of their own changes neither the file nor the [fingerprint](../../spec/schema/fingerprints.md): `R { w: u32, h: u32 }` and `R(Rect)`, with `struct Rect { w: u32, h: u32 }`, are the same variant on file.
+
+**To mutate the current variant in place, match on the `Mut`'s `parts()`.**
+It hands out the `Mut`s of the current variant's fields, in an enum named after yours, `PhoneNumberParts`, with the same variants:
 
 <!-- kladde-example: name=enum-parts file=src/main.rs mode=run deps=kladde,kladde-types -->
 ```rust
 use kladde::{Kladde, Durable};
-use kladde_types::DurableString;
 
 #[derive(Durable)]
 enum PhoneNumber {
-    Mobile(DurableString),
-    Landline(DurableString),
+    Mobile(String),
+    Landline(String),
 }
 
 fn main() -> kladde::Result<()> {
-    let mut number = Kladde::new(PhoneNumber::Mobile(DurableString::from("555-01")));
+    let mut number = Kladde::new(PhoneNumber::Mobile(String::from("555-01")));
 
-    let mut guard = number.guard();
-    match guard.parts() {
+    let mut number_mut = number.get_mut();
+    match number_mut.parts() {
         PhoneNumberParts::Mobile(mut digits) => digits.push_str("00")?,
         PhoneNumberParts::Landline(mut digits) => digits.set("555-0199")?,
     }
 
     // To switch to another variant, replace the whole value.
-    guard.set(PhoneNumber::Landline(DurableString::from("555-0123")))?;
+    number_mut.set(PhoneNumber::Landline(String::from("555-0123")))?;
     assert!(matches!(number.get(), PhoneNumber::Landline(digits) if digits == "555-0123"));
     Ok(())
 }
 ```
 
-Each field guard writes inside its field, so the variant stays what it was.
+Each field's `Mut` writes inside its field, so the variant stays what it was.
 `set` replaces the whole value, which is how the variant changes: it splices the new value's encoding over the old one's.
-`parts()` borrows the guard, so the compiler stops you from calling `set` while you still hold a field's guard.
+`parts()` borrows the enum's `Mut`, so the compiler stops you from calling `set` while you still hold a field's `Mut`.
 
 **The discriminant is Rust's own**: the one you write (`Mobile = 1`), or else one more than the previous variant's, counting from 0; negative discriminants and signed or pointer-sized `repr`s are not supported.
 The file holds it as a varint, so discriminants below 128 take one byte.
@@ -186,14 +186,13 @@ Explicit values on variants with fields need a `#[repr]` anyway, as Rust require
 <!-- kladde-example: name=pinned-discriminants file=src/lib.rs deps=kladde,kladde-types
 before:
   use kladde::Durable;
-  use kladde_types::DurableString;
 -->
 ```rust
 #[derive(Durable)]
 #[repr(u32)]
 enum PhoneNumber {
-    Mobile(DurableString) = 1,
-    Landline(DurableString) = 2,
+    Mobile(String) = 1,
+    Landline(String) = 2,
 }
 ```
 
@@ -248,8 +247,8 @@ fn main() -> kladde::Result<()> {
         angle: 0.0,
         label: 7,
     };
-    shape.guard().set(frame.into())?;   // `From<Frame>` boxes it
-    if let AnyShapeParts::Frame(mut f) = shape.guard().parts() {
+    shape.get_mut().set(frame.into())?;   // `From<Frame>` boxes it
+    if let AnyShapeParts::Frame(mut f) = shape.get_mut().parts() {
         f.hole_mut().w_mut().set(2.0)?;
     }
     assert_eq!(shape.get().area(), 7.0);
@@ -273,7 +272,7 @@ Type parameters work, and each gets a `Durable` bound:
 ```rust
 #[derive(Durable)]
 struct Labelled<T> {
-    label: DurableString,
+    label: String,
     value: T,
 }
 ```
@@ -285,12 +284,13 @@ Lifetime and const parameters are not supported.
 Every persisted field must be `Durable`.
 In practice that means:
 
-- primitives — fine as-is;
+- primitives and `String` — fine as-is;
+- `Vec<T>` — fine where `T` is fixed-size; for any other `T` it fails to compile, and the message points you to `DurableVec<T>`;
 - kladde containers — fine as-is;
 - your own derived types — fine, and they nest arbitrarily;
-- `String`, `Vec<T>`, `HashMap<K, V>` — **not** `Durable`.
-  Use the kladde equivalents.
-  This is deliberate: a field's type says whether it is durable, and the compile error tells you which type to use.
+- `HashMap<K, V>`, `PathBuf` and other standard types — **not** `Durable`.
+  Use the kladde equivalents, such as `DurableMap<K, V>`.
+  This is deliberate: a field's type says whether it is durable, and the compile error tells you so.
 
 ## Non-persisted fields
 

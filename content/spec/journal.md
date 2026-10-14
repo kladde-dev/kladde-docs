@@ -59,6 +59,7 @@ Duplicating a value writes its encoding: the flush would have to write a copy's 
 - A cut that nothing pastes is removed bytes, as after any splice: nothing frees it, and nothing can leak.
 - A `Write` is a `Splice` that removes as many bytes as it inserts, a byte shorter in the journal, so a writer records a `Write` wherever the lengths agree; that its overwritten bytes make a cut too keeps that choice from deciding whether the old value can be pasted elsewhere.
 - A `Write` of no bytes makes no cut, and neither does a `Splice` that removes nothing.
+- A `Move` makes no cut either: the bytes it cuts it inserts again at once, so nothing is left for a `Paste` to name, and counting it would only make a `Paste`'s distance depend on the moves between it and its cut.
 - A cut and its paste may lie in different transactions, as long as both lie in one journal; recovery replays a journal from its start, so every cut that a recovered `Paste` names is among the transactions it replays.
 - `Move(from, length, to)` is `Splice(from, length, [])` followed by `Paste(to, 0, 0)`, and stays as the shorter way to write it.
 

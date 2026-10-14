@@ -41,6 +41,18 @@ Flushing is **automatic**: a mutation that would not fit in what is left of the 
 Application authors mutate state and never call anything.
 
 An explicit `flush()` remains available for the cases where you want the fold to happen now — before a long idle period, say, since a flush is also what makes everything before it survive a power cut.
+
+**An interactive application calls `flush_if_journal_exceeds(0.5)` from its idle callback.**
+It flushes only if the journal holds at least that fraction of its budget, and returns whether it did, so it costs next to nothing when there is little to fold.
+Flushing while the user pauses keeps the automatic flush, whose `fsync` blocks the mutation that triggers it, out of the middle of a gesture such as a drag.
+Keep the fraction well above zero: a flush ends the journal, and with it every [cut](containers.md#vect-and-durablevect) that is still waiting to be pasted, which is then encoded again when it is pasted.
+
+```rust
+if journal.flush_if_journal_exceeds(0.5)? {
+    // folded while the user paused
+}
+```
+
 `close()` flushes and then truncates the file after its last live page, which does not shrink it to its live pages: free pages below that one stay in the file.
 They go only as later flushes consolidate, each moving a bounded amount of live content down; space freed by one flush becomes available from the flush after it on.
 To reclaim more of it before closing, call `flush()` a few times first; a freshly created file, for instance, needs one or two:
@@ -78,8 +90,8 @@ fn main() -> kladde::Result<()> {
     let mut accounts = Kladde::new(Accounts { checking: 100, savings: 0 });
 
     let mut tx = accounts.transaction();
-    let mut guard = tx.guard();
-    let AccountsParts { mut checking, mut savings } = guard.parts();
+    let mut both = tx.get_mut();
+    let AccountsParts { mut checking, mut savings } = both.parts();
     checking.set(70)?;
     savings.set(30)?;
     tx.commit()?;
@@ -111,7 +123,7 @@ after:
 ```rust
 let mut batch = log.batch();
 for reading in 0..100_000 {
-    batch.guard().push(reading)?;
+    batch.get_mut().push(reading)?;
 }
 batch.end()?;
 ```

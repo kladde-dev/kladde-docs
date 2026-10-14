@@ -9,38 +9,38 @@ What `#[derive(Durable)]` generates, and why.
 For a struct or enum, four things:
 
 1. a `Durable` implementation — `FIXED_SIZE`, `encoded_len`, `encode`, `decode`, and the schema descriptor;
-2. a **guard type**, `MyTypeGuard`, with a `_mut()` accessor per field, a `parts()` method handing out a guard for every field at once, and a whole-value `set`;
-3. a `Deref` implementation on the guard, so read-only methods stay available — and no `DerefMut`, which would hand out a `&mut` whose changes no journal record describes;
+2. a **`Mut` type**, `MyTypeMut`, with a `_mut()` accessor per field, a `parts()` method handing out a `Mut` for every field at once, and a whole-value `set`;
+3. a `Deref` implementation on the `Mut`, so read-only methods stay available — and no `DerefMut`, which would hand out a `&mut` whose changes no journal record describes;
 4. with `#[kladde(bounded)]`, a `Bounded` implementation: the fixed form.
 
 ```rust
 #[derive(Durable)]
-struct Point { x: f32, label: DurableString, n: u32 }
+struct Point { x: f32, label: String, n: u32 }
 ```
 
 generates, in essence:
 
 ```rust
 impl Durable for Point {
-    const FIXED_SIZE: Option<usize> = sum_sizes(&[f32::FIXED_SIZE, DurableString::FIXED_SIZE, u32::FIXED_SIZE]);
+    const FIXED_SIZE: Option<usize> = sum_sizes(&[f32::FIXED_SIZE, String::FIXED_SIZE, u32::FIXED_SIZE]);
     fn encoded_len(&self) -> usize { self.x.encoded_len() + self.label.encoded_len() + self.n.encoded_len() }
     fn encode(&self, out: &mut Encoder<'_>) { self.x.encode(out); self.label.encode(out); self.n.encode(out) }
     fn decode(input: &mut Decoder<'_>) -> Result<Self, Error> {
-        Ok(Point { x: f32::decode(input)?, label: DurableString::decode(input)?, n: u32::decode(input)? })
+        Ok(Point { x: f32::decode(input)?, label: String::decode(input)?, n: u32::decode(input)? })
     }
     // ...
 }
 
-impl<'r, B: Backend> PointGuard<'r, B> {
-    fn label_mut(&mut self) -> DurableStringGuard<'_, B> {
+impl<'r, B: Backend> PointMut<'r, B> {
+    fn label_mut(&mut self) -> StringMut<'_, B> {
         let offset = 4;                                  // after `x`, whose size is fixed
         let len = self.inner.label.encoded_len();
-        self.inner.label.guard(self.region.child(offset, len, None, 1))
+        self.inner.label.mutate(self.region.child(offset, len, None, 1))
     }
-    fn n_mut(&mut self) -> SetGuard<'_, u32, B> {
+    fn n_mut(&mut self) -> SetMut<'_, u32, B> {
         let offset = 4 + self.inner.label.encoded_len(); // after a field whose size varies
         let len = self.inner.n.encoded_len();
-        self.inner.n.guard(self.region.child(offset, len, None, 2))
+        self.inner.n.mutate(self.region.child(offset, len, None, 2))
     }
 }
 ```
@@ -48,12 +48,12 @@ impl<'r, B: Backend> PointGuard<'r, B> {
 **A field's accessor makes a child region at the sum of the sizes of the fields before it**: a constant up to the first field whose `FIXED_SIZE` is `None`, folded by the compiler, and after that the sum of the earlier fields' encoded sizes, which the in-memory values give in constant time.
 The child region reports a change of the field's size to the struct's region, which passes it on up.
 
-**`parts()` makes every field's guard at once**, from a `FieldSizes` node it fills with the fields' sizes: a field after the first variable-size one is *indexed*, and looks its start up in the node at every write, so that a sibling before it may change size meanwhile ([guards made together](../impl/values.md#handles-made-together)).
+**`parts()` makes every field's `Mut` at once**, from a `FieldSizes` node it fills with the fields' sizes: a field after the first variable-size one is *indexed*, and looks its start up in the node at every write, so that a sibling before it may change size meanwhile ([handles made together](../impl/values.md#handles-made-together)).
 
 ## The aggregate records nothing of its own
 
-A struct is its fields' encodings back to back, so its guard has nothing of its own to write beyond `set`.
-Every accessor just makes a child region and the field's own guard, recursively.
+A struct is its fields' encodings back to back, so its `Mut` has nothing of its own to write beyond `set`.
+Every accessor just makes a child region and the field's own `Mut`, recursively.
 This is why the macro is small: it computes offsets and forwards; all the actual work is in the leaf types.
 
 ## Fixed forms
@@ -68,34 +68,43 @@ Opting in marks only the types that `Fixed` wraps and those inside them, none in
 ## Primitives are `Durable` too
 
 `i32`, `bool`, `char` and friends have implementations, specifically so the macro can treat **every** field uniformly rather than special-casing leaves.
-Those implementations must live in the crate that *defines* `Durable`, because `impl Durable for i32` is `impl ForeignTrait for ForeignType` from anywhere else, which the orphan rules forbid; the same reasoning forces the scalar guard types into that crate.
+Those implementations must live in the crate that *defines* `Durable`, because `impl Durable for i32` is `impl ForeignTrait for ForeignType` from anywhere else, which the orphan rules forbid; the same reasoning forces the scalar `Mut` types into that crate.
+The same holds for `String` and `Vec<T>`, whose `Durable` implementations live in kladde-persist beside the scalars'.
 
 ## Enums
 
 An enum is its discriminant as a varint, followed by the selected variant's fields, each variant encoded like a struct in its own right.
 It is fixed-size if every discriminant is below 128 and every variant takes the same fixed size.
-Positional fields are named by position — `"0"`, `"1"` — which keeps the schema model uniform.
 The discriminant is Rust's own: the explicit value where the author wrote one, otherwise one more than the previous variant's.
+
+**In the schema, every variant holds exactly one value**, as the [Enum descriptor](../spec/schema/type-descriptors.md#enum) has it, so the derive picks the value's type by the variant's shape:
+
+- a unit variant holds `()`, the empty struct;
+- a variant with one unnamed field holds that field's type;
+- any other variant holds an anonymous struct of its fields, named after the variant, its positional fields named by position — `"0"`, `"1"`.
+
+So `enum E { R { w: u32, h: u32 } }` and `enum E { R(Rect) }` with `struct Rect { w: u32, h: u32 }` have the same fingerprint and the same bytes, and moving a variant's fields into a struct of their own changes nothing on file.
+`Option`'s `None` holds `()` too.
 
 **The discriminant's width in the fixed form is as wide as its values need, unless an integer `#[repr]` fixes it.**
 `#[repr(u8)]`, `u16`, `u32` or `u64` sets the width; without one, it is the smallest of 1, 2, 4 and 8 bytes that holds the largest discriminant value, the widths the [Enum descriptor](../spec/schema/type-descriptors.md#enum) allows.
 A signed or pointer-sized `repr`, and a negative discriminant, do not compile, since descriptors store discriminants unsigned and `usize` has no fixed width.
 Without a `repr`, the width is a cliff: a 257th variant, or a discriminant of 256 or more, widens every `Fixed` value of the type; a `repr` keeps the fixed form's size when variants are added.
 
-**The guard's `parts()` hands out the guards of the current variant's fields**, as a generated enum `{Enum}Parts` with the same variants, so a field is mutated in place by matching:
+**The `Mut`'s `parts()` hands out the `Mut`s of the current variant's fields**, as a generated enum `{Enum}Parts` with the same variants, so a field is mutated in place by matching:
 
 ```rust
-match guard.parts() {
+match shape_mut.parts() {
     ShapeParts::Circle(mut radius) => radius.set(2)?,
     ShapeParts::Rectangle { mut width, .. } => width.set(3)?,
     ShapeParts::Origin => {}
 }
 ```
 
-Each field guard is based at the field's offset past the discriminant's varint and writes inside its field only, so the discriminant cannot change underneath it.
-And `parts()` borrows the guard, so `set` cannot switch the variant while a field guard is alive.
+Each field's `Mut` is based at the field's offset past the discriminant's varint and writes inside its field only, so the discriminant cannot change underneath it.
+And `parts()` borrows the enum's `Mut`, so `set` cannot switch the variant while a field's `Mut` is alive.
 `set` is how the variant changes: it splices the new value's encoding over the old one's.
-`parts()` on a temporary guard works in a `match` but not in a `let … else`, which drops the temporary at the end of the statement; a consuming `into_parts(self)` would make the `let` form work too, and is proposed rather than built.
+`parts()` on a temporary `Mut` works in a `match` but not in a `let … else`, which drops the temporary at the end of the statement; a consuming `into_parts(self)` would make the `let` form work too, and is proposed rather than built.
 An enum without any fields gets no `parts()`, since it has nothing to mutate in place.
 
 ## Trait objects, as an enum
@@ -105,12 +114,12 @@ The trait is marked `#[kladde::dispatch]`, and the enum `#[kladde(dispatch(Shape
 The derive also implements `From` for every variant's type, and for the `T` of a variant that holds a `Box<T>`, so `AnyShape::from(Circle { .. })` builds the right variant.
 
 On file the enum is an ordinary enum, with a variant per implementation, so the [schema](../spec/schema/type-descriptors.md#enum) needs nothing new, and a C++ or Python implementation reads it as it reads any enum.
-A variant may hold its value in a `Box`, to keep a large variant from making every value of the enum large in memory: a box is persisted as what it holds, its guard is what it holds' guard, and it is `Bounded` where what it holds is, so boxing or unboxing a variant changes neither the file nor the fingerprint.
+A variant may hold its value in a `Box`, to keep a large variant from making every value of the enum large in memory: a box is persisted as what it holds, its `Mut` is the `Mut` of what it holds, and it is `Bounded` where what it holds is, so boxing or unboxing a variant changes neither the file nor the fingerprint.
 
 *Why an enum rather than `Box<dyn Trait>` itself.*
 Rust cannot list a trait's implementations, so the variants have to be listed somewhere, and an enum is the list Rust already checks: two variants with the same explicit discriminant fail to compile (E0081), and a variant's type that does not implement the trait fails at the enum.
 A reader has to know every variant to decode a file, so the openness of `dyn` would buy nothing on file; collecting implementations from several crates at link time would make the fingerprint depend on which crates a binary linked.
-And `Durable` cannot be used through `dyn` — it requires `Sized`, has associated constants and a generic `Guard`, and `decode` returns `Self` — so a durable `Box<dyn Shape>` would need a helper trait, a table of decoders, and guards reached by downcasting, where the enum gets `parts()` and an exhaustive `match`.
+And `Durable` cannot be used through `dyn` — it requires `Sized`, has associated constants and a generic `Mut`, and `decode` returns `Self` — so a durable `Box<dyn Shape>` would need a helper trait, a table of decoders, and `Mut`s reached by downcasting, where the enum gets `parts()` and an exhaustive `match`.
 The enum is also faster, with no vtable and no allocation per value.
 
 **How the two macros meet.**
@@ -133,7 +142,7 @@ A box is recognized by its spelling, `Box<T>`, `std::boxed::Box<T>` or `alloc::b
 Type parameters are supported: each gets a `Durable` bound, the heuristic `#[derive(Debug)]` uses.
 Lifetime and const parameters are rejected.
 
-`#[kladde(transparent)]` on a single-field struct persists it exactly as its field — same bytes, same descriptor, same fingerprint — and gives its guard one `get_mut()` returning the field's guard, as `#[serde(transparent)]` does.
+`#[kladde(transparent)]` on a single-field struct persists it exactly as its field — same bytes, same descriptor, same fingerprint — and gives its `Mut` one `get_mut()` returning the field's `Mut`, as `#[serde(transparent)]` does.
 
 ## Path resolution
 
@@ -156,15 +165,15 @@ There is no `#[kladde(skip)]` for a non-persisted field, no `#[kladde(id = ...)]
 The last two become necessary when [evolution](../spec/schema/evolution.md) lands.
 Two more, modeled on `serde`'s, would serve types the derive cannot handle today:
 
-- **`#[kladde(with = "path")]` on a field** of a type that is not `Durable`, a foreign one or one wanting an encoding of its own, delegating its encoding, descriptor and guard to a module of functions, so that a foreign type can be encoded inline with a real descriptor rather than wrapped in a `DurableBlob`.
+- **`#[kladde(with = "path")]` on a field** of a type that is not `Durable`, a foreign one or one wanting an encoding of its own, delegating its encoding, descriptor and `Mut` to a module of functions, so that a foreign type can be encoded inline with a real descriptor rather than wrapped in a `DurableBlob`.
 - **`#[kladde(bound = "...")]` on the type**, overriding the `Durable` bound the derive puts on every type parameter, for a parameter used only in `PhantomData`, or only inside a wrapper that needs a different bound.
 
 **Const generic parameters**, which the derive rejects today.
 
-**Conveniences on guards**: `set_<field>(value)` on a struct's guard, sparing the step through the field's accessor, and `field_{i}_mut()` on a tuple's guard, which today offers only `parts()` and `set`, as tuple structs' guards offer it.
+**Conveniences on `Mut`s**: `set_<field>(value)` on a struct's `Mut`, sparing the step through the field's accessor, and `field_{i}_mut()` on a tuple's `Mut`, which offers only `parts()` and `set`, as tuple structs' `Mut`s offer it.
 A tuple's accessors cannot be generated by `macro_rules!` without a crate such as `paste` to build their names.
 
 ## Testing compile failures
 
-The macro's *compile errors* are part of its contract — a `String` field must fail to compile, and that is the mechanism preventing silent data loss.
+The macro's *compile errors* are part of its contract — a field of a type that is not `Durable`, such as a `PathBuf`, must fail to compile, and that is the mechanism preventing silent data loss.
 These are tested with rustdoc `compile_fail` doctests rather than a separate harness, which keeps the expected-failure cases next to the documentation that explains them.
