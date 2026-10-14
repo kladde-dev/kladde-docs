@@ -173,6 +173,20 @@ The other triggers:
 
 So **an overlong transaction is flushed twice, once before it and once after it**, the first unless the journal was empty; and **a batch is always cut at the last boundary at which its run still fits**, which lies between two closed transactions or operations, never inside a transaction.
 
+### The journal's budget
+
+**`B` is 2% of the sequence's length in whole pages, at least 2 and at most 10, unless the application fixes it**, and the writer computes it from the length as it stands whenever it checks a transaction against it.
+It is a whole number of pages, since a journal page once taken costs a page of the file however little of it is used.
+
+**A small budget keeps the file close to its content.**
+At a flush, the journal it folds and the previous one, still [the fallback](../spec/durability.md#the-reuse-rule), both occupy pages, and the pages a flush frees become reusable only after the next flush; a budget of `B` pages thus keeps up to about `2B` pages of journal beside the content.
+A budget of 256 pages, a megabyte, made the files of drawings of 40 KB to 1 MB [2 to 26 times their content](../evaluation/cpp-port.md#the-journals-budget), and a budget sized to them kept them within 1.1 to 3.4 times.
+
+**Every flush is a chance to consolidate**, so flushing often costs little beyond the flush's `fsync`: a flush folds a journal of a few pages in one to two milliseconds, within a frame of an interactive application, where a journal of a megabyte stalled the edit that triggered it for 50 to 65 ms.
+
+**The floor of 2 pages** keeps a small file from flushing at every few edits: a budget of 1 page flushed the same drawings two to four times as often as 2 to 4 pages and made their files no smaller.
+**The ceiling of 10 pages** keeps a large file's journal, and with it the pages it holds and the time a flush takes, bounded; a file of tens of megabytes gains from a longer journal only fewer flushes, which an application that wants them can have by fixing the budget.
+
 ### Why `ready` always fits
 
 `ready` only becomes longer in step 3, which checked that it fits after what the journal pages already hold.
@@ -246,4 +260,4 @@ kladde-rs offers this behind an option, off by default, until the Inkscape demo 
 
 ## Open questions
 
-- The journal's page budget: whether it is fixed or scales with the file, and whether it should adapt to an application whose transactions routinely exceed it.
+- The journal's page budget: whether it should adapt to an application whose transactions routinely exceed it.
