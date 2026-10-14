@@ -185,6 +185,24 @@ The runs below are the benchmark above with `KLADDE_JOURNAL_BUDGET_PAGES` set, o
 | 256 pages | coat of arms | 664 KB (3.9×) / 1564 KB (9.1×) | 0 (1 in 50,000) | 4.8–5.8 µs | 42–43 µs | 48 ms |
 | 256 pages | world map | 2172 KB (2.0×) / 2480 KB (2.3×) | 0 (1 in 50,000) | 5.2–6.5 µs | 46–51 µs | 65 ms |
 
+The table above is the XML schema's.
+**The typed schema shows the same pattern, with files a quarter to a half smaller in bytes**, on its branch `typed` with the same changes, and with the ratios to its smaller encodings a little higher:
+
+| budget | drawing (live) | closed file after 10,000 / 50,000 edits | flushes per 10,000 edits | mean edit | drag move, 99.9th percentile | slowest move |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 page | tiger (42 KB) | 120 KB (2.9×) / 144 KB (3.4×) | 47 | 12.1–15.2 µs | 1.2–1.4 ms | 3.4 ms |
+| 1 page | coat of arms (96 KB) | 200 KB (2.1×) / 256 KB (2.7×) | 49 | 16.0–16.1 µs | 1.5–1.6 ms | 7.3 ms |
+| 1 page | world map (594 KB) | 748 KB (1.3×) / 872 KB (1.5×) | 48 | 13.2–15.2 µs | 1.5 ms | 3.9 ms |
+| 4 pages | tiger | 124 KB (3.0×) / 152 KB (3.6×) | 11 | 7.7–8.5 µs | 1.6–1.7 ms | 4.0 ms |
+| 4 pages | coat of arms | 192 KB (2.0×) / 304 KB (3.2×) | 12 | 8.5–9.7 µs | 0.2–1.8 ms | 5.0 ms |
+| 4 pages | world map | 852 KB (1.4×) / 904 KB (1.5×) | 11 | 9.5–9.9 µs | 0.2–2.2 ms | 4.6 ms |
+| 256 pages | tiger | 312 KB (7.4×) / 1080 KB (26×) | 0 | 5.3–5.9 µs | 45–64 µs | 0.9 ms |
+| 256 pages | coat of arms | 432 KB (4.5×) / 1264 KB (13×) | 0 | 5.8–6.3 µs | 75–87 µs | 4.7 ms |
+| 256 pages | world map | 1428 KB (2.4×) / 2272 KB (3.8×) | 0 | 5.8–6.3 µs | 49–55 µs | 3.5 ms |
+
+A typed edit journals about 19 bytes rather than 24, so the same budget flushes a fifth less often, and at 256 pages its 50,000 edits never fill the journal, which is why no move stalls for long there; the next one would fold a journal of a megabyte, as the XML schema's did.
+A median move costs 3.4 to 3.5 µs, against the XML schema's 2.8, which is the parsing and formatting of the attribute's value.
+
 **The budget trades a few long stalls for many short ones, and the short ones are the better deal for an editor.**
 A median move costs 2.8 µs at every budget: the move itself, recorded in the journal.
 With 256 pages, a move almost never meets a flush, but the one that does folds a journal of a megabyte and stalls for 50 to 65 ms, three or four frames; with 4 pages, one move in seven hundred meets a flush of a few pages, which takes one to two milliseconds and fits within a frame.
