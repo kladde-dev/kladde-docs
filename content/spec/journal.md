@@ -125,7 +125,17 @@ So a writer computes `head = zigzag((delta << 2) | kind)`, with `zigzag` as in [
 **The cursor is where the record before left off**: the end of what a `Write`, `Splice` or `Paste` put in place — `position` plus the bytes it inserted — and the end of the moved run at its destination, `to + length`, for a `Move`.
 It starts at 0 at the start of each epoch's journal, which is always replayed from its start, and carries over from one transaction to the next.
 
-**A `Write` of no bytes is reserved as the escape to a fifth kind of record**, since it changes nothing; a reader refuses it until a revision defines one.
+**A `Write` of no bytes is the escape to further kinds of record**, since it changes nothing: its head is followed by `escape:varint`, which says what record follows.
+
+```
+escaped := 0x00 0x00 escape:varint (seal) ; the head of a Write with delta 0,
+                                          ;   and its length 0
+seal    := page:varint                    ; escape 0
+```
+
+An escaped record must have delta 0, and leaves the cursor where it was.
+
+The only escape defined is 0, the [seal](#seals); a reader refuses any other until a revision defines it.
 
 Every position, `removed` count, `length` and `to` is below `2^48` ([bounds](span-table.md#bounds)), and a record's range must lie inside the sequence.
 A `Paste`'s `cut` must name a cut of its own journal that is not pasted yet; its length is the cut's.
@@ -135,6 +145,24 @@ Edits mostly land near the one before, so a delta from −16 to 15 fits in the h
 A jump across most of the sequence costs at most one byte more than an absolute position would, since zigzag adds one bit.
 A keystroke is then a `Splice` of four bytes — the head, nothing removed, a length of one, and the character — and a transaction of nine with its length and checksum.
 A `Move`'s `to` counts from its `from`, since restacking moves bytes a short way.
+
+### Seals
+
+**A seal ends its epoch's journal and names the page where the journal of the next epoch begins**, so that a flush can fold one journal while the application appends to the next.
+
+- A seal is a transaction of its own, holding the seal record and nothing else, and nothing follows it in its journal.
+- Its `page` is the first page of the next epoch's journal, chosen as any other journal page is: a reusable page, or a new page at the end of the file, never a page of the journal it ends.
+- From the moment the seal is appended, the next journal belongs to the world of every header whose journal leads to the seal, and [the reuse rule](durability.md#the-reuse-rule) protects its pages as it protects the journal itself.
+- The next journal is an ordinary journal of epoch `E + 1`: its CRC chain is salted with `E + 1`, its cursor starts at 0, and its cuts are its own.
+  The header that the flush folding journal `E` writes names the same page as its `journal_pointer`.
+
+A writer need not seal: a flush that folds its journal without one is as valid as ever, and the header it writes names the next journal, as before.
+
+*Why a seal.*
+Without one, the next journal exists only once the flush's header names it, so a transaction appended while a flush is in progress would belong to a journal that recovery cannot reach if the application crashes before that header is written, although the call that recorded it had returned.
+With a seal, recovery reaches the next journal through the journal it folds, whichever of the two headers governs.
+A writer can then let the application append while it folds, writes and syncs, on the caller's thread or another; whether it does is [its own choice](../impl/transactions-and-batches.md#a-flush-off-the-callers-thread), and the format is the same either way.
+The seal reuses the escape that a `Write` of no bytes was reserved for, so it costs no kind of its own.
 
 ### Framing
 
@@ -191,9 +219,10 @@ Each checksum field stores the CRC-32C of the chain input up to that field: a tr
 
 1. Read and validate the [header](file-format.md#header-pages), taking the CRC-valid slot with the highest epoch, and bulk-load its world.
 2. Walk the journal from the header's `journal_pointer`, feeding the chain as it goes: check each transaction's `crc` once its records have been read, and each trailer's `crc` before following its `next`.
-3. Stop at the first check that fails, or at a `journal_pointer` or `next` that points past the end of the file.
+3. At a complete transaction that is a [seal](#seals), continue the walk at the page it names, as the journal of the next epoch: the chain restarts, salted with that epoch, and so do the cursor and the cuts.
+4. Stop at the first check that fails, or at a `journal_pointer`, `next` or seal that points past the end of the file.
    The complete transactions before that point are the journal; whatever follows them is the torn tail.
-4. Replay the complete transactions in order.
+5. Replay the complete transactions in order.
 
 Replay is purely mechanical and involves no application code.
 
@@ -206,7 +235,7 @@ Each costs at most one flush or one page write per session.
 Appending would rewrite the page holding the recovered journal's end, and a power cut during that write can corrupt the transactions already on it.
 Those can be durable: when a crash loses header `E`, recovery lands on header `E − 1` and replays the journal of epoch `E`, which flush `E`'s `fsync` made durable — so damaging it would lose transactions that a completed flush had covered, which [Durability](durability.md#what-is-guaranteed) promises cannot happen.
 
-**A session's first flush writes the first page of the journal it names**, for which zeros suffice, unless that page lies past the end of the file.
+**A session's first flush writes the first page of the journal it names**, for which zeros suffice, unless that page lies past the end of the file; a flush that seals writes it before appending the seal.
 The epoch salt tells every journal apart except in one situation.
 When a crash loses header `E` after transactions were appended to the journal it named, recovery lands on header `E − 1`, and the recovering session's first flush issues epoch `E` again.
 If the page it named still held the lost journal's first transactions, they would validate — same epoch, same starting offset — although the session committing the header knows nothing of them; its later headers would describe states without them, and after a second lost header, recovery could replay stale transactions on top of a state they were never appended to.

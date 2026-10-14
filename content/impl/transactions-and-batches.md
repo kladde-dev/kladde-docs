@@ -223,12 +223,23 @@ An operation is the natural atomic unit, being the smallest thing an application
 
 ## A flush off the caller's thread
 
-**The automatic flush blocks the mutating call that triggers it until its `fsync` returns, and a flush on a thread of its own would not, but it needs a change to the journal.**
+**An automatic flush that sealed its journal may hand its `fsync` and its header write to a thread of their own, and the mutating call that triggered it then returns without waiting for the disk.**
 Folding a journal and writing a flush's pages take well under a millisecond for files of the sizes kladde is meant for, while the `fsync` takes milliseconds on an SSD and more on a slow disk, which an interactive application feels as a stall in the middle of a gesture.
-Handing the `fsync` and the header write to a thread of their own would end the stall, if the application could go on appending meanwhile; but transactions appended while the flush runs would go to the next journal, which only the flush's own header names, so an application crash before that header is written would lose them, although their calls had returned.
-A journal that could end in a seal naming where the next journal begins would close that gap, and recovery would follow the seal from either header.
+So the calling thread seals, folds, places and writes the pages as before, and a worker does what remains: the `fsync`, then the header write.
+The application goes on appending to the next journal meanwhile, which [the seal](../spec/journal.md#seals) makes reachable from either header, so an application crash before the header is written loses nothing that returned.
+Doing it is optional; the format requires only the seal, and a flush that runs entirely on the calling thread writes the same file.
 
-This is a possible improvement, pending experience with the idle flush of [flush triggers](#flush-triggers) in an interactive application; until then the flush runs on the calling thread.
+The worker shares nothing with the calling thread but the file, through a second handle to it, and one hand-over:
+
+- **The next flush waits for the worker before it seals**, and so do an explicit flush, before it returns, and closing the store.
+  One commit is in flight at a time.
+- **The pages the commit before freed become reusable only when the worker reports**, since its `fsync` is what retires the world that held them ([the reuse rule](../spec/durability.md#the-reuse-rule)); until then neither the next journal nor anything else may take them.
+- **A flush that cannot seal syncs on the calling thread**: without a seal, transactions appended during the `fsync` would belong to a journal only the unwritten header names.
+  A flush seals only where a reusable page can start the next journal, since a page added at the end of the file before the flush's own pages would keep the file from being truncated to them.
+- **A failure on the worker poisons the store** when it is reported, at the next flush or read that waits for it, as a failure on the calling thread would at once.
+
+An explicit `flush()` keeps its meaning — everything before it is durable when it returns — by waiting; only the flushes that mutations trigger run their commit off the calling thread.
+kladde-rs offers this behind an option, off by default, until the Inkscape demo has shown whether the idle flush of [flush triggers](#flush-triggers) already keeps the stall out of gestures.
 
 ## Open questions
 

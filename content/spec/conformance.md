@@ -98,5 +98,5 @@ No leak detector is needed: nothing in a file can be unreachable from the header
 
 - Should conformance be **versioned** — an implementation claiming "conforms to spec version N" — and can a level of partial conformance (say, read-only) be meaningful?
 - How are reserved features handled?
-  An implementation that encounters a reserved [primitive code](schema/type-descriptors.md#reserved-primitive-codes), an unassigned kind tag, or the journal's escape record must reject it rather than guess, but should that be a conformance requirement or a recommendation?
+  An implementation that encounters a reserved [primitive code](schema/type-descriptors.md#reserved-primitive-codes), an unassigned kind tag, or an undefined [escape](journal.md#records) in the journal must reject it rather than guess, but should that be a conformance requirement or a recommendation?
 - Should the suite mandate a minimum level of tooling support, so that every implementation ships something that can dump a file?
