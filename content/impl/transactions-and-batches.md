@@ -236,7 +236,10 @@ The worker shares nothing with the calling thread but the file, through a second
 - **The pages the commit before freed become reusable only when the worker reports**, since its `fsync` is what retires the world that held them ([the reuse rule](../spec/durability.md#the-reuse-rule)); until then neither the next journal nor anything else may take them.
 - **A flush that cannot seal syncs on the calling thread**: without a seal, transactions appended during the `fsync` would belong to a journal only the unwritten header names.
   A flush seals only where a reusable page can start the next journal, since a page added at the end of the file before the flush's own pages would keep the file from being truncated to them.
-- **A failure on the worker poisons the store** when it is reported, at the next flush or read that waits for it, as a failure on the calling thread would at once.
+- **A failure on the worker poisons the store** when it is reported, at the next flush that waits for it, as a failure on the calling thread would at once.
+  Reads do not wait: the pages they read are in the file already, synced or not.
+  A failure reported only as the store is dropped has nobody left to tell, and is lost, which is no worse than a power cut at that moment.
+- **A session's first sealing flush syncs the page it seals to before appending the seal**, [as the specification requires](../spec/journal.md#the-start-of-a-session); that one extra `fsync` per session runs on the calling thread.
 
 An explicit `flush()` keeps its meaning — everything before it is durable when it returns — by waiting; only the flushes that mutations trigger run their commit off the calling thread.
 kladde-rs offers this behind an option, off by default, until the Inkscape demo has shown whether the idle flush of [flush triggers](#flush-triggers) already keeps the stall out of gestures.

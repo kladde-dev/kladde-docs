@@ -113,7 +113,7 @@ Flush `E` then proceeds:
 
 No further `fsync` is required, and flush `E + 1` may begin immediately: step 7 already made state `E` recoverable, so nothing waits for the header write of step 8 to become durable.
 
-**A flush may seal its journal first**: before step 1 it chooses the start page of the journal of epoch `E + 1` (step 6, moved forward), writes it if it is a session's first flush, and appends a [seal](journal.md#seals) naming it to journal `E`.
+**A flush may seal its journal first**: before step 1 it chooses the start page of the journal of epoch `E + 1` (step 6, moved forward), writes it if it is a session's first flush, followed by an `fsync` ([why](journal.md#the-start-of-a-session)), and appends a [seal](journal.md#seals) naming it to journal `E`.
 Steps 1–8 then fold journal `E` up to the seal, while new transactions are appended to journal `E + 1`; the pages of journal `E + 1` and the pages steps 2–5 write are disjoint, since both come from the reusable pages and each takes its own.
 Invariant I1 is unchanged: the header names journal `E + 1`, which the `fsync` of step 7 need not cover, and recovery from header `E − 1` reaches it through the seal, so a transaction appended to it survives a crash of the application whichever header governs.
 Flush `E + 1` begins only once step 8 of flush `E` is done.

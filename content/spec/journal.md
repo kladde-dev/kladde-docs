@@ -235,7 +235,8 @@ Each costs at most one flush or one page write per session.
 Appending would rewrite the page holding the recovered journal's end, and a power cut during that write can corrupt the transactions already on it.
 Those can be durable: when a crash loses header `E`, recovery lands on header `E − 1` and replays the journal of epoch `E`, which flush `E`'s `fsync` made durable — so damaging it would lose transactions that a completed flush had covered, which [Durability](durability.md#what-is-guaranteed) promises cannot happen.
 
-**A session's first flush writes the first page of the journal it names**, for which zeros suffice, unless that page lies past the end of the file; a flush that seals writes it before appending the seal.
+**A session's first flush writes the first page of the journal it names**, for which zeros suffice, unless that page lies past the end of the file; a flush that seals writes it, and makes the write durable with an `fsync`, before it appends the seal.
+The `fsync` is what the seal needs and the header does not: a header is written only after an `fsync` that covers the zeros, but a seal is appended with nothing in between, so a power cut could keep the seal and lose the zeros, and the lost journal on the page would validate after the seal.
 The epoch salt tells every journal apart except in one situation.
 When a crash loses header `E` after transactions were appended to the journal it named, recovery lands on header `E − 1`, and the recovering session's first flush issues epoch `E` again.
 If the page it named still held the lost journal's first transactions, they would validate — same epoch, same starting offset — although the session committing the header knows nothing of them; its later headers would describe states without them, and after a second lost header, recovery could replay stale transactions on top of a state they were never appended to.
