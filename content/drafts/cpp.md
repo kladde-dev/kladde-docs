@@ -178,6 +178,8 @@ Lifetimes have no counterpart in C++, and non-type parameters can simply be allo
 **Standard types are durable wherever the in-memory value needs nothing that a standard type cannot hold**, and kladde's own containers take over where it does.
 Rust refuses `String` and `Vec` to make durability visible in the type; in C++ the handle, `Mut<std::string>`, is a type of its own whatever the value is, so the plain type costs nothing in clarity and lets existing types persist unchanged.
 
+@Claude: the rust API has grown over many iterations with vastly different designs of kladde. An earlier design of kladde made it impossible to use `String`, `Vec`, or `HashMap` directly in a durable struct, which motivated the dedicated types `DurableString`, `DurableVec`, `DurableHashMap`, and possibly others back then. But I'm not sure if these dedicated types are still necessary in today's design of kladde. Which of the `Durable` types that kladde-rs defines are still necessary and which could be replaced with their standard rust types without cost?
+
 | C++ | kind | note |
 | --- | --- | --- |
 | `std::uint8_t` … `std::uint64_t`, `std::int8_t` … `std::int64_t` | Primitive | matched by width and signedness, so `long` maps to whichever it is |
@@ -201,6 +203,8 @@ A `std::vector` of variable-size elements is refused at compile time with a mess
 **`Mut<std::string>::set` splices only what changed**: it finds the common prefix and suffix of the old and the new text, which costs one pass over memory the application has just written, and records one splice of the middle.
 Code that sets a whole string at every change, such as code that writes a path's whole `d` attribute for every step of a dragged control point, then records a few bytes rather than the whole attribute, without having to be rewritten in terms of edits.
 This belongs in every implementation's text type and is worth proposing for [the built-in containers](../impl/values.md#the-built-in-containers).
+
+**Decision:** yes, state this as a guarantee in the spec for `Text` and `Blob`. More precisely, the guarantee should be that setting them to a new whole value should result in records that edit at most the smallest subrange that contains all changes (there's probably a more eloquent way to phrase this). Whether an implementation goes further and tries to detect if the changes are limited to multiple subranges that are far enough apart to justify more complicated optimizations is up to the implementation, but the spec should guarantee an optimization for the common case where some substring of a larger string (or `Blob`) has changed and the application author is simply too lazy to call the appropriate splice method and instead resets the whole string.
 
 ## Enums
 
@@ -297,9 +301,10 @@ For a derived class's members, `s.as<Circle>()` returns a `Mut<Circle>` if the s
 | shared fields | — | repeated in each alternative | in the base, and writable without dispatch |
 | suits | flags and choices | small closed sets of values, new code | existing object-oriented code, and open-ended sets of kinds |
 
-**Both deserve first-class support**, since they serve different code rather than different tastes.
+**All three deserve first-class support**, since they serve different code rather than different tastes.
 New code with a handful of small alternatives is better off with `std::variant`, which keeps values inline and visits them exhaustively; code that already has a hierarchy — Inkscape's `SPObject` and its dozens of subclasses — needs the hierarchy, and could not reasonably be rewritten into variants.
 The hierarchy is also the only form in which shared fields are written without dispatch, which a document model with many kinds of element and many common attributes uses constantly.
+And for mere flags, an `enum class` is often still the simplest choice.
 
 ## Handles: where a value lies
 
@@ -321,12 +326,15 @@ Inkscape holds `Inkscape::XML::Node*` everywhere — in the selection, in tools,
 
 **`kladde::List<T>` keeps its elements at stable addresses, and each element knows its parent and where it stands among its siblings.**
 A `kladde::Ref<T>` to an element is then valid until that element is removed, as an iterator of `std::list` is, and computes its start when it writes by climbing from the element to the root: at each level, the element's offset among its siblings, from an order-statistics tree over the siblings' sizes in which each element can find its own rank, plus the offset of the list in its parent.
+@Claude: is there a specific reason you chose an order-statistics tree here over a Fenwick tree? Would a Fenwick tree not work here or does it have an unfavorable trade-off concerning memory or runtime?
 That is `O(depth · log m)` per write, the cost of [guards made together](../impl/values.md#guards-made-together) at every level, and a change of size updates the same path back up.
 It costs a parent link and a node in the siblings' tree per element, 24 to 40 bytes, which a document tree whose elements each hold a name, attributes and children affords.
 
 So `kladde::Vector` and `kladde::List` differ the way `std::vector` and `std::list` do — compact, or stable — and an application chooses per container.
 
 ## Errors, transactions and exception safety
+
+@Claude: The statement in the specification that a C++ implementation of kladde should use exceptions was not based on any deep argument and shouldn't be taken as a law. I haven't been involved in any large C++ code bases for almost 20 years, so I'm not up to date about the state of exceptions in C++, neither in terms of technical changes nor in terms of community acceptance. I remember that some experts used to advise against the use of exceptions, or even against enabling exceptions in the compiler. Has the advice changed since? And is there a consensus in the community on how to do error handling in C++? What to popular code bases like chromium, llvm, react-native, llama.cpp (or others that might be more trend setting) use?
 
 **Errors are exceptions**, as the specification already says of C++: a `kladde::Error` hierarchy, with a failed `fsync` [poisoning](../spec/durability.md#fsync-failure-is-fatal) the `File`, so that every later call throws until it is reopened.
 Applications built without exceptions are an open question.
@@ -358,6 +366,7 @@ Two remedies need nothing new:
 
 - **Flush when the application is idle**: `file.flush()` from an idle callback, which an event loop offers, keeps the journal short, so the automatic flush rarely fires mid-gesture.
   kladde-cpp can offer the policy, `file.flush_if_journal_exceeds(fraction)`, and leave the scheduling to the application's loop.
+  @Claude: explain: is the idea to add a method `flush_if_journal_exceeds` on `kladde::File<T>` that flushes if the journal is filled up to at least the given fraction? And does inkscape already have an idle loop where this method could be called?
 - **A generous budget**, so that a gesture fits in the journal however long it lasts.
 
 A flush on a background thread is a different matter: mutations appended while it runs would belong to the next journal, and an application crash before the flush's header is written would lose them although their calls had returned.
@@ -401,6 +410,7 @@ Inkscape's undo steps (`DocumentUndo::done`) are natural batch boundaries.
 The fork's schema is its own, and free to follow Inkscape's needs rather than any other program's.
 
 **A typed SVG schema is the showcase that should follow**, with Inkscape's element classes as a hierarchy and attributes as typed fields, but it touches much more of Inkscape, and the XML schema already delivers the demo: no save button, and nothing lost to a crash.
+@Claude: I'd like to have this eventually, so that I can compare file sizes, memory usage, and run times in the XML-based and the typed schema. But I agree that the XML-based schema should go first. Implement the typed SVG schema once you're done with the XML-based schema, and implement it on a new branch `typed` in `inkscape-kladde`.
 
 ## Changes to the specification
 
@@ -420,9 +430,12 @@ And every language with tagged unions of one value — Swift's enums with associ
 
 *What it costs.*
 The [canonical encoding](../spec/schema/canonical-encoding.md#descriptor-encoding) of an Enum writes `reference(payload) + 1`, or `0` for none, in place of `varint(field_count)` and the fields; [the fingerprint](../spec/schema/fingerprints.md#the-computation-exactly) follows, and the vector for `List` changes, since `Cons` then holds a Struct of `"0"` and `"1"`.
+@Claude: I didn't understand the last part about the vector for `List`. Explain in more detail.
 No value's encoding changes, and the [fixed form](../spec/schema/type-descriptors.md#encodings) of an Enum is the payload's fixed form instead of its fields', which is the same bytes.
 kladde-rs's derive describes a struct variant as a Struct and a one-field tuple variant by its field's type.
 Files of today stop opening, which a pre-stable format [allows](../spec/file-format.md#header-pages).
+
+@Claude: I like this proposal. One detail: I'm unsure whether variants should have *at most* one value or *always* one value (giving valueless variants a payload of type `()`). Briefly discuss the trade-off.
 
 ### Maps as a kind of their own
 
@@ -448,6 +461,8 @@ The flush's work moves to its thread, and the mutating call waits only when jour
 This is not a matter of C++, but of the applications kladde-cpp is for: a document editor wants durability at every keystroke and a frame every few milliseconds.
 It should be measured in the Inkscape demo before it is adopted; idle-time flushing may turn out to be enough.
 
+@Claude: would this proposal require making all of kladde thread save, i.e., add locks or synchronization primitives where necessary, and test for race conditions? If so, how intrusive would that change be? Or would a kladde implementation that can be reasonably used in inkscape have to be thread save anyway?
+
 ### Cuts that outlive their transaction
 
 **Proposed: a removed value may be kept as a cut until the session ends, in a fourth chain that the header names, so that inserting it again, in any later transaction, is a paste rather than a second encoding.**
@@ -458,6 +473,17 @@ Without it, undoing the deletion of a large group writes all of the group's byte
 It costs what the deferral listed: records that name a chain, the fourth chain in the header, and a rule for cuts nobody pastes — a splice in the cut chain when the in-memory value is destroyed, and the whole chain cleared by a session's first flush, since no value of an earlier session can name a cut.
 Whether it pays depends on how large the values are that Inkscape inserts again, which the demo can count before anything changes.
 
+@Claude: help me think about the design of this in a bit more detail before I commit to a decison.
+My main objection is that I want a deletion of many items from a document or drawing to actually show up as a reduction in file size within a reasonably short time frame because I think that's what users expect. Therefore, keeping the whole undo buffer on file seems dangerous.
+- Could we bound the capacity of this "side chain" by evicting old cuts?
+  Could such a bound be implemented on the application layer (if we maybe give it some way to query encoding length of objects) or would it have to live in the store layer?
+- Alternatively: instead of putting cuts on a durable side chain, could we turn them into some kind of "weak" pointers that stay alive as long as the corresponding spans still happen to be accessible somehow?
+  For example, we could guarantee that cuts that haven't been pasted anywhere stay alive at least until the next flush.
+  Flushes never happen within a transaction, so cut and paste within a transaction remains to always be possible, but across transactions they might require re-encoding.
+  When pasting a cut, we would have to check somehow if the cut is still alive (a first implementation could make a conservative check and consider cuts to be still alive if they're from the current epoch, but a future implementation could also allow older cuts if their spans happen to still be alive).
+  If a cut is still alive, it can be pasted cheaply; if not, it gets re-encoded.
+  It's probably a bit more complicated than this since the transaction in which the `paste` record sits could trigger a flush before it gets written to a journal page, which might then invalidate the cut, and whether or not the `paste`'s transaction triggers a flush can't be known for sure at the time the `paste` record is issued.
+
 ### Smaller points
 
 - **The rationale for SHA-256 says that it is "present in every mainstream language's standard library"**, which is not true of C or C++.
@@ -465,6 +491,7 @@ Whether it pays depends on how large the values are that Inkscape inserts again,
 - **No change is needed for class hierarchies.**
   Flattening a class and its bases into one struct, bases first, is a convention of kladde-cpp, and a descriptor for "a struct that extends another" would describe the C++ source rather than the bytes, against [the guiding principle](../spec/schema/index.md#the-guiding-principle).
 - **No change is needed for C++ strings either**, although `std::string` holds bytes of any kind and the specification requires UTF-8: a handle validates the bytes it inserts, which costs a pass over what it writes anyway.
+  @Claude: we could relax the rules about string encoding a bit if this helps. The one rule we need is that kladde uses `0xFF` as the string terminator, so a C++ implementation has to deny strings that contain `0xFF`. How realistic is it for `0xFF` to appear in a string in an app that uses either a different string encoding or that claims to use utf8 but doesn't enforce it as strictly as rust?
 
 ## Building, packaging and testing
 
@@ -496,8 +523,10 @@ Consolidation comes late on purpose: a store that never consolidates is [conform
 - **Long-lived references in the reference algorithms.**
   [Values and their positions](../impl/values.md) describes handles that live as long as a guard; `kladde::List` adds a form that lives as long as its element.
   Is it a C++ matter, or does every language without a borrow checker — Python, Java — need the same, so that it belongs in Implementation?
+  **Decision:** I think it belongs in Implementation.
 - **The minimal splice of `set`** for text, and perhaps for any value whose encoding is long and changes little: worth stating in [the built-in containers](../impl/values.md#the-built-in-containers)?
 - **Builds without exceptions.**
   Some applications and platforms disable them; a parallel API returning `std::expected` would double the surface, and aborting on error would serve no one well.
 - **Debug checking of handles**: is a stack of live handles cheap enough to keep on in the test builds of applications, or only in kladde-cpp's own?
 - **The name of the handle**: `Mut<T>` is short and says what it is for, but reads oddly to C++ programmers who have not met Rust; `Edit<T>` or `Handle<T>` are the alternatives.
+  @Claude: the name `Guard` in kladde-rs is historic. The name `Mut` was considered as an alternative when guards were first introduced, but discarded. I don't remember anymore whether the arguments against `Mut` were based on parts of the kladde design that have since gone. Would it make sense to rename `Guard` to `Mut` in kladde-rs at this point? It might lead to some confusion given that I think guards hold a shared reference (i.e., *not* a `&mut`) to the backend or store via a `RefCell` (correct me if I'm wrong here). What are the arguments for and against renaming `Guard` to `Mut` in kladde-rs?
