@@ -2,8 +2,8 @@
 title: A C++ implementation
 ---
 
-**Status: a proposal for the high-level design of kladde-cpp.**
-Nothing here is built.
+**Status: the design of kladde-cpp, now built.**
+[kladde-cpp](../cpp/) records it as built, with the places where building it went another way, and [Porting kladde to C++ and into Inkscape](../evaluation/cpp-port.md) what building it found; the decisions below are settled, and kept for their reasoning.
 It answers two questions that were open from the start — what stands in for Rust's `#[derive(Durable)]`, and how C++ types map to the schema's enums — and raises a third that turned out to matter as much: how long a handle to a value may live.
 
 The specification is not frozen, and finding out what a second language needs from it is half the point of a second implementation.

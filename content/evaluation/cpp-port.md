@@ -160,7 +160,7 @@ The port read kladde-rs's store line by line, and found five things that are wro
 - **A cut that escapes a transaction rolled back by `Store::atomically` can paste another record's bytes.**
 - **`TypeTable::fixed_size` shared one memo between plain sizes and fixed forms**, so a type met inside a `Fixed` and outside one got one size for both; fixed in `d19a613`.
 - **The first version of [the seal](../spec/journal.md#seals) could replay a lost journal after a power cut**, since the page it named was cleared without an `fsync` before the seal was appended; porting it found this, and both implementations and the specification now sync first.
-- **An append copied the journal's list of cuts**, making a journal quadratic in its length, as [the measurements](#measurements) found.
+- **An append copied the journal's list of cuts**, making a journal quadratic in its length, as [the measurements](#measurements) found; fixing it took kladde-rs's `svg-bench` from 136,000 to 330,000 edits a second on the tiger, and from 90,000 to 238,000 on the coat of arms.
 
 And it confirmed one already known: ⚠️ a file whose span table outgrows the header's references to leaves, at some two million spans, no longer opens, in kladde-rs and in kladde-cpp alike.
 

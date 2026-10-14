@@ -52,7 +52,7 @@ The store and the schema are compiled into `kladde::kladde`; the typed layer is 
 | `std::array<T, N>` | Array | `at(i)` |
 | `std::optional<T>` | Enum `Option` | `emplace`, `reset`, `value()` |
 | `std::vector<T>` for fixed-size `T` | Sequence | `at`, `insert`, `push_back`, `erase`, `pop_back`, `clear` |
-| `std::variant<…>` | Enum | `set`, `visit`, `if_holds<A>` |
+| `std::variant<…>` | Enum, named with `KLADDE_VARIANT` or `KLADDE_VARIANT_NAMED` | `set`, `visit`, `if_holds<A>` |
 | `enum class` with `KLADDE_ENUM` | Enum of unit variants | `set` |
 | structs with `KLADDE_STRUCT` | Struct | an accessor per field, `at<&T::m>()`, `parts()` |
 | structs with `KLADDE_TRANSPARENT` | as their one member | the member's |
@@ -64,6 +64,9 @@ The store and the schema are compiled into `kladde::kladde`; the typed layer is 
 
 **Text must be UTF-8.**
 A `std::string` used as a byte buffer — file contents, a serialized message, a binary identifier — is not text, and storing one fails; hold bytes in a `std::vector<std::uint8_t>`, a Sequence of `u8`.
+
+**A `std::variant`'s variants are named after its alternatives' types**, and its discriminants are their indices, unless `KLADDE_VARIANT(V, "Name", 1, 2, …)` pins the discriminants or `KLADDE_VARIANT_NAMED(V, "Name", (0, "Circle"), (1, "Poly"), …)` also names the variants.
+Variant names are part of a type's fingerprint, so a program that shares files with one written in another language names them as that program does: Rust's `Poly(Vec<Point>)` is held in C++ as a `std::vector<Point>`, which would otherwise be named after its type.
 
 A `std::vector` of elements whose size depends on their value fails to compile, with a message that names `kladde::Vector`: it is the one place where the plain type would quietly cost what kladde exists to avoid.
 
@@ -82,6 +85,14 @@ The list finds its own offset inside that value by walking the value's fields to
 
 **A mutation or a flush fails only when the disk does**, and the file is then poisoned.
 With exceptions, the call throws `kladde::exception`; without, it calls the handler that `kladde::set_error_handler` installs and returns, leaving the value as it was, since memory changes only after the store recorded the change.
+
+## Flushing
+
+Flushes happen by themselves as the journal fills, and on `flush()` and `close()`.
+An interactive application calls `file.flush_if_journal_exceeds(0.5)` from its idle callback, so that a flush, and its `fsync`, falls between gestures; the Inkscape demo does so from a low-priority `Glib::signal_idle` handler after each change.
+As in kladde-rs, a flush [seals](../spec/journal.md#seals) the journal it folds where a reusable page can start the next one, and `Options::sync_on_worker` lets a flush that a mutation triggered run its `fsync` and header write on a `std::thread` of their own, [as Transactions and batches describes](../impl/transactions-and-batches.md#a-flush-off-the-callers-thread); it is off by default.
+
+## Inside the library
 
 Inside the library, every fallible function returns an `expected`, and `KLADDE_TRY` propagates it as Rust's `?` does, so the port of the store follows kladde-rs line by line.
 
