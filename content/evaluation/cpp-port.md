@@ -145,6 +145,56 @@ The journal's budget, 256 pages or 1 MiB, lets a journal grow to fifteen times t
 Files of 50 KB to 10 MB are what kladde is meant for, so this is the regime it must serve well, and it argues for the open question of [Transactions and batches](../impl/transactions-and-batches.md#open-questions): a budget that scales with the file, or a flush when the journal outgrows the sequence it describes, rather than a fixed one.
 The idle flush does not help here, as its threshold is a share of the same budget.
 
+### A typed SVG schema
+
+**Typing the attributes makes the encoding 34 to 45% smaller and an edit's journal a fifth smaller, at 1.5 to 1.8 times the XML schema's memory and twice its import time.**
+inkscape-kladde's branch `typed` keeps each element's attributes as one ordered list of entries, each a typed value — lengths, paints, colors with their written form, transform lists, path data with its layout, points, style declarations, decimal numbers — or the attribute's text, where formatting the typed value would not reproduce Inkscape's text byte for byte; 98.9 to 99.8% of the drawings' attributes end up typed.
+
+| | tiger | coat of arms | world map |
+| --- | --- | --- | --- |
+| encoding, XML / typed | 64 / 42 KB | 172 / 96 KB | 1071 / 594 KB |
+| backing's heap, XML / typed | 0.42 / 0.64 MB | 0.78 / 1.15 MB | 2.8 / 5.2 MB |
+| journal per edit, XML / typed | 23 / 19 B | 25 / 20 B | 24 / 19 B |
+
+Per edit, the two cost the same within the noise of the machine.
+**What the typed schema needed, beyond the XML one, says more than its numbers**:
+
+- **An existing application's formatting must be stored as data.**
+  kladde-svg normalizes what it parses, and would have lost nearly everything Inkscape writes; reproducing it took decimal numbers rather than floats, a color's written form, a transform's optional arguments, and how a path's text separates its numbers — and Inkscape's own `10e-4` and `-0` still fall back to text.
+- **A `Mut`'s whole-value `set` records the whole encoding**, where `std::string`'s records only the changed middle, so changing one number of a long path rewrote the path; the branch diffs the encodings itself, and kladde-cpp should offer it for every type, as [the specification guarantees](../spec/index.md) for Text and Opaque.
+- **A `std::variant` with many alternatives of one type** — `x`, `y`, `width` and twenty more are all lengths — cannot be reached through `if_holds<A>`, which needs an index-based form, and its names must be written out alike.
+- **A `std::vector` of varint numbers is refused**, since they are not fixed-size, so short lists that are only ever replaced whole carry a `kladde::Vector`'s index.
+- **Adding a typed attribute changes the root fingerprint**, so that files written before no longer open; growing a typed schema over time needs [evolution](../spec/schema/evolution.md), which neither implementation has yet.
+- **Under the observer, a typed copy is a third copy of the document**, beside Inkscape's XML strings and its objects; a typed schema pays off fully only where it replaces the application's own model, which in Inkscape would mean rewriting its object layer.
+
+### The journal's budget
+
+**A budget of 4 pages keeps the drawings' files within 1.1 to 3.7 times their live size, where the default of 256 pages lets them reach 2.3 to 20 times; it costs a flush of one to two milliseconds every 700 edits, and 2 to 3 µs more per edit on average.**
+A budget of 1 page gains little more in size, and flushes four times as often.
+The runs below are the benchmark above with `KLADDE_JOURNAL_BUDGET_PAGES` set, on inkscape-kladde's branch `journal-budget`; the live size is the document's encoding, and the latencies are those of each single move of a drag, which in the benchmark includes any flush the move triggers, since nothing flushes at idle there.
+
+| budget | drawing (live) | closed file after 10,000 / 50,000 edits | flushes per 10,000 edits | mean edit | drag move, 99.9th percentile | slowest move |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 page | tiger (64 KB) | 156 KB (2.4×) / 208 KB (3.3×) | 58 | 9.8–11.6 µs | 1.0 ms | 23 ms |
+| 1 page | coat of arms (172 KB) | 328 KB (1.9×) / 440 KB (2.6×) | 61 | 10.0–10.6 µs | 1.0 ms | 4.7 ms |
+| 1 page | world map (1071 KB) | 1276 KB (1.2×) / 1536 KB (1.4×) | 59 | 11.0–11.7 µs | 1.1 ms | 5.6 ms |
+| 4 pages | tiger | 164 KB (2.6×) / 236 KB (3.7×) | 14 | 6.7–10.1 µs | 1.4–2.1 ms | 3.2 ms |
+| 4 pages | coat of arms | 292 KB (1.7×) / 484 KB (2.8×) | 15 | 7.6–7.9 µs | 1.6 ms | 4.5 ms |
+| 4 pages | world map | 1188 KB (1.1×) / 1536 KB (1.4×) | 14 | 8.2–9.1 µs | 1.3–2.1 ms | 5.6 ms |
+| 256 pages | tiger | 408 KB (6.4×) / 1276 KB (20×) | 0 (1 in 50,000) | 4.3–6.4 µs | 46–61 µs | 50 ms |
+| 256 pages | coat of arms | 664 KB (3.9×) / 1564 KB (9.1×) | 0 (1 in 50,000) | 4.8–5.8 µs | 42–43 µs | 48 ms |
+| 256 pages | world map | 2172 KB (2.0×) / 2480 KB (2.3×) | 0 (1 in 50,000) | 5.2–6.5 µs | 46–51 µs | 65 ms |
+
+**The budget trades a few long stalls for many short ones, and the short ones are the better deal for an editor.**
+A median move costs 2.8 µs at every budget: the move itself, recorded in the journal.
+With 256 pages, a move almost never meets a flush, but the one that does folds a journal of a megabyte and stalls for 50 to 65 ms, three or four frames; with 4 pages, one move in seven hundred meets a flush of a few pages, which takes one to two milliseconds and fits within a frame.
+The flushes here run inside the moves because the benchmark has no idle time; in the GUI, the idle flush moves most of them between gestures, and does so better the smaller the journal it has to fold.
+The times come from a disk whose `fsync` is fast; on a slow disk, every flush costs more, and the small budget's frequent flushes cost proportionally more than its few large ones save, which is the case for [the commit on a worker thread](../impl/transactions-and-batches.md#a-flush-off-the-callers-thread).
+
+**What it argues for: a budget that follows the file, not a fixed one.**
+256 pages suit a file of tens of megabytes, whose fold of a megabyte is small beside it; for the files kladde is meant for, a budget of a few pages, or a share of the live size with a floor of a few pages, keeps the file within a few times its content and every flush within a frame.
+This answers, for these workloads, [the open question](../impl/transactions-and-batches.md#open-questions) of whether the budget is fixed or scales with the file; the defaults of kladde-rs and kladde-cpp have not been changed yet.
+
 **Opening a kladde file takes as long as parsing the SVG**: 23 to 27 ms for the tiger against 16 to 22 ms to parse it, and 113 to 176 ms for the world map against 138 to 144 ms; the time goes to building Inkscape's document from the tree, as from a parsed SVG.
 
 **In the GUI, under a virtual display**, opening `tiger.svg` created `tiger.kladde` beside it and left the SVG as it was; flipping and rotating the whole drawing through Inkscape's actions, then killing Inkscape without saving, left a file that the command line exports with the flip and the rotation in place.
