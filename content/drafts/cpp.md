@@ -191,6 +191,8 @@ Rust refuses `String` and `Vec` to make durability visible in the type; in C++ t
 - **`DurableBlob` is necessary as an opt-in**: `impl<T: Serialize> Durable for T` would conflict with every other implementation, so a serde type needs a wrapper to say "persist me through serde"; it is also where the serialized bytes are cached.
 - `Option`, `Box`, tuples and the primitives are already the standard types, and `Fixed<T>` is a choice of encoding that only a type can carry.
 
+**Decision:** remove `DurableString`; implement `Durable` for `Vec<T>` where `T: Durable` with a const assertion that `T::FIXED_SIZE.is_some()`. Update the documentation and any examples in the tutorial, if applicable. `DurableVec<T>` stays and should work on all `T: Durable`, even fixed-sized ones. For fixed-size `T` it should not allocate a Fenwick tree (but it still has the field for the empty Fenwick tree).
+
 So kladde-rs could follow the C++ table: `String` for text, `Vec<T>` for fixed-size elements, and a dedicated vector for variable-size ones.
 
 | C++ | kind | note |
@@ -224,6 +226,8 @@ The guarantee holds as you state it for Text, which has no count: one splice of 
 A blob is an [Opaque](../spec/schema/type-descriptors.md#opaque) without a fixed size, whose encoding starts with its length, so a blob whose length changes changes its first bytes as well, and the smallest range holding every change would then reach from the length to the last change — possibly the whole blob.
 So for anything with a length prefix the guarantee should be stated per part: the length is rewritten on its own, and the payload is spliced in the smallest range that holds its changes, which is two records in one transaction.
 The natural home is the specification's [guarantees an implementation must provide](../spec/index.md#guarantees-an-implementation-must-provide), beside the asymptotic complexity it already promises; I have not written it there yet, since the blob refinement is yours to accept.
+
+@Claude: agreed, with one nit-pick: the phrasing shouldn't make it necessary to set the length on its own. If a blob changes at its start, an implementation may decide to write the length prefix and the changed content in one go.
 
 ## Enums
 
@@ -391,6 +395,8 @@ Its failures come in two kinds, which deserve different mechanisms:
 
 The specification's "in C++ by throwing" should then say only that the implementation reports the failure and refuses further work.
 
+**Decision:** I agree with your suggestion for error handling in kladde-cpp.
+
 **Errors are exceptions**, as the specification already says of C++: a `kladde::Error` hierarchy, with a failed `fsync` [poisoning](../spec/durability.md#fsync-failure-is-fatal) the `File`, so that every later call throws until it is reopened.
 Applications built without exceptions are an open question.
 
@@ -432,6 +438,8 @@ Two remedies need nothing new:
 
 A flush on a background thread is a different matter: mutations appended while it runs would belong to the next journal, and an application crash before the flush's header is written would lose them although their calls had returned.
 That needs a change to the journal, which [is proposed below](#a-flush-off-the-callers-thread), and then removes the stall altogether.
+
+**Decision:** go with the flush when the application is idle. Document the flush on the background thread as a possible improvement, pending experience with the demo app.
 
 ## Files and platforms
 
@@ -530,6 +538,8 @@ Files of today stop opening, which a pre-stable format [allows](../spec/file-for
   The hash input of each valueless variant grows by a token of 17 bytes, which no one will measure.
 - **What *at most* one would have bought**: an `enum class` described without an extra descriptor, and nothing else.
 
+**Decision:** adopt this change, with the *always* one value refinement.
+
 ### Maps as a kind of their own
 
 **Proposed: a descriptor kind Map, with a key type and a value type, whose encoding is that of a Sequence of entries, each its key's encoding and then its value's.**
@@ -573,6 +583,8 @@ Appending to journal `E + 1` while the worker syncs needs nothing at all: `pwrit
 One mutex, one condition variable, a worker thread, and a commit step that runs when the worker reports, all inside the store; the typed layer does not change.
 It is tested by ThreadSanitizer, and by the in-memory storage simulating a crash at every point of the interleaving, which the store's crash tests do already for one thread.
 Moving the fold and the writing to the worker as well would be more intrusive — the span table, the rope and the page table would then be the worker's during a flush, and journal appends would share the page pool with it — and is not needed while the `fsync` dominates.
+
+**Decision:** implement the flush in the idle loop first. Make the change that flushes in a separate thread (and its change to the specification of the journal) in separate commits to kladde-docs, kladde-rs, and kladde-cpp. The spec should make it optional to actually use separate threads. Only the journal seal should be normative.
 
 ### Cuts that outlive their transaction
 
@@ -624,6 +636,8 @@ Bounding it would then be the store's job, since only the store knows which byte
 The application would need no lengths for this either, only the budget as an option.
 Whether it is worth a fourth chain depends on how often Inkscape inserts a node again after a flush, which the demo can count once weak cuts exist.
 
+**Decision:** go with your formulation of "Cuts that live as long as their journal".
+
 ### Smaller points
 
 - **The rationale for SHA-256 says that it is "present in every mainstream language's standard library"**, which is not true of C or C++.
@@ -642,6 +656,8 @@ Whether it is worth a fourth chain depends on how often Inkscape inserts a node 
 
   Relaxing Text to "any bytes but `0xFF`" would save C++ little, since validating the bytes a handle inserts runs at several gigabytes a second (the simdutf library, or a plain loop for short edits), and it would cost every other reader: Rust's `String`, Python's `str` and a tool's JSON export all need UTF-8, and would have to validate at open or fail there.
   Applications with genuinely binary or foreign-encoded strings are better served by a byte type that says so — a Sequence of `u8`, or a Bytes kind if editing them in place should cost one splice as text does.
+
+**Decision:** I agree, `Text` should stay to require UTF-8. The API documentation of kladde-cpp should warn users that they must use `std::string` in kladde only for UTF-8 text, not as a byte buffer, and should point them to the appropriate type to use for byte buffers in kladde (presumably `std::vector<std::uint8_t>`).
 
 ## Building, packaging and testing
 
@@ -695,3 +711,5 @@ Consolidation comes late on purpose: a store that never consolidates is [conform
     And a trait called `Mut` alone would say little, which is why the per-type names matter.
 
   Nothing I can find in the documents explains why `Mut` was discarded before, so I cannot tell whether the reason still holds.
+
+**Decision:** rename `TGuard` to `TMut` (and associated types `Guard` to `Mut`, etc.) in kladde-rs and in kladde-docs. Use the name `Mut` in kladde-cpp too, even if it is foreign to C++. It's short, pretty self-explanatory, and avoids a needless deviation between the rust and C++ API.
