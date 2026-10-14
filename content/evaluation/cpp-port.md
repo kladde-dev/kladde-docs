@@ -8,7 +8,7 @@ What a second implementation, [kladde-cpp](../cpp/), and its first application, 
 The obstacles were elsewhere.
 The specification was silent on a dozen points where two implementers could each be right and disagree, which the port turned into rules; C++ cannot enforce the exclusive access that Rust's handles rely on, so the C++ handles carry rules the compiler does not check; and Inkscape needed long-lived handles and a way to observe its document rather than replace it, both of which kladde-cpp now has.
 
-The commits measured are kladde-rs `9fa1989` on its branch `cpp`, kladde-cpp `d3214c0`, and inkscape-kladde as of this page's commit; the commands are at the end.
+The commits measured are kladde-rs `5d9ff9f` on its branch `cpp`, kladde-cpp `e8a3e61`, and inkscape-kladde `f81602b406`; the commands are at the end.
 
 ## What was built
 
@@ -121,7 +121,34 @@ The typed SVG schema, planned for the branch `typed`, faces the same choice, and
 
 ## Measurements
 
-To be filled in from the demo.
+**Backing a document costs Inkscape 3 to 5 µs and about 24 bytes of journal per edit, and a tenth more memory; the files, though, are far larger than the drawings, because the journal's budget is sized for files far larger than these.**
+
+`test_kladde-backing-bench` imports three drawings of [kladde-rs's corpus](tools.md) — the tiger (67 KB of SVG), the coat of arms of Spain (193 KB) and the world map (1.1 MB) — and makes a drawing program's edits through Inkscape's XML tree: drags of twenty moves of one element (eight in ten), style changes, reorders, duplicates and deletions.
+It runs the same edits on the same drawing without a backing, for what Inkscape spends on them itself, and checks that the closed file reopens as the document was.
+Times are means on one shared machine of four cores; the heap is `mallinfo2`'s, before and after.
+
+| drawing | SVG | document's heap | backing's heap | edit, plain | edit, backed | journal per edit | file after 50,000 edits | closed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| tiger | 67 KB | 4.2 MB | 0.42 MB | 2.9 µs | 7.0 µs | 23 B | 1.26 MB | 1.28 MB |
+| coat of arms | 193 KB | 5.9 MB | 0.78 MB | 4.0 µs | 6.3 µs | 25 B | 1.54 MB | 1.56 MB |
+| world map | 1.1 MB | 29 MB | 2.8 MB | 2.4 µs | 6.3 µs | 24 B | 2.44 MB | 2.48 MB |
+
+**An edit costs a few microseconds more, and stays that cheap however long the journal grows.**
+Over 10,000 edits the backed document took 4.8 to 7.7 µs per edit, and over 50,000, 6.3 to 7.0 µs: none of it waits for the disk, since the journal is appended without an `fsync`, and the one flush in 50,000 edits is amortized over them.
+The first measurement found the cost growing with the journal, from 7 µs per edit to 18 to 34: each append copied the journal's list of cuts, which every attribute change extends, so a journal cost time quadratic in its length; both implementations now append in constant time.
+Saving the whole drawing as SVG, which an application without kladde does on every save, takes 2.4 to 20 ms here, and writes the whole file.
+
+**The second copy of the document costs a tenth of what Inkscape holds for it**: 0.42 MB beside the tiger's 4.2 MB, and 2.8 MB beside the world map's 29 MB, since Inkscape's tree, its objects, their styles and their rendering structures dwarf an encoding that holds each node's name, attributes and children once.
+
+**The files are many times the drawings**: the tiger's grew to 1.26 MB over 50,000 edits, nineteen times its SVG, and closing left it there.
+The journal's budget, 256 pages or 1 MiB, lets a journal grow to fifteen times the tiger's live size before a flush folds it, and the pages a flush frees become reusable only after the next one, so a small file is mostly journal and its fallback.
+Files of 50 KB to 10 MB are what kladde is meant for, so this is the regime it must serve well, and it argues for the open question of [Transactions and batches](../impl/transactions-and-batches.md#open-questions): a budget that scales with the file, or a flush when the journal outgrows the sequence it describes, rather than a fixed one.
+The idle flush does not help here, as its threshold is a share of the same budget.
+
+**Opening a kladde file takes as long as parsing the SVG**: 23 to 27 ms for the tiger against 16 to 22 ms to parse it, and 113 to 176 ms for the world map against 138 to 144 ms; the time goes to building Inkscape's document from the tree, as from a parsed SVG.
+
+**In the GUI, under a virtual display**, opening `tiger.svg` created `tiger.kladde` beside it and left the SVG as it was; flipping and rotating the whole drawing through Inkscape's actions, then killing Inkscape without saving, left a file that the command line exports with the flip and the rotation in place.
+The *File ▸ New* dialog, which asks where the new document's file goes, was not exercised, since no test drives a file chooser.
 
 ## Bugs the port found in kladde-rs
 
@@ -132,6 +159,8 @@ The port read kladde-rs's store line by line, and found five things that are wro
 - **`FileStorage` takes no lock**, so two processes can open one file.
 - **A cut that escapes a transaction rolled back by `Store::atomically` can paste another record's bytes.**
 - **`TypeTable::fixed_size` shared one memo between plain sizes and fixed forms**, so a type met inside a `Fixed` and outside one got one size for both; fixed in `d19a613`.
+- **The first version of [the seal](../spec/journal.md#seals) could replay a lost journal after a power cut**, since the page it named was cleared without an `fsync` before the seal was appended; porting it found this, and both implementations and the specification now sync first.
+- **An append copied the journal's list of cuts**, making a journal quadratic in its length, as [the measurements](#measurements) found.
 
 And it confirmed one already known: ⚠️ a file whose span table outgrows the header's references to leaves, at some two million spans, no longer opens, in kladde-rs and in kladde-cpp alike.
 
@@ -148,4 +177,9 @@ cargo run -p kladde-types --example cross_impl -- write rs.kladde
 kladde-cpp/build/kladde-cross write cpp.kladde
 kladde-cpp/build/kladde-cross check rs.kladde
 cargo run -p kladde-types --example cross_impl -- check cpp.kladde
+
+# The Inkscape demo's tests and measurements, in inkscape-kladde's build directory
+ninja test_kladde-backing test_kladde-backing-bench
+./bin/test_kladde-backing
+KLADDE_BENCH_STEPS=50000 KLADDE_SVG_CORPUS=…/kladde-rs/crates/kladde-svg/corpus/drawings ./bin/test_kladde-backing-bench
 ```
