@@ -59,6 +59,8 @@ ORDER = [
     "rust/transactions.md",
     "rust/schema-binding.md",
     "rust/store.md",
+    # C++: the second implementation.
+    "cpp/index.md",
     # Measurements of the Rust implementation, on the design's behalf.
     "evaluation/index.md",
     "evaluation/tools.md",
@@ -69,6 +71,7 @@ ORDER = [
     "evaluation/cleaning-edits.md",
     "evaluation/ripeness-free-filling.md",
     "evaluation/one-sequence.md",
+    "evaluation/cpp-port.md",
     # Kept for the reasoning, not the result.
     "superseded/index.md",
     "superseded/relocatable-heap.md",

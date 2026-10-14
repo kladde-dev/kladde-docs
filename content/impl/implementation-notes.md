@@ -18,6 +18,17 @@ What the code does not do yet, or does less well than kladde-docs or its own goa
   Beyond the bound, a flush fails with `Error::OutOfBounds`, and since opening flushes the replayed journal, a file whose journal holds such a flush no longer opens.
   No workload measured comes near the bound: the world map's sequence of 942 KiB takes 21 to 26 leaves.
   The fix: write interior table pages when the leaves' references outgrow the header, with the path copy of `impl/consolidation.md#unlinking-an-emptied-page`, and read them at open, which `load.rs` refuses today; test it with the header's capacity settable from tests.
+- ⚠️ **A single write or splice of 4 GiB or more corrupts the journal**: `Records::stash` keeps a record's length as a `u32`, so the record states a truncated length while the store counts all of it, and one of exactly `2^32` bytes even encodes the escape.
+  `spec/journal.md#framing` bounds a transaction's length by `2^32 − 1`, so such a write must fail with `Error::OutOfBounds`; only the bound of `2^48` is checked today.
+  No application writes values of 4 GiB in one piece, but the result is a file that does not open, not an error.
+- **Arithmetic on values read from the file is not checked**: the entry decode adds deltas to page numbers, ids and ends, and the journal decode adds a move's `to_delta`, without checking for overflow, so a file whose CRCs match but whose numbers do not panics in a debug build and wraps in a release build, which can accept entries out of order that the delta encoding is meant to make unrepresentable.
+  kladde-cpp checks each of them.
+- **`FileStorage` takes no lock**, where `spec/file-format.md#concurrency` has a second process refused cleanly, and `create` truncates whatever file is there; kladde-cpp locks with `flock` before it truncates.
+- **A `CutId` that escapes a transaction rolled back by `Store::atomically` can match a later record** that reuses its index with a cut of the same length, and a paste of it then pastes that record's bytes without an error.
+  The typed layer never lets a cut out of a failed transaction, which poisons the store; only direct users of `Store` can meet it.
+- **The cut never gives fillers to the header**: `impl/flush.md#the-cut` has the last leaf take them, or the header when there is no leaf, and kladde-rs fills the last leaf only.
+- **The budget loop filters offers by their floors before it picks the best ratio**, where the pseudocode of `impl/consolidation.md#the-budget-loop` picks first and stops if the pick fails its floor; a table offer can then win when the data offer fails the fill floor.
+- **The fold's output is not checked against the tracked length**, which `impl/write-phase-state.md` asks for as a cheap guard against a fold bug.
 - **The decode recurses without a limit on its depth**, where `impl/opening.md` asks for a limit or an iterative decode, so a file that nests deeply enough overflows the stack.
 - **A container's index panics on sizes of 4 GiB or more**, where `spec/span-table.md#bounds` asks every limit to fail cleanly: the Fenwick tree keeps sizes in `u32` cells, and converts with `expect`.
 - **The load checks a reached `Ref` against its page's frame, not against the page's `content_size`.**

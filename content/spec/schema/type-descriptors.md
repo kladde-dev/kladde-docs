@@ -231,6 +231,8 @@ A table must keep two rules, which a reader checks when it decodes one:
 - **A `Fixed` holds a type that has a fixed form.**
 - **A type reaches itself only through an Enum, a Sequence or a Map**, whose discriminant or count can end the recursion, and never through Structs, Arrays and `Fixed` alone, whose values would be infinite.
   A tree whose nodes hold their children inline is a Struct holding a Sequence of itself; a list is an Enum one of whose variants holds itself.
+  An Opaque's parameters are not containment: an Opaque says nothing of how its value holds them, so a type may reach itself through one.
+  The rule asks only that recursion *can* end; an Enum whose every variant holds itself has no finite value, and is legal but useless.
 
 A decoder of a recursive type nests as deeply as the file says, so it limits its depth, or does not recurse, and refuses a file beyond its limit rather than overflow its stack.
 

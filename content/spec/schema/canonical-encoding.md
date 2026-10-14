@@ -40,6 +40,9 @@ Tags `136..=255` are unassigned and reserved for future kinds, and a reader refu
 
 A decoded table must also keep the [rules of nesting](type-descriptors.md#rules-of-nesting), and every enum's discriminant values must fit its `discriminant_width`; a reader refuses one that does not.
 
+**A reader refuses every table that is not the canonical encoding of the table it decodes to**: a varint longer than its value needs, enum variants out of ascending discriminant order, two variants with one discriminant, or bytes after the last descriptor.
+So a table that decodes re-encodes to its own bytes, and two tables that decode alike are byte-identical, which is what lets [fingerprints](fingerprints.md) and the file's schema chain be compared as bytes.
+
 ## Canonical order
 
 The order in which sub-elements are emitted is fixed, so that the encoding — and therefore the [fingerprint](fingerprints.md) — is fully determined.
