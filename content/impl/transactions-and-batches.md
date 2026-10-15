@@ -181,9 +181,9 @@ It is a whole number of pages, since a journal page once taken costs a page of t
 
 **A small budget keeps the file close to its content.**
 At a flush, the journal it folds and the previous one, still [the fallback](../spec/durability.md#the-reuse-rule), both occupy pages, and the pages a flush frees become reusable only after the next flush; a budget of `B` pages thus keeps up to about `2B` pages of journal beside the content.
-A budget of 256 pages, a megabyte, made the files of drawings of 40 KB to 1 MB [2 to 26 times their content](../evaluation/cpp-port.md#the-journals-budget), and a budget sized to them kept them within 1.1 to 3.4 times.
+A budget of 256 pages, a megabyte, made the files of drawings of 40 KB to 1 MB [up to 16 times their content](../evaluation/cpp-port.md#the-journals-budget), and a budget sized to them kept them within 1.2 to 2.2 times.
 
-**Every flush is a chance to consolidate**, so flushing often costs little beyond the flush's `fsync`: a flush folds a journal of a few pages in one to two milliseconds, within a frame of an interactive application, where a journal of a megabyte stalled the edit that triggered it for 50 to 65 ms.
+**Every flush is a chance to consolidate**, so flushing often costs little beyond the flush's `fsync`: a flush folds a journal of a few pages in one to two milliseconds, within a frame of an interactive application, where a journal of a megabyte stalled the edit that triggered it for 46 to 77 ms.
 
 **The floor of 2 pages** keeps a small file from flushing at every few edits: a budget of 1 page flushed the same drawings two to four times as often as 2 to 4 pages and made their files no smaller.
 **The ceiling of 10 pages** keeps a large file's journal, and with it the pages it holds and the time a flush takes, bounded; a file of tens of megabytes gains from a longer journal only fewer flushes, which an application that wants them can have by fixing the budget.

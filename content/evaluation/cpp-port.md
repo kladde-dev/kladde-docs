@@ -8,7 +8,7 @@ What a second implementation, [kladde-cpp](../cpp/), and its first application, 
 The obstacles were elsewhere.
 The specification was silent on a dozen points where two implementers could each be right and disagree, which the port turned into rules; C++ cannot enforce the exclusive access that Rust's handles rely on, so the C++ handles carry rules the compiler does not check; and Inkscape needed long-lived handles and a way to observe its document rather than replace it, both of which kladde-cpp now has.
 
-The commits measured are kladde-rs `5d9ff9f` on its branch `cpp`, kladde-cpp `e8a3e61`, and inkscape-kladde `f81602b406`, and for the journal budget sized to the file, kladde-rs `9b08ed5`, kladde-cpp `ac37fb4`, and inkscape-kladde `ad3a6cf1a4` (branch `main`, the typed schema) and `b1409f8da9` (branch `untyped`, the XML schema); the commands are at the end.
+The port's findings are of kladde-rs `5d9ff9f` on its branch `cpp`, kladde-cpp `e8a3e61` and inkscape-kladde `f81602b406`; [the measurements](#measurements) are of kladde-cpp `c40ff8f` and inkscape-kladde `6452817ae3` (branch `main`, the typed schema) and `04e6ea0d31` (branch `untyped`, attribute values as text), with kladde-rs `f2f29a7` for the canonical SVG; the commands are at the end.
 
 ## What was built
 
@@ -104,8 +104,8 @@ A subtree observer on the document node, by contrast, hears every change — att
 
 *What the observer costs.*
 The document is held twice in memory, once as Inkscape's tree and once as kladde values, and a change is applied twice; [the measurements below](#measurements) put a number on it.
-*What it does not cost:* durability is the same, since each change is recorded before the call that made it returns, and the file is the same, since it holds the XML schema either way.
-The [typed SVG schema](#a-typed-svg-schema) faces the same choice, and would face it harder: Inkscape's objects (`SPObject` and its subclasses) are built from the XML tree and keep their own state, so a typed schema would be a third copy, or a rewrite of the object layer.
+*What it does not cost:* durability is the same, since each change is recorded before the call that made it returns, and the file is the same, since it holds the same schema either way.
+The [typed SVG schema](#what-the-typed-schema-took) faces the same choice, and would face it harder: Inkscape's objects (`SPObject` and its subclasses) are built from the XML tree and keep their own state, so a typed schema would be a third copy, or a rewrite of the object layer.
 
 **Three details needed care:**
 
@@ -121,44 +121,42 @@ The [typed SVG schema](#a-typed-svg-schema) faces the same choice, and would fac
 
 ## Measurements
 
-**Backing a document costs Inkscape 3 to 5 µs and about 24 bytes of journal per edit, and a tenth more memory; a fixed journal budget of 256 pages, though, makes the files far larger than the drawings, which is why kladde sizes the budget to the file ([below](#the-journals-budget)).**
+**inkscape-kladde costs Inkscape about 5 µs and 19 bytes of journal per edit, and a sixth more memory; it keeps a drawing in a file of 1.2 to 2.2 times its encoding while the drawing is edited, which for the coat of arms and the world map is no larger than the drawing's canonical SVG, and right after the import in a file of 1.03 to 1.4 times its encoding.**
 
 `test_kladde-backing-bench` imports three drawings of [kladde-rs's corpus](tools.md) — the tiger (67 KB of SVG), the coat of arms of Spain (193 KB) and the world map (1.1 MB) — and makes a drawing program's edits through Inkscape's XML tree: drags of twenty moves of one element (eight in ten), style changes, reorders, duplicates and deletions.
 It runs the same edits on the same drawing without a backing, for what Inkscape spends on them itself, and checks that the closed file reopens as the document was.
-Times are means on one shared machine of four cores; the heap is `mallinfo2`'s, before and after.
-The runs in this table used a fixed journal budget of 256 pages.
+The fork stores a drawing in a typed schema, on its branch `main`: each element's attributes are one ordered list of entries, each a typed value — lengths, paints, colors with their written form, transform lists, path data with its layout, points, style declarations, decimal numbers, embedded data as its bytes — or the attribute's text, where formatting the typed value would not reproduce Inkscape's text byte for byte; 98.4 to 99.8% of the drawings' attributes end up typed.
+The numbers are the typed schema's, at the journal budget sized to the file that kladde uses by default, unless they say otherwise; [the XML schema](#ablation-attribute-values-as-text) of the branch `untyped`, which keeps every attribute value as text, serves as an ablation.
+Each number is one run on a shared machine of four cores, and a range spans a run of 10,000 edits and one of 50,000; the heap is `mallinfo2`'s, before and after.
 
-| drawing | SVG | document's heap | backing's heap | edit, plain | edit, backed | journal per edit | file after 50,000 edits | closed |
+| drawing | SVG | document's heap | backing's heap | edit, plain | edit, backed | journal per edit | file after the import (encoding) | closed after 10,000 / 50,000 edits (encoding) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| tiger | 67 KB | 4.2 MB | 0.42 MB | 2.9 µs | 7.0 µs | 23 B | 1.26 MB | 1.28 MB |
-| coat of arms | 193 KB | 5.9 MB | 0.78 MB | 4.0 µs | 6.3 µs | 25 B | 1.54 MB | 1.56 MB |
-| world map | 1.1 MB | 29 MB | 2.8 MB | 2.4 µs | 6.3 µs | 24 B | 2.44 MB | 2.48 MB |
+| tiger | 67 KB | 4.2 MB | 0.64 MB | 2.0–3.0 µs | 7.4–7.6 µs | 19 B | 60 KB (42 KB) | 112 / 136 KB (52 / 65 KB) |
+| coat of arms | 193 KB | 5.9 MB | 1.12 MB | 2.1–2.2 µs | 7.8–7.9 µs | 20 B | 112 KB (96 KB) | 196 / 284 KB (113 / 149 KB) |
+| world map | 1.1 MB | 29 MB | 4.4 MB | 2.1 µs | 8.0–10.5 µs | 19 B | 612 KB (594 KB) | 712 / 900 KB (604 / 642 KB) |
 
-**An edit costs a few microseconds more, and stays that cheap however long the journal grows.**
-Over 10,000 edits the backed document took 4.8 to 7.7 µs per edit, and over 50,000, 6.3 to 7.0 µs: none of it waits for the disk, since the journal is appended without an `fsync`, and the one flush in 50,000 edits is amortized over them.
-The first measurement found the cost growing with the journal, from 7 µs per edit to 18 to 34: each append copied the journal's list of cuts, which every attribute change extends, so a journal cost time quadratic in its length; both implementations now append in constant time.
-Saving the whole drawing as SVG, which an application without kladde does on every save, takes 2.4 to 20 ms here, and writes the whole file.
+**An edit costs about 5 µs more, and stays that cheap however long the journal grows.**
+The journal is appended without an `fsync`, and the flush that folds it, once every 400 to 500 edits, is amortized over them; the world map's 10.5 µs came from a run of 10,000 edits whose slowest move took 23 ms, an outlier its run of 50,000 did not repeat.
+An early version spent time quadratic in the journal's length, since each append copied the journal's list of cuts, which every attribute change extends; both implementations now append in constant time.
+Saving the whole drawing as SVG, which an application without kladde does on every save, takes 1.2 to 12.7 ms here, and writes the whole file.
 
-**The second copy of the document costs a tenth of what Inkscape holds for it**: 0.42 MB beside the tiger's 4.2 MB, and 2.8 MB beside the world map's 29 MB, since Inkscape's tree, its objects, their styles and their rendering structures dwarf an encoding that holds each node's name, attributes and children once.
+**The second copy of the document costs a sixth of what Inkscape holds for it**: 0.64 MB beside the tiger's 4.2 MB, and 4.4 MB beside the world map's 29 MB, since Inkscape's tree, its objects, their styles and their rendering structures dwarf an encoding that holds each node's name, attributes and children once.
 
-**With a budget of 256 pages, the files are many times the drawings**: the tiger's grew to 1.26 MB over 50,000 edits, nineteen times its SVG, and closing left it there.
-A budget of 256 pages, or 1 MiB, lets a journal grow to fifteen times the tiger's live size before a flush folds it, and the pages a flush frees become reusable only after the next one, so a small file is mostly journal and its fallback.
-Files of 50 KB to 10 MB are what kladde is meant for, so this is the regime it must serve well; the idle flush does not help, as its threshold is a share of the same budget.
-[The journal's budget](#the-journals-budget) below measures smaller budgets, and the one sized to the file that both implementations use by default.
+**Payload pages halve the file right after the import.**
+Importing is one splice of the whole encoding, whose bytes [payload pages](../impl/transactions-and-batches.md#payload-pages) write once, into pages that the flush adopts as data pages.
+Without them, the bytes went into the journal first and then into data pages, and the journal's pages became holes below them: kladde-cpp `c4ebcb2` left 100 KB, 204 KB and 1204 KB for the same three imports, where `c40ff8f` leaves 60 KB, 112 KB and 612 KB.
+After thousands of edits the difference is gone: closed after 10,000 edits, the files were 112 KB, 200 KB and 696 KB without payload pages, since consolidation drains the import's holes along the way.
 
-### A typed SVG schema
+**While a drawing is edited, its file stays within 1.2 to 2.2 times its encoding**, which holds the journal, the pages a flush keeps for the header before it, and those a flush frees but can reuse only after the next one; closing flushes and truncates, so a closed file is about as large as the open one was.
+The drawing's canonical SVG is the drawing as the edits leave it, saved by Inkscape and written again by [kladde-svg](tools.md) with less whitespace, shortest decimals and shortened path data; it takes 89 / 115 KB, 212 / 286 KB and 1107 / 1192 KB after 10,000 / 50,000 edits.
+Next to it, the kladde file is 1.2 to 1.3 times as large for the tiger, whose fixed overhead weighs most beside its small content, 0.9 to 1.0 times for the coat of arms, and 0.6 to 0.8 times for the world map, whose numbers and path data the typed schema stores more compactly than their text.
 
-**Typing the attributes makes the encoding 34 to 45% smaller and an edit's journal a fifth smaller, at 1.5 to 1.8 times the XML schema's memory and twice its import time.**
-inkscape-kladde's branch `main` keeps each element's attributes as one ordered list of entries, each a typed value — lengths, paints, colors with their written form, transform lists, path data with its layout, points, style declarations, decimal numbers — or the attribute's text, where formatting the typed value would not reproduce Inkscape's text byte for byte; 98.9 to 99.8% of the drawings' attributes end up typed.
+**Opening a kladde file takes 1.3 to 2.3 times as long as parsing the SVG**: 17 to 21 ms for the tiger against 11 to 12 ms to parse it, 31 to 46 ms for the coat of arms against 19 to 20 ms, and 127 to 147 ms for the world map against 93 to 99 ms.
+Most of the time goes to building Inkscape's document from the tree, as from a parsed SVG; formatting the typed values back into Inkscape's text adds a little, since with values kept as text a file opens in 0.9 to 1.8 times the parsing time.
 
-| | tiger | coat of arms | world map |
-| --- | --- | --- | --- |
-| encoding, XML / typed | 64 / 42 KB | 172 / 96 KB | 1071 / 594 KB |
-| backing's heap, XML / typed | 0.42 / 0.64 MB | 0.78 / 1.15 MB | 2.8 / 5.2 MB |
-| journal per edit, XML / typed | 23 / 19 B | 25 / 20 B | 24 / 19 B |
+### What the typed schema took
 
-Per edit, the two cost the same within the noise of the machine.
-**What the typed schema needed, beyond the XML one, says more than its numbers**:
+**What the typed schema needed, beyond keeping attribute values as text, says more than its numbers**:
 
 - **An existing application's formatting must be stored as data.**
   kladde-svg normalizes what it parses, and would have lost nearly everything Inkscape writes; reproducing it took decimal numbers rather than floats, a color's written form, a transform's optional arguments, and how a path's text separates its numbers — and Inkscape's own `10e-4` and `-0` still fall back to text.
@@ -166,68 +164,69 @@ Per edit, the two cost the same within the noise of the machine.
 - **A `std::variant` with many alternatives of one type** — `x`, `y`, `width` and twenty more are all lengths — cannot be reached through `if_holds<A>`, which needs an index-based form, and its names must be written out alike.
 - **A `std::vector` of varint numbers is refused**, since they are not fixed-size, so short lists that are only ever replaced whole carry a `kladde::Vector`'s index.
 - **Adding a typed attribute changes the root fingerprint**, so that files written before no longer open; growing a typed schema over time needs [evolution](../spec/schema/evolution.md), which neither implementation has yet.
+- **Embedded data is held as its bytes**: a `data:` URI with base64 keeps its media type and decoded bytes, three quarters of its text, and only the line breaks inside the base64 do not read back; none of the three drawings embeds data.
 - **Under the observer, a typed copy is a third copy of the document**, beside Inkscape's XML strings and its objects; a typed schema pays off fully only where it replaces the application's own model, which in Inkscape would mean rewriting its object layer.
 
 ### The journal's budget
 
-**kladde sizes the journal's budget to the file, and for these drawings that keeps the closed files within 1.1 to 3.4 times their live encoding, where a fixed budget of 256 pages lets them reach 2.3 to 26 times; with the typed schema, the closed file ends up within 0.6 to 1.3 times the size of the drawing's canonical SVG.**
-The budget is 2% of the sequence in whole pages, at least 2 and at most 10 (`Options::journal_budget_pages` left empty, in both implementations), which gives the tiger and the coat of arms 2 pages and the world map 3 (typed) or 5 (XML).
-It costs a flush of one to two milliseconds every 300 to 900 edits, and 3 to 6 µs more per edit on average than 256 pages, which almost never flush here.
-The runs below are the benchmark above, with `KLADDE_JOURNAL_BUDGET_PAGES` set for the fixed budgets, on inkscape-kladde's branch `untyped`; the live size is the document's encoding before the edits, and the latencies are those of each single move of a drag, which in the benchmark includes any flush the move triggers, since nothing flushes at idle there.
-The canonical SVG is the drawing as the edits leave it, saved by Inkscape and written again by [kladde-svg](tools.md) with less whitespace, shortest decimals and shortened path data; the edits, and so the canonical SVG, are the same at every budget and in both schemas.
+**kladde sizes the journal's budget to the file, which keeps these files within 1.2 to 2.2 times their encoding at a flush of about a millisecond every 400 to 500 edits; a fixed budget of 256 pages, which almost never flushes, lets the tiger's file grow to 16 times its encoding.**
+The budget is 2% of the sequence in whole pages, at least 2 and at most 10 (`Options::journal_budget_pages` left empty, in both implementations), which gives the tiger and the coat of arms 2 pages and the world map 3.
+The runs below are the benchmark above, with `KLADDE_JOURNAL_BUDGET_PAGES` set for the fixed budgets; the ratios are to the encoding after the edits, and the latencies are those of each single move of a drag, which in the benchmark includes any flush the move triggers, since nothing flushes at idle there.
 
-| budget | drawing (live) | canonical SVG after 10,000 / 50,000 edits | closed file after 10,000 / 50,000 edits | flushes per 10,000 edits | mean edit | drag move, 99.9th percentile | slowest move |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| sized to the file (2 pages) | tiger (64 KB) | 89 KB / 115 KB | 168 KB (2.6×) / 220 KB (3.4×) | 28 | 7.8–8.2 µs | 1.0–1.2 ms | 4.8 ms |
-| sized to the file (2 pages) | coat of arms (172 KB) | 212 KB / 286 KB | 328 KB (1.9×) / 468 KB (2.7×) | 31 | 8.5–10.3 µs | 1.2–1.5 ms | 4.2 ms |
-| sized to the file (5 pages) | world map (1071 KB) | 1107 KB / 1192 KB | 1196 KB (1.1×) / 1544 KB (1.4×) | 11 | 9.1–12.9 µs | 0.1–2.3 ms | 34 ms |
-| 1 page | tiger | 89 KB / 115 KB | 156 KB (2.4×) / 208 KB (3.3×) | 58 | 9.8–11.6 µs | 1.0 ms | 23 ms |
-| 1 page | coat of arms | 212 KB / 286 KB | 328 KB (1.9×) / 440 KB (2.6×) | 61 | 10.0–10.6 µs | 1.0 ms | 4.7 ms |
-| 1 page | world map | 1107 KB / 1192 KB | 1276 KB (1.2×) / 1536 KB (1.4×) | 59 | 11.0–11.7 µs | 1.1 ms | 5.6 ms |
-| 4 pages | tiger | 89 KB / 115 KB | 164 KB (2.6×) / 236 KB (3.7×) | 14 | 6.7–10.1 µs | 1.4–2.1 ms | 3.2 ms |
-| 4 pages | coat of arms | 212 KB / 286 KB | 292 KB (1.7×) / 484 KB (2.8×) | 15 | 7.6–7.9 µs | 1.6 ms | 4.5 ms |
-| 4 pages | world map | 1107 KB / 1192 KB | 1188 KB (1.1×) / 1536 KB (1.4×) | 14 | 8.2–9.1 µs | 1.3–2.1 ms | 5.6 ms |
-| 256 pages | tiger | 89 KB / 115 KB | 408 KB (6.4×) / 1276 KB (20×) | 0 (1 in 50,000) | 4.3–6.4 µs | 46–61 µs | 50 ms |
-| 256 pages | coat of arms | 212 KB / 286 KB | 664 KB (3.9×) / 1564 KB (9.1×) | 0 (1 in 50,000) | 4.8–5.8 µs | 42–43 µs | 48 ms |
-| 256 pages | world map | 1107 KB / 1192 KB | 2172 KB (2.0×) / 2480 KB (2.3×) | 0 (1 in 50,000) | 5.2–6.5 µs | 46–51 µs | 65 ms |
+| budget | drawing | closed after 10,000 / 50,000 edits | flushes per 10,000 edits | mean edit | drag move, 99.9th percentile | slowest move |
+| --- | --- | --- | --- | --- | --- | --- |
+| sized to the file (2 pages) | tiger | 112 KB (2.2×) / 136 KB (2.1×) | 23 | 7.4–7.6 µs | 1.0–1.1 ms | 3.2 ms |
+| sized to the file (2 pages) | coat of arms | 196 KB (1.7×) / 284 KB (1.9×) | 25 | 7.8–7.9 µs | 1.1 ms | 4.3 ms |
+| sized to the file (3 pages) | world map | 712 KB (1.2×) / 900 KB (1.4×) | 20 | 8.0–10.5 µs | 1.3–1.7 ms | 23 ms |
+| 1 page | tiger | 108 KB (2.1×) / 140 KB (2.2×) | 47 | 9.1–10.5 µs | 0.9–1.1 ms | 3.9 ms |
+| 1 page | coat of arms | 220 KB (1.9×) / 268 KB (1.8×) | 50 | 10.9–12.1 µs | 1.1–1.2 ms | 4.2 ms |
+| 1 page | world map | 744 KB (1.2×) / 896 KB (1.4×) | 48 | 9.9–10.7 µs | 1.0–1.2 ms | 4.3 ms |
+| 4 pages | tiger | 128 KB (2.5×) / 156 KB (2.4×) | 11 | 7.4–9.8 µs | 1.5–1.6 ms | 4.0 ms |
+| 4 pages | coat of arms | 188 KB (1.7×) / 288 KB (1.9×) | 12 | 7.5–8.1 µs | 0.4–1.6 ms | 4.1 ms |
+| 4 pages | world map | 692 KB (1.1×) / 888 KB (1.4×) | 11 | 7.2–7.7 µs | 0.1–1.9 ms | 8.8 ms |
+| 256 pages | tiger | 272 KB (5.2×) / 1040 KB (16×) | 0 | 5.2–6.2 µs | 46–54 µs | 0.9 ms |
+| 256 pages | coat of arms | 340 KB (3.0×) / 1144 KB (7.7×) | 0 | 5.0–5.2 µs | 35–36 µs | 4.2 ms |
+| 256 pages | world map | 836 KB (1.4×) / 1660 KB (2.6×) | 0 | 5.1–6.4 µs | 42–49 µs | 3.5 ms |
 
-The table above is the XML schema's; in it, a kladde file stays 1.1 to 1.9 times the canonical SVG at the budget sized to the file.
-The world map's slowest move of 34 ms came from one run of 10,000 edits, whose 50,000-edit run peaked at 6.6 ms.
-**The typed schema shows the same pattern, with files a quarter to a half smaller in bytes**, on its branch `main` with the same changes, and with the ratios to its smaller encodings a little higher:
-
-| budget | drawing (live) | canonical SVG after 10,000 / 50,000 edits | closed file after 10,000 / 50,000 edits | flushes per 10,000 edits | mean edit | drag move, 99.9th percentile | slowest move |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| sized to the file (2 pages) | tiger (42 KB) | 89 KB / 115 KB | 112 KB (2.7×) / 136 KB (3.2×) | 23 | 7.9–8.5 µs | 1.0–1.2 ms | 2.8 ms |
-| sized to the file (2 pages) | coat of arms (96 KB) | 212 KB / 286 KB | 196 KB (2.0×) / 272 KB (2.8×) | 25 | 8.8–9.6 µs | 1.3 ms | 6.5 ms |
-| sized to the file (3 pages) | world map (594 KB) | 1107 KB / 1192 KB | 704 KB (1.2×) / 888 KB (1.5×) | 20 | 9.4–11.1 µs | 1.8–1.9 ms | 3.8 ms |
-| 1 page | tiger | 89 KB / 115 KB | 120 KB (2.9×) / 144 KB (3.4×) | 47 | 12.1–15.2 µs | 1.2–1.4 ms | 3.4 ms |
-| 1 page | coat of arms | 212 KB / 286 KB | 200 KB (2.1×) / 256 KB (2.7×) | 49 | 16.0–16.1 µs | 1.5–1.6 ms | 7.3 ms |
-| 1 page | world map | 1107 KB / 1192 KB | 748 KB (1.3×) / 872 KB (1.5×) | 48 | 13.2–15.2 µs | 1.5 ms | 3.9 ms |
-| 4 pages | tiger | 89 KB / 115 KB | 124 KB (3.0×) / 152 KB (3.6×) | 11 | 7.7–8.5 µs | 1.6–1.7 ms | 4.0 ms |
-| 4 pages | coat of arms | 212 KB / 286 KB | 192 KB (2.0×) / 304 KB (3.2×) | 12 | 8.5–9.7 µs | 0.2–1.8 ms | 5.0 ms |
-| 4 pages | world map | 1107 KB / 1192 KB | 852 KB (1.4×) / 904 KB (1.5×) | 11 | 9.5–9.9 µs | 0.2–2.2 ms | 4.6 ms |
-| 256 pages | tiger | 89 KB / 115 KB | 312 KB (7.4×) / 1080 KB (26×) | 0 | 5.3–5.9 µs | 45–64 µs | 0.9 ms |
-| 256 pages | coat of arms | 212 KB / 286 KB | 432 KB (4.5×) / 1264 KB (13×) | 0 | 5.8–6.3 µs | 75–87 µs | 4.7 ms |
-| 256 pages | world map | 1107 KB / 1192 KB | 1428 KB (2.4×) / 2272 KB (3.8×) | 0 | 5.8–6.3 µs | 49–55 µs | 3.5 ms |
-
-**At the budget sized to the file, a typed kladde file is about the size of the canonical SVG**: 1.2 to 1.3 times it for the tiger, whose journal and fallback pages weigh most beside its small content, and 0.6 to 0.95 times it for the coat of arms and the world map, whose numbers and path data the typed schema stores more compactly than their text.
-
-A typed edit journals about 19 bytes rather than 24, so the same budget flushes a fifth less often, and at 256 pages its 50,000 edits never fill the journal, which is why no move stalls for long there; the next one would fold a journal of a megabyte, as the XML schema's did.
-A median move costs 3.4 to 3.5 µs, against the XML schema's 2.8, which is the parsing and formatting of the attribute's value.
+The world map's slowest move of 23 ms at the budget sized to the file came from its run of 10,000 edits, whose run of 50,000 peaked at 3.0 ms.
+At 256 pages, the 50,000 edits never filled the journal, which is why no move stalled for long there; the next edit would have folded a journal of a megabyte, as [the ablation](#ablation-attribute-values-as-text) shows, whose larger records fill it once in 50,000 edits.
 
 **The budget trades a few long stalls for many short ones, and the short ones are the better deal for an editor.**
-A median move costs 2.8 µs at every budget: the move itself, recorded in the journal.
-With 256 pages, a move almost never meets a flush, but the one that does folds a journal of a megabyte and stalls for 50 to 65 ms, three or four frames; with 4 pages, one move in seven hundred meets a flush of a few pages, which takes one to two milliseconds and fits within a frame.
+A median move costs 3.1 µs at every budget: the move itself, recorded in the journal.
+With 256 pages, a move almost never meets a flush, but the one that does folds a journal of a megabyte and stalls for 46 to 77 ms, three to five frames; with 4 pages, one move in seven hundred meets a flush of a few pages, which takes one to two milliseconds and fits within a frame.
 The flushes here run inside the moves because the benchmark has no idle time; in the GUI, the idle flush moves most of them between gestures, and does so better the smaller the journal it has to fold.
 The times come from a disk whose `fsync` is fast; on a slow disk, every flush costs more, and the small budget's frequent flushes cost proportionally more than its few large ones save, which is the case for [the commit on a worker thread](../impl/transactions-and-batches.md#a-flush-off-the-callers-thread).
 
 **Hence a budget that follows the file, between a floor and a ceiling, rather than a fixed one.**
-A budget of 1 page gains little in size over 2 to 4, and flushes two to four times as often; above a few pages, the files grow with the journal and its fallback while the flushes saved bring little, since each flush is also a chance to consolidate.
+A budget of 1 page gains nothing in size over 2 to 4 here, and flushes two to four times as often; above a few pages, the files grow with the journal and its fallback while the flushes saved bring little, since each flush is also a chance to consolidate.
 [Transactions and batches](../impl/transactions-and-batches.md#the-journals-budget) gives the rule and its reasons.
 
-**Opening a kladde file takes as long as parsing the SVG**: 23 to 27 ms for the tiger against 16 to 22 ms to parse it, and 113 to 176 ms for the world map against 138 to 144 ms; the time goes to building Inkscape's document from the tree, as from a parsed SVG.
+### Ablation: attribute values as text
 
-**In the GUI, under a virtual display**, opening `tiger.svg` created `tiger.kladde` beside it and left the SVG as it was; flipping and rotating the whole drawing through Inkscape's actions, then killing Inkscape without saving, left a file that the command line exports with the flip and the rotation in place.
+**Keeping every attribute value as text, as the branch `untyped` does, makes the encoding 1.5 to 1.8 times larger, the files 1.5 to 1.7 times larger and an edit's journal a fifth larger; in exchange it takes two thirds of the typed schema's memory and a third to a half of its import time, and opens a little faster.**
+The branch is `main` with the XML schema in place of the typed one, and the runs are the same.
+
+| | tiger | coat of arms | world map |
+| --- | --- | --- | --- |
+| encoding, typed / text | 42 / 64 KB | 96 / 172 KB | 594 / 1071 KB |
+| backing's heap, typed / text | 0.64 / 0.41 MB | 1.12 / 0.77 MB | 4.4 / 2.7 MB |
+| import, typed / text | 6.7 / 3.1 ms | 8.8–8.9 / 3.4–4.5 ms | 44–49 / 15–19 ms |
+| opening, typed / text (parsing the SVG) | 17–21 / 15–20 ms (11–17 ms) | 31–46 / 28–31 ms (18–20 ms) | 127–147 / 112–125 ms (93–122 ms) |
+| journal per edit, typed / text | 19 / 23–24 B | 20 / 23–24 B | 19 / 23–24 B |
+| mean edit, typed / text | 7.4–7.6 / 7.1 µs | 7.8–7.9 / 7.2–7.4 µs | 8.0–10.5 / 6.4–7.2 µs |
+| file after the import, typed / text | 60 / 80 KB | 112 / 188 KB | 612 / 1092 KB |
+| closed after 10,000 / 50,000 edits, typed | 112 / 136 KB | 196 / 284 KB | 712 / 900 KB |
+| closed after 10,000 / 50,000 edits, text | 164 / 232 KB | 300 / 460 KB | 1192 / 1544 KB |
+| canonical SVG after 10,000 / 50,000 edits | 89 / 115 KB | 212 / 286 KB | 1107 / 1192 KB |
+
+**With values as text, a kladde file is 1.1 to 2.0 times the canonical SVG, where the typed schema's is 0.6 to 1.3 times it**: both hold the drawing's numbers, but as text they keep Inkscape's whitespace and digits, which the canonical SVG drops and the typed schema never stores.
+Per edit, the two cost the same within the noise of the machine, though a median move costs 3.1 µs typed against 2.6 µs as text, which is parsing and formatting the attribute's value.
+The journal budget behaves as with the typed schema, the world map getting 5 pages for its larger encoding: at the budget sized to the file the files stay within 1.1 to 2.1 times their encoding, at a flush every 300 to 900 edits.
+At 256 pages its larger records fill the journal once in 50,000 edits, and the move that meets that flush stalls for 46 to 77 ms while it folds a megabyte of journal, where no move at the budget sized to the file took longer than 4.1 ms.
+
+### In the GUI
+
+**In the GUI, under a virtual display** (inkscape-kladde `f81602b406`, with the XML schema), opening `tiger.svg` created `tiger.kladde` beside it and left the SVG as it was; flipping and rotating the whole drawing through Inkscape's actions, then killing Inkscape without saving, left a file that the command line exports with the flip and the rotation in place.
 The *File ▸ New* dialog, which asks where the new document's file goes, was not exercised, since no test drives a file chooser.
 
 ## Bugs the port found in kladde-rs
@@ -261,6 +260,7 @@ cargo run -p kladde-types --example cross_impl -- check cpp.kladde
 # The Inkscape demo's tests and measurements, in inkscape-kladde's build directory
 ninja test_kladde-backing test_kladde-backing-bench
 ./bin/test_kladde-backing
+# (created_KB is the file right after the import, file_KB and closed_KB the file before and after closing, edited_KB the encoding after the edits)
 KLADDE_BENCH_STEPS=50000 KLADDE_SVG_CORPUS=…/kladde-rs/crates/kladde-svg/corpus/drawings ./bin/test_kladde-backing-bench
 # … with a fixed budget, and keeping the edited drawings for their canonical SVG's size (kladde-rs's svg-roundtrip, column canon_bytes)
 KLADDE_JOURNAL_BUDGET_PAGES=4 KLADDE_BENCH_SAVE_DIR=edited KLADDE_SVG_CORPUS=… ./bin/test_kladde-backing-bench
