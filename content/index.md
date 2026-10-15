@@ -34,11 +34,11 @@ The project is still very young and under active development.
 At the current stage, the **main products** are
 
 - a [detailed file format specification](spec/) and
-- a [documentation of a reference implementation](impl/).
+- a [documentation of the reference implementations](impl/).
 
-The reference implementation itself is *not production ready*.
-Its purpose at the moment is to allow rapid experimentation on new *policies* (non-normative decisions that an implementation may make without breaking interoperability).
-This is why the reference implementation is currently limited to a single language (Rust) and why it is currently fully auto-generated from the specification.
+There are two reference implementations, [kladde-rs](rust/) in Rust and [kladde-cpp](cpp/) in C++, and neither is *production ready*.
+Their purpose at the moment is to allow rapid experimentation on new *policies* (non-normative decisions that an implementation may make without breaking interoperability), and to test that the specification is precise enough for two independent implementations to read each other's files.
+This is why the reference implementations are currently limited to these two languages and why they are currently fully auto-generated from the specification.
 
 **Contributions are welcome.**
 While this includes code contributions in principle, at the current stage, **the most valuable contributions are not in the form of code** but instead in the form of well-motivated opinions and proposals of what should be added or changed in the specification.

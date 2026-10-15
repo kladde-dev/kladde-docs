@@ -84,7 +84,7 @@ Each header page holds a fixed-size `header` field in the [[#page framing]], whi
 | `magic`              | 11 bytes | identifies the file type as kladde and catches accidental opens of unrelated files; present even in page 1 to simplify size calculations. See [[#the magic\|below]]                                                                                                       |
 | `log2_page_size`     | 1 byte   | binary logarithm of the page size; currently, the only allowed value is `12`, indicating a 4 KiB page size, but the spec is designed not to prevent `13`, `14`, `15`, or `16` (for powers of 2 from 8 KiB through 64 KiB) in the future if measurements deem them useful. |
 | `format_version`     | 2 bytes  | the specification version this file was written against; currently only version `0` is allowed, indicating "pre-stable".                                                                                                                                                  |
-| `min_reader_version` | 2 bytes  | the oldest specification version that can still read this file; currently only version `0` is allowed, and it stays `0` until kladde-rs is declared production ready: until then the format promises no compatibility, changes without raising it, and a file written by one pre-release need not open in another |
+| `min_reader_version` | 2 bytes  | the oldest specification version that can still read this file; currently only version `0` is allowed, and it stays `0` until a reference implementation is declared production ready: until then the format promises no compatibility, changes without raising it, and a file written by one pre-release need not open in another |
 | `sequence_head`      | 4 bytes  | the id of the first [span](span-table.md) of the [sequence](sequence.md), the root value's encoding, or `0` if the sequence is empty                                                                                                                                       |
 | `schema_head`        | 4 bytes  | the id of the first span of the schema chain, which holds the [descriptor table](schema/canonical-encoding.md#table-encoding), or `0` if it is empty                                                                                                                      |
 | `private_head`       | 4 bytes  | the id of the first span of the private chain, in which an implementation keeps state of its own from one session to the next, or `0` if it is empty. See [[#The private chain]].                                                                                         |
@@ -123,7 +123,7 @@ Readers must be able to handle such a file.
 **`private_head` names a chain in which an implementation may keep whatever it wants to carry from one session to the next, or is `0` if there is none.**
 Its content is up to the implementation.
 A consolidator's heuristics, for instance, learn from what happens over many flushes, and a session that could start only from what the file records anyway would forget all of it at every close.
-[Consolidator state](../impl/consolidator-state.md) describes what the reference implementation keeps there.
+[Consolidator state](../impl/consolidator-state.md) describes what an implementation's consolidator could keep there.
 
 Four rules govern it:
 

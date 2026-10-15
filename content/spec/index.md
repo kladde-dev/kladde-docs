@@ -112,6 +112,6 @@ The details are in [File format](file-format.md#versioning).
 
 **Draft.** No part of this specification is frozen.
 
-The schema layer is the most settled: it is specified precisely enough to implement, and has a reference implementation.
-The page, durability, span-table and sequence layers are settled in design and worked out in detail, and kladde-rs implements them byte for byte as stated, but nothing is final.
+The schema layer is the most settled: it is specified precisely enough to implement, and has two reference implementations, in Rust and C++.
+The page, durability, span-table and sequence layers are settled in design and worked out in detail, and kladde-rs and kladde-cpp implement them byte for byte as stated, but nothing is final.
 The journal is at the same stage, byte encoding and page layout included.

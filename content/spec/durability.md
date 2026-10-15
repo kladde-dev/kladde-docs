@@ -167,7 +167,7 @@ One `fsync` at open, after the headers are read and before any page is offered t
 
 This is worth a syscall per open, because respecting the older world instead is not free: it means resolving *its* span table and walking *its* chains as well, purely to learn which pages it reaches.
 An implementation that would rather not fsync at open can have the same effect by letting its first flush extend the file rather than reuse anything, since that flush's own `fsync` makes the governing header durable and its commit retires the older world.
-The reference implementation uses the "`fsync` at open" option for simplicity.
+Both reference implementations use the "`fsync` at open" option for simplicity.
 
 ### Case analysis for a power cut during flush `E`
 
@@ -211,7 +211,7 @@ Both header pages always exist, and a flush small enough to keep its entries [in
 So "free something and flush" can commit with zero bytes free on the device, and each such commit retires an older world and turns its pages reusable.
 What is left is a file with no reusable page *and* no room to grow, which is a file that is essentially all live — and there "cleaning cannot keep up" and "the file is honestly this large" [coincide](../impl/consolidation.md#pacing).
 
-The reference implementation therefore reserves no slack beyond what a consolidation immediately needs, preferring small files.
+Both reference implementations therefore reserve no slack beyond what a consolidation immediately needs, preferring small files.
 
 ### Detecting that the disk is full
 

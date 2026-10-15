@@ -332,7 +332,7 @@ It is safe for the same reason reuse is: no header that recovery could choose re
 The journal's last page does not count while it is empty, since a reader treats [a journal page past the end of the file](../spec/file-format.md#the-journal-pointer) as empty too.
 The new end is always a page boundary, never inside the last page's padding.
 
-Truncating is cheap, but shrinking and regrowing the file on every flush of a workload that oscillates is not, so the reference implementation truncates only once the reusable tail exceeds a threshold, and at close and open.
+Truncating is cheap, but shrinking and regrowing the file on every flush of a workload that oscillates is not, so both reference implementations truncate only once the reusable tail exceeds a threshold, and at close and open.
 
 **An explicit full compaction would serve a file about to be exported or archived**: flush, and keep flushing in compaction mode, with an unlimited budget, until no hole is left and the file ends at its last live page.
 Neither the reference algorithms nor kladde-rs offer one yet; closing after a few flushes comes close.

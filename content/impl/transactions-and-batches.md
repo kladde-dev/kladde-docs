@@ -10,9 +10,9 @@ Transactions are normative — they are the unit of atomicity an application bui
 **Batches are not**: they are an implementation's mechanism for turning a long run of operations into reasonably sized transactions, and an implementation is free to offer something else or nothing at all.
 Both exist only to affect how mutations are *persisted*; the accompanying in-memory mutations are always immediate.
 
-**From [the buffer](#one-buffer-and-three-cursors) on, this page is the design of the reference implementation, not one way among several to meet the format.**
-kladde-rs keeps exactly one buffer of operations and the cursors into it described below, and appends and flushes by exactly the rules in [Flush triggers](#flush-triggers).
-A departure — a second buffer, copying between spans, another trigger — is a deviation: it is recorded in kladde-rs' implementation notes with its reason, and proposed as a change to this page if it is better, rather than taken as a free choice.
+**From [the buffer](#one-buffer-and-three-cursors) on, this page is the design of the reference implementations, not one way among several to meet the format.**
+kladde-rs and kladde-cpp each keep exactly one buffer of operations and the cursors into it described below, and append and flush by exactly the rules in [Flush triggers](#flush-triggers).
+A departure — a second buffer, copying between spans, another trigger — is a deviation: it is recorded with its reason, in the [implementation notes](implementation-notes.md) for kladde-rs and in [kladde-cpp](../cpp/) for kladde-cpp, and proposed as a change to this page if it is better, rather than taken as a free choice.
 
 ## Three mechanisms over one journal
 

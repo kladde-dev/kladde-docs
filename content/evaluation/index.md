@@ -2,7 +2,7 @@
 title: Evaluation
 ---
 
-Measurements of [kladde-rs](../rust/) under realistic workloads, and what they say about the design.
+Measurements of [kladde-rs](../rust/) and, in the Inkscape demo, [kladde-cpp](../cpp/) under realistic workloads, and what they say about the design.
 
 **Every page but the last measured the design that the present one replaced**, of [allocations and an address table](../superseded/allocations.md): "main" in them is kladde-rs's main branch as it stood then, which holds that design and is kept as the branch `address-table`.
 Their findings about consolidation's policies — the churn floor, the budget, free filling, compaction mode — carry over to pages of spans, since the present design keeps those policies; their findings about statements, allocations and layouts do not.

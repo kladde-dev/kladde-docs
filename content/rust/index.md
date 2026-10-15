@@ -2,7 +2,7 @@
 title: kladde-rs
 ---
 
-The Rust implementation of kladde, and the reference implementation of the [specification](../spec/).
+The Rust implementation of kladde: one of the two reference implementations of the [specification](../spec/), with [kladde-cpp](../cpp/) in C++.
 
 Everything here is **specific to Rust** and should be expected to differ in a port.
 The [file format](../spec/) and the [algorithms](../impl/) are shared; the trait shapes, the mutation-capture mechanism, the macros, and the memory layout are not.

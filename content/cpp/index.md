@@ -2,7 +2,7 @@
 title: kladde-cpp
 ---
 
-The C++ implementation of kladde: a second, independent implementation of the [specification](../spec/), and the library behind the Inkscape demo.
+The C++ implementation of kladde: one of the two reference implementations of the [specification](../spec/), independent of [kladde-rs](../rust/) in Rust, and the library behind the Inkscape demo.
 
 Everything here is **specific to C++**.
 The [file format](../spec/) and the [algorithms](../impl/) are shared with [kladde-rs](../rust/); the description of types, the handles and the error handling are not.
