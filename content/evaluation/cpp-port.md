@@ -112,7 +112,7 @@ The [typed SVG schema](#what-the-typed-schema-took) faces the same choice, and w
 - **Inkscape changes a document's tree while building it**, before anything can observe it: it adds a named view and version attributes as it creates a document from a file.
   So attaching the observer first compares Inkscape's tree with the file's and writes the difference, and any later event for a node the file does not know rewrites the file from the tree, a fallback that the tests never reach.
 - **Saving must not overwrite the kladde file with SVG.**
-  A backed document's filename is its kladde file, so the title bar names it and *Save* flushes it; *Save As* still writes SVG wherever the user chooses, and an imported `.svg` is left as it was.
+  A backed document's filename is its kladde file, so the title bar names it; the commands bar and the File menu offer no *Save*, and Ctrl+S only flushes the file, while *Save As* still writes SVG wherever the user chooses, and an imported `.svg` is left as it was.
 - **Only the GUI imports.**
   Opening an `.svg` in the GUI creates `foo.kladde` next to it, asking first if that file exists; the command line, which Inkscape uses for conversions and exports, opens files as before, so that `inkscape --export-type=png foo.svg` leaves no `foo.kladde` behind.
 
