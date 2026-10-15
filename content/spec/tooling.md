@@ -5,7 +5,7 @@ title: Tooling
 What a generic tool may assume about a kladde file it did not write, and how far it can get without knowing the application's data structures.
 
 **Status:** design intent.
-No tools exist yet.
+kladde-rs's `kladde-inspect` reports on any kladde file at all three levels below, without consolidating or exporting it; kladde-cpp's `kladde-store-dump` prints a file's sequence, fingerprint and schema.
 
 ## The premise
 

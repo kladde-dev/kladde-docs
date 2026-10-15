@@ -17,6 +17,7 @@ The workspace, what depends on what, and where the language-neutral half ends.
 | `kladde` | the application-facing entry point: creating and opening files, the root value, transactions and batches. Re-exports the derive macro and everything a `Durable` impl names, so an application needs this crate and nothing below it. |
 
 Two more crates sit beside them, used by the measurements and nothing else: `kladde-svg`, an SVG drawing held as a durable value, with `svg-bench` among its binaries, and `kladde-bench`, with `text-bench`; together they drive the [evaluation](../evaluation/tools.md).
+A third, `kladde-inspect`, is a command-line [tool](../spec/tooling.md) that reports where the bytes of any kladde file go, from `kladde-store`'s `inspect` module and the file's own schema.
 
 The dependency direction is strictly downward, and `kladde-store` deliberately depends on nothing but `kladde-varint` — it is usable on its own as a persistent store of one byte sequence, independently of anything above it.
 
