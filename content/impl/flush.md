@@ -47,7 +47,7 @@ A record whose range does not lie inside the sequence, or a paste of a cut its j
 ## Mapping pieces to spans
 
 **A committed range is shown by the spans that showed it, found through the rope; where a range begins or ends inside a span, the span is split**: its left part is stated again with a shorter length, and its right part becomes a new span over the same bytes.
-New bytes become new spans, inline below the [threshold](#the-inline-threshold) and placed in data pages above it.
+New bytes become new spans, inline below the [threshold](#the-inline-threshold) and placed in data pages above it, unless a [payload page](#payload-pages) holds them already.
 Every span is linked to the one that now follows it, and every span whose content, length or successor changed is stated, with every new one.
 
 So a splice cuts the chain at its two ends and adds the span of its new bytes: one to three entries.
@@ -57,6 +57,16 @@ Every span inside a moved run keeps its entry, since neither its bytes nor its s
 
 Spans that no chain reaches any more are dropped: their ids are free, and their entries dead.
 The [reach rule](../spec/span-table.md#rules-for-writers) holds by construction, since a span becomes reached only as a new span, or as a span whose entry the flush writes anyway.
+
+### Payload pages
+
+**Bytes that a payload page of the flush's epoch holds become a span over the page, and the page a data page of the header the flush commits, without a byte written.**
+The journal's buffer records, beside its arena, which runs of the arena also lie in a payload page, and where ([placing them](transactions-and-batches.md#payload-pages)); so the fold needs no source of its own for them, and its `Arena` pieces are mapped as before, except that each part of one that a placed run covers becomes a `Ref` over the payload page.
+The page is taken into the flush as a page it fills, so that the commit makes it live with the pages it writes, its coverage the bytes its spans show; a payload page that no span shows retires with the journal's pages.
+
+- **Only payload pages of the flush's own epoch**: a flush that folds a recovered journal and, through its seal, the next one finds the next one's pages of a higher epoch than its own, which [the epoch assertion](../spec/file-format.md#epochs) keeps out of its header's world, so their bytes are written again, as new bytes.
+- **Not a part shorter than [`rewrite_below`](#overwrites-split-or-rewrite)**, which a later record of the journal cut out of a run: it is written again with the bytes around it, rather than keeping a page alive for a few bytes.
+- **The page keeps its slack**, the room a payload page's last run left, until consolidation evacuates it, since the flush writes no page it takes this way.
 
 ### Overwrites: split or rewrite
 
@@ -147,7 +157,7 @@ free.ready.extend(free.retiring.drain(..));
 free.retiring = pages_this_commit_stopped_referencing();
 ```
 
-Taking a page takes the **lowest** page in `ready`, and extends the file only when `ready` is empty; journal pages come from the same pool.
+Taking a page takes the **lowest** page in `ready`, and extends the file only when `ready` is empty; journal pages and [payload pages](transactions-and-batches.md#payload-pages) come from the same pool.
 Lowest-first lets pages at the end of the file stay dead once they die, so that [truncation](consolidation.md#truncation) can return them.
 
 ## The header as write buffer

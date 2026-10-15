@@ -323,7 +323,7 @@ It is taken out of the ranking rather than weighted inside it: the rotating walk
 Lowest first keeps new content away from the end of the file, so pages that die there stay dead and the tail drains of its own accord; a first-in-first-out pool would refill the tail as readily as any hole.
 The pool is an ordered set rather than a min-heap, because it is used from both ends: allocation takes the lowest page, and truncation removes the highest ones.
 Lowest first gives up the contiguity that a run from the end of the file would offer a large write, but [contiguity buys nothing](flush.md#page-contiguity-buys-nothing).
-Journal pages come from the same pool, so the journal, too, starts in the lowest hole rather than at the end.
+Journal pages come from the same pool, so the journal, too, starts in the lowest hole rather than at the end, and so do payload pages, which become data pages where they lie.
 
 ### Truncation
 

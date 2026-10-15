@@ -25,7 +25,7 @@ A tool at this level can:
 - list every chain, its length, and its spans with the pages they show bytes of;
 - compute the live bytes, the description's share, the file's length, and therefore **garbage**;
 - report the per-page live fraction, and how much of the file is superseded pages awaiting reuse;
-- report the journal's length and how far the committed state lags behind it;
+- report the journal's length, the payload pages it names, and how far the committed state lags behind it;
 - **consolidate** the file into a tight new one, and truncate it.
 
 Rewriting a file from an external tool is safe for exactly the reason it is safe internally: it changes the content of no chain, so it is invisible to any reader.

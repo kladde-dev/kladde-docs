@@ -69,7 +69,7 @@ A cut and its paste carry none: the flush resolves them as a move, which states 
 Naming cuts by distance rather than popping them off a stack lets a writer paste its cuts in any order, so two values that swap containers need no care about which is pasted first.
 
 *Why as long as the journal, and not longer.*
-Within one journal every cut is still at hand: its bytes lie in the committed sequence or in the journal itself, which the fold and recovery both read, so a cut can outlive its transaction at no cost to the file.
+Within one journal every cut is still at hand: its bytes lie in the committed sequence, in the journal itself, or in its [payload pages](#external-bytes), which the fold and recovery all read, so a cut can outlive its transaction at no cost to the file.
 That serves an application that removes a value in one transaction and inserts it again in a later one — undoing a deletion is the common case — which would otherwise write the value's encoding again.
 A cut that outlived its journal would need its bytes kept reachable from the header, as content of their own, after the flush that folds their removal; deleted content would then stay in the file, which is not what an application deleting it expects.
 So a cut is a *weak* promise: [an implementation](../impl/values.md#moving-a-value-between-containers) pastes it while its journal lasts, and encodes the value again otherwise.
@@ -128,14 +128,17 @@ It starts at 0 at the start of each epoch's journal, which is always replayed fr
 **A `Write` of no bytes is the escape to further kinds of record**, since it changes nothing: its head is followed by `escape:varint`, which says what record follows.
 
 ```
-escaped := 0x00 0x00 escape:varint (seal) ; the head of a Write with delta 0,
-                                          ;   and its length 0
-seal    := page:varint                    ; escape 0
+escaped  := 0x00 0x00 escape:varint (seal | external)
+                                           ; the head of a Write with delta 0,
+                                           ;   and its length 0
+seal     := page:varint                    ; escape 0
+external := record                         ; escape 1: a Write or Splice
+                                           ;   whose bytes are external
 ```
 
 An escaped record must have delta 0, and leaves the cursor where it was.
 
-The only escape defined is 0, the [seal](#seals); a reader refuses any other until a revision defines it.
+Two escapes are defined: 0, the [seal](#seals), and 1, a record whose bytes are [external](#external-bytes); a reader refuses any other until a revision defines it.
 
 Every position, `removed` count, `length` and `to` is below `2^48` ([bounds](span-table.md#bounds)), and a record's range must lie inside the sequence.
 A `Paste`'s `cut` must name a cut of its own journal that is not pasted yet; its length is the cut's.
@@ -163,6 +166,46 @@ Without one, the next journal exists only once the flush's header names it, so a
 With a seal, recovery reaches the next journal through the journal it folds, whichever of the two headers governs.
 A writer can then let the application append while it folds, writes and syncs, on the caller's thread or another; whether it does is [its own choice](../impl/transactions-and-batches.md#a-flush-off-the-callers-thread), and the format is the same either way.
 The seal reuses the escape that a `Write` of no bytes was reserved for, so it costs no kind of its own.
+
+### External bytes
+
+**A `Write` or a `Splice` may keep its bytes *external*: in a framed `Data` page of their own, a *payload page*, which the record names by length, address and checksum, and which the flush that folds the journal takes into the file as a data page without writing its bytes again.**
+Bytes in the journal are written twice, once by the append and once by the flush that writes them into data pages, and the journal pages they took are holes once the journal is folded; external bytes are written once, and their pages stay in use.
+
+```
+external := record              ; a Write or Splice, after escape 1
+; in it:
+bytes    := length:varint address:varint crc:byte{4}
+```
+
+- `length` is 1 to `MAX_PAGE_CONTENT`, and `[address, address + length)` lies inside the `content` of one page, as the bytes a [`Ref`](span-table.md#entries) shows do; `address` is absolute, a byte offset in the file, and `crc` is the CRC-32C of those bytes.
+- The record after escape 1 is a `Write` or a `Splice`; a `Move`, a `Paste`, or another escape there makes the file invalid.
+  It moves the cursor and makes a cut as it would with its bytes inline.
+- A payload page is a `Data` page whose `epoch` is that of the journal whose transactions name it.
+  It is written before the first transaction that names it is appended, to a page that is [reusable](durability.md#the-reuse-rule) then or added at the end of the file, and it belongs to the world of every header whose journal leads to that transaction from the moment the transaction is appended.
+- While its journal is the one being appended to, a payload page may be written again to append bytes after its content, as the journal's last page is; it is written whole each time, framing included, and changes no byte a transaction already names.
+- No two references of one journal name overlapping bytes, a writer invariant that readers need not check, as for [spans](span-table.md#rules-for-writers).
+- A flush that folds a payload page takes it into the header it commits only if the page's epoch is not above its own, by [the epoch assertion](file-format.md#epochs): a payload page of a later journal, reached through a seal by a flush that folds both, has its bytes written again.
+
+*Why an escape, rather than a flag in the head or in the length.*
+A flag in the head would halve the deltas that fit its one byte, from −16 to 15 to −8 to 7, for every record, and would mean nothing for a `Move` or a `Paste`; a flag in the length of `bytes` would cut the inline payloads whose length fits one byte from 127 bytes to 63.
+The escape costs three bytes per external record and nothing for any other: 0.07 % of a reference to a full page, and 0.15 % of one to 2 KB.
+
+*Why an absolute address.*
+A distance from where the journal's previous reference ended would mostly be the 15 bytes of framing from one full page's content to the next, a byte against four in a file of 2 MB to 256 MB; the three bytes it would save are as small a share as the escape's, and an absolute address needs no cursor carried across records and transactions.
+
+*Why a checksum per reference.*
+The checksum of a transaction covers its records as they are in the stream, so recovery validates a transaction before it decodes it; feeding the external bytes into the CRC chain instead would make recovery decode unvalidated records, to find which pages to read, and would tie the chain's definition to the record encoding.
+And the payload page's own framing cannot stand in for the checksum: when a crash loses header `E` after a session wrote payload pages for journal `E + 1`, the next session issues epoch `E` again, and a page it takes for journal `E + 1` may still hold the lost session's payload page, framed and of epoch `E + 1`; if a power cut then kept a transaction but not the new write of its page, the stale framing would validate.
+No zeroing can help there, as it helps [at the start of a session](#the-start-of-a-session), since the stale pages could be any of the reusable ones.
+The checksum costs four bytes per reference, 0.1 % of a reference to a full page and `4 / r` of one to `r` bytes, and needs no salt: a page that holds exactly the bytes a reference names holds the right bytes, however it came to hold them.
+
+*Why a payload page's framing is checked all the same.*
+A torn write can leave a page's new content under its old framing, and the flush takes the page into a header's world, where every page's framing must validate; requiring the journal's epoch also keeps a reference out of the governing header's world, whose pages carry that header's epoch at most.
+
+*Why appends to a payload page are safe.*
+A tear needs a power cut, and under a power cut [the guarantee](durability.md#what-is-guaranteed) covers only the transactions a completed flush folded, whose payload pages are data pages of a committed header that nothing writes again.
+A torn append damages the bytes earlier transactions of the same journal name, or the page's framing, so their checks fail and recovery stops before the first of them, as a torn append to the journal's last page does; it reaches back further, to the oldest transaction whose bytes share the page, and that is bounded by the epoch either way.
 
 ### Framing
 
@@ -220,9 +263,11 @@ Each checksum field stores the CRC-32C of the chain input up to that field: a tr
 1. Read and validate the [header](file-format.md#header-pages), taking the CRC-valid slot with the highest epoch, and bulk-load its world.
 2. Walk the journal from the header's `journal_pointer`, feeding the chain as it goes: check each transaction's `crc` once its records have been read, and each trailer's `crc` before following its `next`.
 3. At a complete transaction that is a [seal](#seals), continue the walk at the page it names, as the journal of the next epoch: the chain restarts, salted with that epoch, and so do the cursor and the cuts.
-4. Stop at the first check that fails, or at a `journal_pointer`, `next` or seal that points past the end of the file.
+4. At a complete transaction that names [external bytes](#external-bytes), read each reference's page: if the page lies past the end of the file, its framing fails, it is no `Data` page of the journal's epoch, the range does not lie inside its content, or the bytes there do not match the reference's `crc`, the page's write did not reach the disk, and the transaction belongs to the torn tail.
+   A reference whose `length` is 0 or above `MAX_PAGE_CONTENT`, or whose range would cross a page boundary, is a writer's bug, since a torn write cannot produce a matching transaction `crc`, and makes the file invalid.
+5. Stop at the first check that fails, or at a `journal_pointer`, `next` or seal that points past the end of the file.
    The complete transactions before that point are the journal; whatever follows them is the torn tail.
-5. Replay the complete transactions in order.
+6. Replay the complete transactions in order.
 
 Replay is purely mechanical and involves no application code.
 
@@ -251,7 +296,7 @@ The protocol that commits this is in [Durability](durability.md#the-flush-protoc
 **A flush folds its whole journal, which holds complete transactions only**, so every header describes the state at a transaction boundary.
 
 An implementation has wide latitude in *what* it writes.
-It may apply records naively in order, or it may optimize — dropping a write that a later write fully supersedes, resolving a cut and its paste as a move, stating bytes a splice shifted without writing them again.
+It may apply records naively in order, or it may optimize — dropping a write that a later write fully supersedes, resolving a cut and its paste as a move, stating bytes a splice shifted without writing them again, stating external bytes where their payload page holds them.
 It may reorder freely, so long as the resulting sequence is the one an in-order replay produces: every byte of the sequence has one right answer, so a fold's freedom is to reach that answer by any route, and to cut it into spans however it likes.
 
 ### Checkpoint versus commit

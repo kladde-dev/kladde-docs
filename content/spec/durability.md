@@ -9,7 +9,7 @@ This is the layer that makes durability a **guarantee by prevention** rather tha
 ## What is guaranteed
 
 **Under an application crash** — the process dies, the operating system survives — every mutation whose call returned successfully survives.
-The journal's pages remain in the OS page cache and are written back on the OS's own schedule, which an application crash does not interrupt.
+The journal's pages, and the [payload pages](journal.md#external-bytes) its transactions name, remain in the OS page cache and are written back on the OS's own schedule, which an application crash does not interrupt.
 
 **Under a reported error** the same holds, for a simpler reason: the process is still running.
 An implementation that cannot complete an operation reports the failure, by whatever means its language makes idiomatic, and refuses further work — and every mutation that returned successfully before that is in the journal exactly as if nothing had gone wrong.
@@ -30,7 +30,7 @@ Both are excluded by construction rather than by cleanup.
 
 Page states are **derived, not stored**.
 
-Define the **world** of a header as everything reachable from it: its span-table pages, the data pages that reached spans show bytes of, and every page of the *next* epoch's **journal**, of which the header names only the first page; the rest are reached from it.
+Define the **world** of a header as everything reachable from it: its span-table pages, the data pages that reached spans show bytes of, every page of the *next* epoch's **journal**, of which the header names only the first page, the rest reached from it, and every **payload page** that a complete transaction of that journal [names](journal.md#external-bytes).
 At any moment the two on-disk header slots define at most two worlds that can (and typically do) overlap, and every page is in exactly one of three states:
 
 - **live** — in the world of the newer on-disk header;
@@ -45,14 +45,16 @@ stateDiagram-v2
   fallback --> reusable: header E+k is fsynced<br>(at latest in flush E+k+1)
   live --> nonexistent: file shrinks past the<br>journal's empty last page
   nonexistent --> reusable: file grows, bringing page<br>into existence
-  reusable --> live: (a) written during flush E<br>and in header E's world<br>or (b) appended to journal
+  reusable --> live: (a) written during flush E<br>and in header E's world<br>or (b) appended to journal,<br>or named by it as payload
   reusable --> nonexistent: file shrinks once every<br>higher page is reusable<br>or the journal's empty<br>last page
-  live --> live: append transaction<br>(journal pages only)
+  live --> live: append transaction<br>(journal and payload<br>pages only)
 ```
 
 ### The reuse rule
 
 > **A flush may write only to reusable pages, or extend the file.**
+
+The writes between flushes keep to the same rule: the journal and its [payload pages](journal.md#external-bytes) take reusable pages or extend the file, and write again only pages of the journal being appended to.
 
 The whole durability argument rests on this.
 It means a page that the commit of epoch `E` stopped referencing becomes writable in flush `E + 2`: it stays fallback until header `E` is durable, and within a session the `fsync` that makes it so is that of flush `E + 1`, which comes only after that flush has written its pages.
@@ -100,9 +102,9 @@ Appends to it are protected by the chained, epoch-salted transaction CRCs and ar
 
 Flush `E` then proceeds:
 
-1. **Fold** journal `E` in memory into the new content of the sequence, as runs of bytes already in the file and new bytes.
+1. **Fold** journal `E` in memory into the new content of the sequence, as runs of bytes already in the file — in the committed sequence's data pages, or in the journal's payload pages of epoch `E` — and new bytes.
 2. **Choose target pages**: reusable pages, else grow the file.
-3. **Write data pages** for the new bytes.
+3. **Write data pages** for the new bytes; the payload pages that step 1 keeps join the header's world as data pages, written already.
    Remaining space in each new page may be filled with live content relocated from sparse pages — consolidation that costs no extra page writes.
 4. **Write further consolidation pages**, within whatever budget the implementation chooses.
 5. **Write span-table pages**: the entries of every span that steps 1–4 created or changed, as the [reach rule](span-table.md#rules-for-writers) requires and as the writer chooses beyond it.
@@ -123,11 +125,12 @@ See [[#why one fsync suffices|below]].
 
 The protocol maintains exactly two, and they are what the argument rests on.
 
-**I1 — a header is issued only after an `fsync` that covered (i) everything the new header references, except the journal it names, and (ii) the previous header.**
+**I1 — a header is issued only after an `fsync` that covered (i) everything the new header references, except the journal it names and that journal's payload pages, and (ii) the previous header.**
 The header write of epoch `E` happens after `fsync` `E` returns, and `fsync` `E` also flushed the header of epoch `E − 1`, which was issued before it.
 
-The named new journal is exempted from invariant I1 because it is the one part of a world that is still being written after the header is issued: header `E` names the journal of epoch `E + 1`, which is still empty when `fsync` `E` runs.
-It needs no protection from I1: it validates itself, transaction by transaction, through the chained epoch-salted CRCs.
+The named new journal is exempted from invariant I1 because it is the one part of a world that is still being written after the header is issued: header `E` names the journal of epoch `E + 1`, which is still empty when `fsync` `E` runs, and so are the payload pages its transactions will name.
+It needs no protection from I1: it validates itself, transaction by transaction, through the chained epoch-salted CRCs, and its payload pages reference by reference, through the checksums its records carry.
+A payload page that flush `E` takes into its header's world was written before its transaction was appended to journal `E`, so `fsync` `E` covers it.
 
 *Consequence:* a header found on disk implies that everything in its world except the journal it names is durable.
 There is no such thing as a valid header pointing at a missing page (except for the journal page it names, which does not need to exist until its first transaction is recorded), so recovery never has to validate a world before trusting it — only the journal it replays.

@@ -155,6 +155,7 @@ An implementation must support these, and must fail cleanly rather than silently
 - **The live `Ref`s showing bytes of one `Data` page** have lengths summing to at most `2^32 − 1`, so that a reader can track a page's live bytes in a 32-bit counter.
   The writer invariant holds that sum below one page's worth; the bound binds only files that let several reached spans show the same byte, which is legal and which a reader must therefore survive.
 - **An encoded [transaction](journal.md#framing)**, without framing, takes at most `2^32 − 1` bytes, so that its length prefix fits in 32 bits.
+- **An [external reference](journal.md#external-bytes)** names 1 to `MAX_PAGE_CONTENT` bytes inside one page's `content`, as a `Ref` does, so its length takes at most 3 bytes and its address at most 7.
   Trying to encode a larger transaction must fail rather than silently cut it in parts.
 
 ## Design directions

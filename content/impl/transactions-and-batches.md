@@ -144,9 +144,10 @@ The implied cursors are invariants at every operation boundary, not just labels:
 > **Keep the journal within its page budget.**
 > **A transaction that would not fit in what is left of the budget is preceded by a flush, and only a transaction too large for the budget on its own exceeds it, followed by a flush at once.**
 
-**The budget is a number of journal pages, `B`, and a transaction fits if the journal's stream, with the transaction appended, ends within `B` pages.**
+**The budget is a number of journal pages, `B`, and a transaction fits if the journal's stream, with the transaction appended, ends within `B` pages, counting each of the journal's [payload pages](#payload-pages) as one.**
 Each journal page holds `page_size − 8` bytes of the stream, the rest being [its trailer](../spec/journal.md#pages), and a transaction of `n` record bytes takes `n` plus its length prefix plus its 4-byte `crc`.
 The writer takes the next journal page only once the stream continues past the current one, so fitting within `B · (page_size − 8)` stream bytes is fitting within `B` pages.
+A transaction's size is estimated with its bytes inline, which for large bytes is about the payload pages they will take.
 A transaction that does not fit even into an empty journal is **overlong**.
 
 **Whenever operations close** — a bare operation recorded in `Immediate` or `InBatch`, or the outermost transaction ending, `InTransaction → Immediate` or `InTransactionInBatch → InBatch` — let `X` be the operations that just closed, `ops[ready_cursor..end]`, and apply:
@@ -187,6 +188,25 @@ A budget of 256 pages, a megabyte, made the files of drawings of 40 KB to 1 MB [
 **The floor of 2 pages** keeps a small file from flushing at every few edits: a budget of 1 page flushed the same drawings two to four times as often as 2 to 4 pages and made their files no smaller.
 **The ceiling of 10 pages** keeps a large file's journal, and with it the pages it holds and the time a flush takes, bounded; a file of tens of megabytes gains from a longer journal only fewer flushes, which an application that wants them can have by fixing the budget.
 
+### Payload pages
+
+**When a transaction is appended, the bytes of each of its `Write`s and `Splice`s that carries at least `payload_threshold` bytes, 2 KB, are written into [payload pages](../spec/journal.md#external-bytes) first, and the transaction names them rather than holding them.**
+The decision falls at the append, not when the operation is recorded, because the records of an open transaction or a batch's ready run may still be discarded, and the cuts that an application holds name records by their number in the buffer, which splitting a record there would change.
+So the buffer keeps each record as it was recorded, its bytes in the arena, and records beside the arena which runs of it also lie in a payload page, at which page, offset and checksum; the encoder writes such a record as one record per run, and [the flush](flush.md#payload-pages) maps the runs onto the pages.
+Nothing above the store sees a difference: a container hands the store its bytes as before.
+
+- **The bytes go into the journal's open payload page as far as it has room, and the rest into new pages, a page's worth at a time**; a last part shorter than the threshold that would open a page stays inline in the journal, in a record of its own.
+  The pages a transaction touched are written whole, framed with the journal's epoch, before the transaction is appended, and the open page is written again whenever a later transaction of the journal appends to it.
+- **A record whose bytes are cut into runs becomes one record per run**, the first removing what the record removed and the rest removing nothing at the cursor, delta 0; a `Write` becomes such splices too, the first removing what it overwrote, so that it still makes one cut, and a paste of the overwritten value still names one.
+- **Payload pages come from the reusable pool, lowest first, as journal pages do, but leave its last page alone**, growing the file instead: a large transaction is followed by a flush, which seals only if a reusable page is left for the next journal to begin in, and without its seal that flush could not [commit on a worker](#a-flush-off-the-callers-thread), and a lost header would lose what was appended after it.
+- **Payload pages count toward the budget**, so a transaction with more payload pages than the budget is overlong: preceded by a flush if the journal is not empty, and followed by one at once, which adopts its pages and writes a header and a leaf or two.
+  The budget so bounds how much content waits for a flush to be durable under a power cut, as well as the journal's share of the file.
+- **A transaction that is abandoned after its pages were written** leaves them in no world: they return to the pool, and the bytes it added to the open page are dead from the start.
+  A payload page that cannot be written fails the transaction and poisons the store, as a journal append that cannot get a page does.
+
+**The threshold is about half a page, and unmeasured**: a payload page holding `r` bytes costs a page write now and leaves `4081 − r` bytes of slack until an append or consolidation fills it, where inline bytes cost `r` in the journal and `r` again in a data page the flush shares with other content.
+Creating a file of 4.26 MB, one splice of the whole drawing, then takes four journal pages besides its payload pages, and the file comes out at 1076 pages, within three pages of a consolidated copy, where with every byte in the journal it took 2139.
+
 ### Why `ready` always fits
 
 `ready` only becomes longer in step 3, which checked that it fits after what the journal pages already hold.
@@ -205,7 +225,7 @@ A flush folds only `committed`, so `X` waits in the buffer past `committed_curso
 **The flush after an overlong transaction keeps a long journal from lingering**: the journal is back within its budget as soon as the operation that exceeded it returns.
 
 **The budget bounds the file, not memory.**
-An open transaction is held in memory in full, whatever the budget, because nothing can [fold an unfinished transaction](../spec/journal.md#checkpoint-versus-commit); a huge transaction costs memory in proportion to its size, and journal pages in proportion too once it is appended.
+An open transaction is held in memory in full, whatever the budget, because nothing can [fold an unfinished transaction](../spec/journal.md#checkpoint-versus-commit); a huge transaction costs memory in proportion to its size, and journal or payload pages in proportion too once it is appended.
 
 ### Consequence for write-phase state
 

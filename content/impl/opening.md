@@ -34,6 +34,8 @@ If the header's root fingerprint differs from the application's root type's, ste
 It has to fold a non-empty recovered journal before appending to it anyway ([the start of a session](../spec/journal.md#the-start-of-a-session)), and replaying records into in-memory values would need every container to accept byte-level records it did not make.
 The price is that a file whose journal was not empty costs a flush to open.
 
+Recovery reads the [payload pages](../spec/journal.md#external-bytes) the journal names, to check each reference, and keeps their bytes in the buffer with where they lie, so that the flush at open takes those of its own epoch into the file as data pages, as any flush does ([payload pages](flush.md#payload-pages)); those of a later journal, reached through a seal, it writes again.
+
 ## The seeds of the rotating walk and of heat
 
 What the file does not record, open seeds:

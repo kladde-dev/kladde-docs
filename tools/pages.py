@@ -91,7 +91,6 @@ ORDER = [
     "drafts/variable-size.md",
     "drafts/consolidation-from-statements.md",
     "drafts/splices.md",
-    "drafts/payload-pages.md",
     "drafts/cpp.md",
 ]
 

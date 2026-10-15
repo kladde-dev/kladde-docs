@@ -84,6 +84,7 @@ Files written by each implementation are added to the corpus, so that the suite 
 
 - *Journal prefix.* For each of a set of mutation sequences, truncate the resulting journal at every byte offset, open it, and assert that it opens successfully and that its sequence decodes to the state after some prefix of the transactions.
   This is the mechanical check on [the ordering rule](journal.md#ordering): that every container groups the records of one edit into one transaction.
+- *Payload pages.* For each of a set of mutation sequences with [external bytes](journal.md#external-bytes), drop every subset of the payload page writes since the last `fsync`, and assert that the file opens on the state after some prefix of the transactions, losing none that every write of its payload pages reached.
 - *Flush interruption.* For each of a set of flushes, simulate a power cut after every individual page write — including reordering the writes, since write-back is not ordered — and assert that the file opens and lands on either the previous committed state or the new one, never in between.
   This is the mechanical check on [I1 and I2](durability.md#the-two-invariants).
 

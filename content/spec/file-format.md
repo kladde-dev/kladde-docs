@@ -29,6 +29,7 @@ The operating system rewrites a whole page even when the application modifies on
 16 KiB may pay on platforms with 16 KiB native pages, which is a measurement question rather than a design one — nothing in this specification depends on the value.
 
 Outside of journal appends, an implementation **writes whole pages only**, and only to pages that are reusable under the [reuse rule](durability.md#the-reuse-rule).
+A [payload page](journal.md#external-bytes) is the one whole page written again while live: to append bytes, as the journal's last page is appended to, while its journal is the one being appended to.
 A page must also consist of whole blocks of the file system that stores the file, which the reuse rule [relies on](durability.md#the-reuse-rule); 4 KiB pages do on common file systems.
 
 ## Page framing
