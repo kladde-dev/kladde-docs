@@ -53,15 +53,15 @@ if journal.flush_if_journal_exceeds(0.5)? {
 }
 ```
 
-`close()` flushes and then truncates the file after its last live page, which does not shrink it to its live pages: free pages below that one stay in the file.
-They go only as later flushes consolidate, each moving a bounded amount of live content down; space freed by one flush becomes available from the flush after it on.
-To reclaim more of it before closing, call `flush()` a few times first; a freshly created file, for instance, needs one or two:
+**When the user closes a document, call `close_consolidated()`.**
+It replaces the file with the smallest file that holds the value, in full pages and with an empty journal: it writes that file beside the old one, syncs it, and renames it over the old one, so a crash while closing leaves either file, each with every mutation that returned `Ok`.
+It takes time linear in the value's encoded size, rather than in what changed since the last flush:
 
 ```rust
-journal.flush()?;
-journal.flush()?;
-journal.close()?;
+journal.close_consolidated()?;
 ```
+
+`close()` is quicker, and leaves a larger file: it flushes and then truncates the file after its last live page, which does not shrink it to its live pages, since free pages below that one stay in the file.
 
 What flushing is *not* for: making your data survive an application crash.
 The journal already did that.

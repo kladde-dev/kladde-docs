@@ -182,6 +182,45 @@ The header's capacity is what remains after the file-header fields and its child
 
 Entries are derived from the span table as it finally stands, after everything else in the flush, so each span is stated exactly once in the flush's epoch, as the [format requires](../spec/span-table.md#rules-for-writers), however many sources touched it.
 
+## Closing into a consolidated file
+
+**An ordinary close replaces the file with a fully consolidated copy of itself instead of flushing: the smallest file that holds its content, written beside it and renamed over it.**
+It costs time linear in the content, which a flush must never cost, and a user closing a document waits for nothing else, so close is where it belongs; a close that must be quick flushes and [truncates](consolidation.md#truncation) instead.
+
+### The layout
+
+**The schema chain, the sequence and the private chain, concatenated in this order, fill data pages of `MAX_PAGE_CONTENT` bytes each, from page 2 on; only the last data page is partly filled.**
+
+- **Each run of a chain within a page is one `Ref` span**, so a page holds one span, or two where one chain ends and the next begins; the empty private chain of the reference implementation adds none.
+- **Span ids are 1, 2, 3, … in chain order**, so every entry but the last of its chain names its successor implicitly, and an entry of a full page takes five bytes: an `id_delta` of 1, the tag, the length, and an `address_delta` of 15, the framing between two pages' contents.
+- **The entries go to the header if they all fit**, which they do for about 800 pages, 3.2 MB of content; otherwise all of them go to leaves right after the data pages, and the header holds only the child references, which reach some thousands of leaves, gigabytes of content.
+- **The header goes to slot 0, with the smallest even epoch above the old file's**, and every page carries that epoch; page 1 is left blank, as in a new file.
+- **The journal pointer names the page past the end of the file**: the journal is empty.
+
+A file of `n` bytes of content thus takes `2 + ⌈n / 4081⌉` pages, and a few more above 3.2 MB: within 0.4 % plus three pages of its content.
+
+### The procedure
+
+1. **Append a batch's ready run to the journal**, so that the old file holds everything recorded outside an open transaction; the open transaction's operations are discarded, as at any close.
+2. **Fold the journal in memory, without a flush.**
+   [The fold](#the-fold)'s pieces say where each run of the new sequence comes from, the committed sequence or the journal's buffer, so they are written out in order: a committed run through the span table, from the data pages read at open if the application kept them, and otherwise from the file one page at a time; the schema and the private chain from memory.
+   Bytes pass through one page buffer on their way to the new file, so the content is never held whole.
+3. **Encode the span table, write the leaves and the header, and `fsync` the new file.**
+4. **Rename the new file over the old one, and `fsync` the directory**, which makes the rename durable.
+
+**A crash at any point leaves a file with everything recorded before the close.**
+Until the rename, the old file is as a crash would have left it anyway, its journal holding what no flush folded, and the new file is a hidden temporary file that nothing reads; the rename is atomic, and after it the new file holds the same content.
+A crash before the rename leaves the temporary file behind, which costs disk space and nothing else.
+
+### Why a new file
+
+**Writing a new file reaches the smallest layout in one pass, which flushing the old file cannot.**
+A flush in compaction mode with an unlimited budget would have to move every page above the lowest holes into them, while the pages it frees stay out of reach until its commit, and the spans would still be cut where edits cut them; it would take several flushes, each writing much of the file again.
+A new file has no older world to protect: none of its pages needs the [reuse rule](../spec/durability.md#the-reuse-rule), every span can be cut where a page ends, and the old file stays intact as the fallback until the rename.
+
+The price is disk space for both files while the new one is written, and that the file is a new one: hard links to the old file keep the old content, and anything that identifies the file by its inode loses track of it.
+Since kladde [assumes a single process with exclusive access](../spec/file-format.md#concurrency), nothing else should hold the file open, and the store holding it ends with the close.
+
 ## Correctness: the differential oracle
 
 Build the oracle before the optimizer.

@@ -91,6 +91,7 @@ With exceptions, the call throws `kladde::exception`; without, it calls the hand
 Flushes happen by themselves as the journal fills, and on `flush()` and `close()`.
 An interactive application calls `file.flush_if_journal_exceeds(0.5)` from its idle callback, so that a flush, and its `fsync`, falls between gestures; the Inkscape demo does so from a low-priority `Glib::signal_idle` handler after each change.
 As in kladde-rs, a flush [seals](../spec/journal.md#seals) the journal it folds where a reusable page can start the next one, and `Options::sync_on_worker` lets a flush that a mutation triggered run its `fsync` and header write on a `std::thread` of their own, [as Transactions and batches describes](../impl/transactions-and-batches.md#a-flush-off-the-callers-thread); it is off by default.
+`close_consolidated()` closes without a flush: it [replaces the file with the smallest file that holds the value](../impl/flush.md#closing-into-a-consolidated-file), and the Inkscape demo calls it whenever a drawing is closed.
 
 ## Inside the library
 

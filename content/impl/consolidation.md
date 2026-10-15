@@ -334,8 +334,7 @@ The new end is always a page boundary, never inside the last page's padding.
 
 Truncating is cheap, but shrinking and regrowing the file on every flush of a workload that oscillates is not, so the reference implementation truncates only once the reusable tail exceeds a threshold, and at close and open.
 
-**An explicit full compaction would serve a file about to be exported or archived**: flush, and keep flushing in compaction mode, with an unlimited budget, until no hole is left and the file ends at its last live page.
-Neither the reference algorithms nor kladde-rs offer one yet; closing after a few flushes comes close.
+**A full compaction writes a new file rather than flushing the old one into shape**, and it is done at close: [closing into a consolidated file](flush.md#closing-into-a-consolidated-file) describes it.
 
 ### Compaction mode
 
