@@ -35,12 +35,13 @@ Closing into a consolidated copy, as kladde-rs's and kladde-cpp's `close_consoli
 
 - **A `Write` or a `Splice` may keep its bytes *external*: in a payload page, named by address and length, with a checksum of the bytes.**
   The record is the ordinary one behind an [escape](../spec/journal.md#encoding), so records that keep their bytes inline cost what they cost today.
-- **A payload page is a framed `Data` page, of the epoch of the journal whose transactions name it, written whole before the first of them is appended, and never written again.**
-  It is written while it is still reusable, so the [reuse rule](../spec/durability.md#the-reuse-rule) needs no new exception.
+- **A payload page is a framed `Data` page, of the epoch of the journal whose transactions name it, written before the first of them is appended.**
+  While that journal is the one being appended to, the page may be written again to append bytes after its content, as the journal's last page is; an append changes no byte a transaction already names.
 - **A payload page belongs to the world of every header whose journal leads to a transaction that names it**, from the moment that transaction is appended, as the next journal does from the moment its [seal](../spec/journal.md#seals) is.
 - **Recovery checks each external reference against its page**: a page past the end of the file, a page whose framing fails or that is no `Data` page of the journal's epoch, a range outside its content, or bytes whose checksum does not match end the journal's valid prefix before the transaction, as a torn tail does.
 - **The flush that folds the journal states spans over the payload bytes where they lie**, and the payload pages become data pages of the header it commits.
 - **The store decides alone which bytes go external**, and how to cut them across records and pages; neither applications nor containers see a difference.
+- **Payload pages count toward the journal's budget**, so a large transaction is followed by a flush at once and becomes durable under a power cut as soon as that flush's `fsync` returns.
 
 ## Writing large bytes once: payload pages, a flush per transaction, or a creation path
 
@@ -49,14 +50,14 @@ Three designs would keep large bytes from being written twice; **payload pages a
 ### Payload pages
 
 The call that records a large transaction writes its payload pages and appends its records, without an `fsync`, as a call appends to the journal today; an application crash keeps both in the page cache, and a power cut keeps what write-back reached, which recovery checks.
-No flush is needed for the transaction, and the next ordinary flush adopts the pages and writes none of their bytes.
+The flush that follows it adopts the pages and writes none of their bytes, and with [`sync_on_worker`](../impl/transactions-and-batches.md#a-flush-off-the-callers-thread) its `fsync` runs off the caller's thread, so the call does not wait for the disk.
 The price is in the format: an escape, a reference with a checksum, recovery that reads the pages it names, and a world that includes them.
 
 ### A flush per large transaction
 
 The store would not append a large transaction at all, but fold it at once in a flush that writes its bytes straight into data pages; the format would stay as it is.
 But the call could not return before that flush's `fsync` and header write, since no journal record would hold the transaction until then, so every large transaction would wait for the disk on the caller's thread: milliseconds on an SSD, and much longer on a spinning disk or a network file system.
-That is the stall the seal and the [flush off the caller's thread](../impl/transactions-and-batches.md#a-flush-off-the-callers-thread) exist to keep away from every mutation, so this design would give it back exactly where a pasted image makes it most visible.
+That is the stall the seal and the flush off the caller's thread exist to keep away from every mutation, so this design would give it back exactly where a pasted image makes it most visible.
 
 ### A creation path of its own
 
@@ -85,14 +86,14 @@ bytes    := length:varint address:varint crc:byte{4}
 The head holds the delta and the kind in one zigzag varint, whose one byte fits deltas from −16 to 15; a flag would halve that to −8 to 7, for every record, so that the rare large record could save its three-byte escape.
 It would also mean nothing for a `Move` or a `Paste`, which carry no bytes.
 A flag in the `length` of `bytes` would leave the head alone, but cut the inline payloads that fit a one-byte length from 127 bytes to 63.
-An external record names at most `MAX_PAGE_CONTENT` bytes, so its escape costs at most 0.07 % of what it names.
+The escape's three bytes are 0.07 % of a reference to a full page, and 0.15 % of one to 2 KB, the shortest the store writes ([the threshold](#the-stores-policy)).
 
 ## Addresses: absolute rather than relative
 
 **A reference names its page by its absolute address in the file**, rather than by its distance from where the journal's previous reference ended.
-A distance would mostly be the 15 bytes of framing between the end of one full payload page's content and the start of the next, one byte against an absolute address's four in a file of 2 MB to 256 MB; three bytes per reference are again 0.07 % of what it names.
+A distance would mostly be the 15 bytes of framing between the end of one full payload page's content and the start of the next, one byte against an absolute address's four in a file of 2 MB to 256 MB; the three bytes saved would be 0.07 % of a reference to a full page, and 0.15 % of one to 2 KB.
 An absolute address needs no cursor carried from record to record and from transaction to transaction, and a reference reads on its own.
-The span table delta-encodes addresses because a page holds hundreds of entries and every byte of them is overhead; a journal holds few external references, each beside a page of payload.
+The span table delta-encodes addresses because a page holds hundreds of entries and every byte of them is overhead; a journal holds few external references, each beside up to a page of payload.
 
 ## What the checksums cover: a checksum per reference
 
@@ -104,8 +105,9 @@ The reference's own checksum is preferred, because the page's framing would acce
 
 Recovery validates the transaction as it does today, by its `crc`, before it decodes a record, so [nothing unvalidated is ever parsed](../spec/journal.md#framing).
 It then reads each external reference's bytes from its page, checks the page's framing, and compares their CRC-32C with the reference's `crc`; a mismatch means the page's write did not reach the disk, and the transaction never happened.
-It costs four bytes per reference, at most 0.1 % of what the reference names, and changes nothing in the CRC chain.
+It changes nothing in the CRC chain, and costs four bytes per reference: 0.1 % of a reference to a full page, and `4 / r` of one to `r` bytes, at most 0.2 % of the shortest the store writes.
 The checksum needs no epoch salt: a page that holds exactly the bytes the reference names holds the right bytes, however it came to hold them.
+And since each reference checks its own bytes, a payload page can be appended to: an append that tears damages only bytes whose references then fail, as below.
 
 ### The payload page's framing alone
 
@@ -130,22 +132,30 @@ Requiring the journal's epoch also keeps a reference out of the governing header
 
 ## Payload pages and the world
 
-The [durability](../spec/durability.md) layer changes in three places, all of them where it already treats the journal specially.
+The [durability](../spec/durability.md) layer changes in four places, all of them where it already treats the journal specially.
 
 - **The world** of a header holds, besides the pages of the next epoch's journal, every payload page that a complete transaction of that journal names.
   A payload page written for a transaction that is never appended, because the application abandoned the transaction or the process died first, is in no world, and is reusable again.
 - **Invariant I1** exempts, besides the journal the new header names, the payload pages its transactions name: they are written after the header, and validate themselves, reference by reference.
   Once a flush folds them they are data pages of the header it commits, and its `fsync` covers them, since they were written before their transactions were appended, and those before the flush began.
-- **Page states** gain one transition: a reusable page becomes live when a transaction that names it as a payload page is appended, as a journal page does when the stream reaches it.
+- **Page states** gain two transitions: a reusable page becomes live when a transaction that names it as a payload page is appended, as a journal page does when the stream reaches it, and a live payload page may be appended to, as the journal's pages may.
+- **The reuse rule** gains the journal's exception for them: outside a flush, a writer writes to a live page only to append to the current journal or to one of its payload pages.
 
-The [reuse rule](../spec/durability.md#the-reuse-rule) is untouched, because a payload page is written while it is still reusable, and never again; a writer that wanted to add later transactions' payloads to a page already named would need an exception to it like the journal's own appends, and with it the risk that tearing that page loses transactions that write-back had already kept.
-The [start of a session](../spec/journal.md#the-start-of-a-session) is untouched too: a session that recovers a non-empty journal folds it before appending, which turns its payload pages into data pages that no one writes again.
+**Appending to a payload page keeps every guarantee**, because a tear needs a power cut, and under a power cut [the guarantee](../spec/durability.md#what-is-guaranteed) covers only the transactions that a completed flush folded, whose payload pages are data pages of a committed header that nothing writes again.
+A torn append damages the bytes earlier transactions of the same journal name, or the page's framing, so their checks fail and recovery stops before the first of them, losing only transactions since the last flush.
+Appends to the journal's own last page already accept exactly this.
+They differ in reach, not in kind: a tear of the journal's last page loses the transactions on it, while a tear of a payload page reaches back to the oldest transaction whose bytes share it.
+That is bounded by the epoch either way, and smaller files gain from appends, since remainders of several transactions can share one page instead of each leaving up to half a page of slack.
+
+An append adds bytes after the page's content and changes none that a transaction already names, since that would fail the transaction's check without any crash.
+It happens only while the page's journal is the one being appended to, never once a seal or a flush has ended that journal; a writer that keeps the epoch rule cannot do otherwise, since a page of epoch `E` cannot serve the references of journal `E + 1`.
+The [start of a session](../spec/journal.md#the-start-of-a-session) is untouched: a session that recovers a non-empty journal folds it before appending, which turns its payload pages into data pages that no one writes again.
 
 ## Recovery
 
 [Recovery](../spec/journal.md#recovery) gains one check after a transaction's `crc` has matched and before its records count:
 
-> For each external reference, read its page; if the page lies past the end of the file, its framing fails, it is no `Data` page of the journal's epoch, the referenced range does not lie inside its content, or the bytes there do not match the reference's `crc`, the transaction and everything after it are the torn tail.
+> For each external reference, read its page; if the page lies past the end of the file, its framing fails, it is no `Data` page of the journal's epoch, the referenced range does not lie inside its content, or the bytes the reference names do not match the reference's `crc`, the transaction and everything after it are the torn tail.
 
 A reference whose `length` is 0 or exceeds `MAX_PAGE_CONTENT`, or whose range would cross a page boundary, is a writer's bug, since a torn write cannot produce a matching transaction `crc`, and makes the file invalid.
 A writer never lets two references of a journal name overlapping bytes, which would leave two spans showing one byte after the fold; this is the span table's [writer invariant](../spec/span-table.md#rules-for-writers), stated for references, and readers need not check it, as they need not for spans.
@@ -158,18 +168,21 @@ Recovery reads every payload page that its journal names, which [opening](../imp
 The threshold applies to the bytes the record carries once the [whole-value guarantee](../spec/index.md#guarantees-an-implementation-must-provide) has reduced a replaced value to its changed range, and to a `Paste` that is written as its fallback bytes because its cut has ended.
 
 - **Cutting.**
-  The bytes are cut into runs of `MAX_PAGE_CONTENT`, one payload page each; a remainder of at least `T` gets a page of its own, or shares one with other remainders of the same transaction, since the transaction's pages are all written before it is appended, and a shorter remainder stays inline in the last record.
+  The bytes go into the epoch's open payload page as far as they fit, and the rest into new pages, a page's worth at a time; a last part shorter than `T` that would open a new page stays inline in the last record instead.
   A `Splice(pos, removed, bytes)` becomes `Splice(pos, removed, first)`, followed by splices that remove nothing at the cursor, delta 0; a `Write` becomes the same splices, with the first removing what the write overwrote, so that it still makes one cut, and a paste of the overwritten value still names one.
 - **The threshold.**
-  About half a page, 2 KB, to be measured: a payload page holding `r` bytes costs a page write now and leaves `4081 − r` bytes of slack for consolidation, where inline bytes cost `r` in the journal and `r` again in a data page the flush shares with other content.
+  About half a page, 2 KB, to be measured: a payload page holding `r` bytes costs a page write now and leaves `4081 − r` bytes of slack until an append or consolidation fills it, where inline bytes cost `r` in the journal and `r` again in a data page the flush shares with other content.
 - **The pages.**
   Payload pages come from the same pool as journal pages, lowest first, and stay in the store's mirror, so the store keeps the bytes in memory as its arena does today, and a flush reads nothing back.
-  A transaction abandoned after its pages were written returns them to the pool at once; a payload page that cannot be written fails the transaction, as a journal append that cannot get a page does.
+  A transaction abandoned after its pages were written returns the pages it opened to the pool at once, and the bytes it appended to the open page are dead from the start; a payload page that cannot be written fails the transaction, as a journal append that cannot get a page does.
 - **The budget.**
-  A transaction's share of the [journal's budget](../impl/transactions-and-batches.md#the-journals-budget) is what its records take in the journal, about 15 bytes per payload page with the escape, head, `removed`, length, address and checksum; payload pages do not count, since they are future data pages rather than overhead.
-  Creating `map7.kladde` takes about 16 KB of records, which fits its budget of 10 pages, so no flush is forced either before or after it.
+  A transaction fits the [journal's budget](../impl/transactions-and-batches.md#the-journals-budget) if the journal's pages and the epoch's payload pages, with the transaction added, stay within `B`.
+  A large transaction, more payload pages than the budget of at most 10, is then one too large for the budget on its own: a flush precedes it if the journal is not empty, and a flush follows it at once, so it is durable under a power cut as soon as that flush's `fsync` returns.
+  That flush is cheap, since it adopts the payload pages and writes only a header and a leaf or two.
+  The budget thus bounds both the journal's overhead in the file and how much content a power cut can take, which the payload pages are part of.
 - **The fold.**
-  A piece's source gains a third kind, `Payload(address)`, beside `Committed` and `Arena`; records edit those pieces as they edit others, and two of them continue each other only within one page.
+  A piece's source gains a third kind, `Payload(address)`, beside `Committed` and `Arena`, and records edit those pieces as they edit others.
+  Adjacent `Payload` pieces merge where their addresses continue, which happens only within one page, since past one page's content come its CRC, padding and the next page's framing; so each merged piece is one `Ref`.
 - **The flush.**
   A `Payload` piece becomes a `Ref` span over the bytes where they lie, with no data written; the payload pages enter the page table as data pages, covered by the bytes their spans show, and those that no span reaches retire like the journal's pages.
   The flush may still copy a short `Payload` piece inline, or into a page it writes anyway, where that is cheaper than keeping a page alive for it.
@@ -187,7 +200,8 @@ Estimated from the measurements above, for the drawing of 4.26 MB:
 | file after creation | 2139 pages | about 1075 pages, within a page or two of a consolidated copy |
 | bytes written to create it | 8.7 MB | 4.4 MB |
 
-Pasting the 2.3 MB JPEG later would write about 600 payload pages and 9 KB of records, and the next flush would write a header and a leaf or two for it.
+Creating it is followed by a flush, as `create` does anyway.
+Pasting the 2.3 MB JPEG later would write about 600 payload pages and 9 KB of records, and the flush that follows would write a header and a leaf or two for it.
 
 ## Deferred: encoding large values straight into payload pages
 
@@ -198,7 +212,7 @@ The format proposed here allows it already, since a reference names bytes wherev
 ## Where it lands
 
 - [Journal](../spec/journal.md): escape `1` and the external `bytes` in the record encoding, the cuts' bytes, the check in recovery, and its motivation.
-- [Durability](../spec/durability.md): the world, invariant I1, the page states, and what survives an application crash.
+- [Durability](../spec/durability.md): the world, invariant I1, the page states, the reuse rule's exception, and what survives an application crash.
 - [Span table](../spec/span-table.md#bounds): the bounds of a reference, which are a `Ref`'s.
 - [Conformance](../spec/conformance.md#the-suite): the suite drops every subset of payload page writes, as well as truncating the journal at every byte.
 - [Tooling](../spec/tooling.md): level 1 reports payload pages as the journal's.
@@ -207,5 +221,4 @@ The format proposed here allows it already, since a reference names bytes wherev
 ## Open questions
 
 - **The threshold**, measured on pastes of images and of large groups in the demo, and on kladde-svg.
-- **Whether payload pages should count toward a flush after all**: they are no overhead once adopted, but until a flush adopts them a crash makes recovery read them, and a long session of large pastes could hold many of them unadopted.
 - **Whether the flush should copy partly filled payload pages** into pages it writes anyway, rather than leave their slack to consolidation.
