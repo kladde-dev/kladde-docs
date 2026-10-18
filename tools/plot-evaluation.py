@@ -1,4 +1,14 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "matplotlib==3.11.2",
+#     "numpy==2.4.6",
+#     "scipy==1.17.1",
+# ]
+# ///
+# Pinned, because a figure is byte for byte the same only under the matplotlib
+# that drew it.
 """Turn kladde-bench's measurements into the figures of content/evaluation/.
 
 Every argument after the options names a run, `label=directory`, where the
@@ -16,8 +26,8 @@ Usage:
     tools/plot-evaluation.py --out content/evaluation/figures/consolidation \\
         main=content/evaluation/data/consolidation
 
-Needs matplotlib (`pip install matplotlib`, in a virtual environment if the
-system Python is externally managed).
+Run it with `uv run tools/plot-evaluation.py`, which installs the pinned
+matplotlib into a cached environment on first use.
 """
 
 import argparse

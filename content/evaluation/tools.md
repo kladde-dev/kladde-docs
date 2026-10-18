@@ -253,7 +253,7 @@ It recognizes the tables by name: `kladde-bench`'s by their scenario, `svg-bench
 `--only` draws the figures it names, out of `space-amplification`, `mixed`, `live-fraction`, `write-breakdown`, `budget`, `shrink`, `description`, `flush-latency`, `throughput`, `tradeoff`, `defrag-share`, `kappa`, `svg`, `svg-tradeoff`, `svg-pages` and `text-tradeoff`; a figure whose tables are missing is skipped.
 `svg-tradeoff` and `text-tradeoff` also draw the runs labelled `before/policy/knob/value/layout`, dashed and pale, to show how a change moved each policy's curve.
 `--summary` prints the last row of every series as a Markdown table.
-The figures are SVG, the same bytes whenever the data and matplotlib's version are, which `tools/requirements.txt` pins; install it with pip into a virtual environment.
+The figures are SVG, the same bytes whenever the data and matplotlib's version are, which the inline metadata of `tools/plot-evaluation.py` pins; `uv run` installs it.
 
 Each evaluation page keeps its tables, gzipped, in `content/evaluation/data/`, and lists the commands that ran them and that redraw its figures.
 

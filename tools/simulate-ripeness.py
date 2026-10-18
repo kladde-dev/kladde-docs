@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "numpy==2.4.6",
+#     "scipy==1.17.1",
+# ]
+# ///
 """Check how well a page's ripeness can be estimated from its own losses.
 
 Simulates pages of statements, each statement belonging to a share that dies
@@ -57,8 +64,8 @@ Usage:
     tools/simulate-ripeness.py sweep --beta 0.05,0.1,0.2 --c 1,2,3
     tools/simulate-ripeness.py example
 
-Needs numpy, and scipy for `--set bayes` (`pip install numpy scipy`, in a
-virtual environment if the system Python is externally managed).
+Run it with `uv run tools/simulate-ripeness.py`, which installs the pinned
+numpy and scipy into a cached environment on first use.
 """
 
 import argparse

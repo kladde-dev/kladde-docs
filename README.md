@@ -31,7 +31,7 @@ That is what Quartz made of the links, which `tools/make-pdf.py --check-only` ca
 ## Tooling
 
 Scripts in [`tools/`](tools/).
-The first two share the page list in [`tools/pages.py`](tools/pages.py); the other two draw the figures and check the drafts of [Evaluation](content/evaluation/), and need the Python packages in [`tools/requirements.txt`](tools/requirements.txt).
+The first two share the page list in [`tools/pages.py`](tools/pages.py); the other two draw the figures and check the drafts of [Evaluation](content/evaluation/), and need [uv](https://docs.astral.sh/uv/), which installs the Python packages they declare in their inline metadata the first time they run (`uv run tools/plot-evaluation.py`).
 
 ### The PDF
 
@@ -123,7 +123,7 @@ Generated crates and their shared target directory live in `.examples/` (gitigno
 
 [`tools/plot-evaluation.py`](tools/plot-evaluation.py) draws the figures of [Evaluation](content/evaluation/) from the benchmark tables kept next to them, and [`tools/simulate-ripeness.py`](tools/simulate-ripeness.py) checks the estimators of the ripeness drafts.
 Each evaluation page lists the commands that reproduce its figures.
-The figures are SVG, byte for byte the same whenever the data and matplotlib's version are, which is why [`tools/requirements.txt`](tools/requirements.txt) pins it.
+The figures are SVG, byte for byte the same whenever the data and matplotlib's version are, which is why [`tools/plot-evaluation.py`](tools/plot-evaluation.py) pins it in its inline metadata.
 
 ## Deployment
 
