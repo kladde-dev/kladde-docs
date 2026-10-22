@@ -67,6 +67,13 @@ SANS_FONT = "TeX Gyre Heros"
 # them; changing this can.
 MONO_FONT = "DejaVu Sans Mono"
 
+# Symbols that MAIN_FONT lacks and the pages use in prose (`⚠️`, `File ▸ New`),
+# set in SYMBOL_FONT rather than silently dropped.  DejaVu Sans covers both
+# and comes with MONO_FONT's package.  Add a character here when xelatex
+# reports it as a "Missing character".
+SYMBOL_FONT = "DejaVu Sans"
+FALLBACK_SYMBOLS = "⚠▸"   # ⚠ ▸
+
 # Leading for the box-drawing diagrams only.  DejaVu Sans Mono's U+2502 spans
 # 10.2pt of the 12pt line pitch LaTeX uses at 10pt, so stacked bars show a
 # 1.8pt seam at the default 1.0.  10.2/12 = 0.85 closes it exactly; anything
@@ -1040,6 +1047,31 @@ def preamble(title, subtitle=None, documentclass="report", toc=True,
         "  \\renewcommand{\\arraystretch}{1.2}",
         "  \\DefineVerbatimEnvironment{kladdediagram}{Verbatim}"
                 f"{{baselinestretch={DIAGRAM_LEADING},samepage=true}}",
+        # A raw block, because markdown would read the backticks of
+        # \\catcode`X as code spans.  Each fallback symbol becomes an active
+        # character that sets itself in SYMBOL_FONT.  U+FE0F, which asks for
+        # the emoji form of the character before it (the `⚠️` of the pages),
+        # has no glyph anywhere in the PDF's fonts and is dropped, leaving the
+        # text form.
+        "  ```{=latex}",
+        f"  \\newfontfamily\\kladdesymbols{{{SYMBOL_FONT}}}",
+        *(f"  \\catcode`{c}=\\active\\relax"
+          f"\\protected\\def{c}{{{{\\kladdesymbols\\symbol{{{ord(c)}}}}}}}"
+          for c in FALLBACK_SYMBOLS),
+        "  \\catcode`\ufe0f=\\active\\relax\\protected\\def\ufe0f{}",
+        # soul, which pandoc loads for ~~strikeout~~, measures every character
+        # it strikes through in the 8-bit font ectt1000 to find hyphenation
+        # points.  That font has no ’, so `~~the journal's~~` logs a missing
+        # character, although the struck text itself is set correctly.  Any
+        # monospaced Unicode font does the measuring as well; the reference
+        # width soul derived from ectt1000's hyphen has to follow it.
+        "  \\makeatletter",
+        "  \\ifdefined\\SOUL@tt",
+        f"  \\font\\SOUL@tt=\"{MONO_FONT}\" at 10pt",
+        "  \\setbox0\\hbox{\\SOUL@tt-}\\SOUL@ttwidth=\\wd0",
+        "  \\fi",
+        "  \\makeatother",
+        "  ```",
         # A class with a separate title page (`report`) ends `titlepage` with
         # `\\setcounter{page}\\@ne`, so the page after the title is page 1 again
         # and every printed folio thereafter trails its physical page by one.
