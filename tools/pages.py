@@ -31,6 +31,31 @@ ORDER = [
     "spec/schema/evolution.md",
     "spec/tooling.md",
     "spec/conformance.md",
+    # Work in progress; last, because nothing else may depend on it.
+    "drafts/index.md",
+    "drafts/open-issues.md",
+    "drafts/move-op.md",
+    "drafts/segments.md",
+    "drafts/ripeness.md",
+    "drafts/bayesian-ripeness.md",
+    "drafts/survivor-classes.md",
+    "drafts/variable-size.md",
+    "drafts/consolidation-from-statements.md",
+    "drafts/splices.md",
+    "drafts/cpp.md",
+    # Measurements of the Rust implementation, on the design's behalf.
+    "evaluation/index.md",
+    "evaluation/tools.md",
+    "evaluation/consolidation.md",
+    "evaluation/ripeness.md",
+    "evaluation/ripeness2.md",
+    "evaluation/bayesian-ripeness.md",
+    "evaluation/cleaning-edits.md",
+    "evaluation/ripeness-free-filling.md",
+    "evaluation/one-sequence.md",
+    "evaluation/cpp-port.md",
+    # Related work
+    "related-work.md",
     # The language-agnostic algorithms: state first, then what acts on it.
     "impl/implementation-notes.md",
     "impl/index.md",
@@ -42,7 +67,6 @@ ORDER = [
     "impl/consolidation.md",
     "impl/consolidator-state.md",
     "impl/transactions-and-batches.md",
-    "impl/related-work.md",
     # Rust: tutorial before design, since the tutorial motivates the traits.
     "rust/index.md",
     "rust/tutorial/index.md",
@@ -61,17 +85,6 @@ ORDER = [
     "rust/store.md",
     # C++: the second implementation.
     "cpp/index.md",
-    # Measurements of the Rust implementation, on the design's behalf.
-    "evaluation/index.md",
-    "evaluation/tools.md",
-    "evaluation/consolidation.md",
-    "evaluation/ripeness.md",
-    "evaluation/ripeness2.md",
-    "evaluation/bayesian-ripeness.md",
-    "evaluation/cleaning-edits.md",
-    "evaluation/ripeness-free-filling.md",
-    "evaluation/one-sequence.md",
-    "evaluation/cpp-port.md",
     # Kept for the reasoning, not the result.
     "superseded/index.md",
     "superseded/relocatable-heap.md",
@@ -80,18 +93,6 @@ ORDER = [
     "superseded/whole-entry-address-table.md",
     "superseded/sizes-from-extents.md",
     "superseded/allocations.md",
-    # Work in progress; last, because nothing else may depend on it.
-    "drafts/index.md",
-    "drafts/open-issues.md",
-    "drafts/move-op.md",
-    "drafts/segments.md",
-    "drafts/ripeness.md",
-    "drafts/bayesian-ripeness.md",
-    "drafts/survivor-classes.md",
-    "drafts/variable-size.md",
-    "drafts/consolidation-from-statements.md",
-    "drafts/splices.md",
-    "drafts/cpp.md",
 ]
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
@@ -104,4 +105,4 @@ def split_front_matter(text):
     if not m:
         return None, text
     t = TITLE_LINE.search(m.group(1))
-    return (t.group(1).strip('"\'') if t else None), text[m.end():]
+    return (t.group(1).strip("\"'") if t else None), text[m.end() :]

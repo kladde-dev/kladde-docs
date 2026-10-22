@@ -23,7 +23,6 @@ Those decisions are documented in the language-specific documentations (currentl
 | [Consolidation](consolidation.md) | reclaiming garbage: victim selection, evacuation, the page rewrite, merging spans, and the budget |
 | [Consolidator state](consolidator-state.md) | what consolidation could carry from one session to the next in the private chain |
 | [Transactions and batches](transactions-and-batches.md) | grouping operations into transactions, and the buffering state machine |
-| [Related work](related-work.md) | where the design comes from, and where it parts company |
 | [Implementation notes](implementation-notes.md) | where kladde-rs departs from these documents, and what it found |
 
 ## The shape of an implementation

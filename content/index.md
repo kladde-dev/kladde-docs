@@ -72,12 +72,13 @@ See [Tooling](spec/tooling.md) for how far each of those goes.
 | section | what it holds | who it is for |
 | --- | --- | --- |
 | **[Specification](spec/)** | the normative, language-independent description: what a kladde file is, what invariants it must uphold, and what guarantees an implementation must provide | implementers porting kladde to a new language; tool authors |
+| **[Drafts](drafts/)** | half-baked ideas in progress, not yet held to the separation the other sections observe | the authors |
+| **[Evaluation](evaluation/)** | measurements of kladde-rs on realistic workloads, what they say about the design, and what porting it to C++ found | anyone judging the design or choosing its constants |
+| **[Related work](related-work.md)** | what applications use in kladde's place today, where the design comes from, and where it parts company | potential users exploring whether kladde is the right choice; contributors researching where ideas came from |
 | **[Implementation](impl/)** | the reference algorithms and data structures — what must be maintained in memory to satisfy the spec, and how — stated in language-agnostic pseudocode | anyone building an implementation in any language |
 | **[kladde-rs](rust/)** | everything specific to the Rust implementation: crate layout, traits, `Mut` handles, macros, and the Rust-specific half of the algorithms | Rust users, and Rust contributors |
 | **[kladde-cpp](cpp/)** | everything specific to the C++ implementation: its layers, which C++ types are durable, its handles and its error handling | C++ users, and C++ contributors |
-| **[Evaluation](evaluation/)** | measurements of kladde-rs on realistic workloads, what they say about the design, and what porting it to C++ found | anyone judging the design or choosing its constants |
 | **[Superseded](superseded/)** | designs that were worked out and then rejected, kept for the reasoning | anyone tempted to re-propose one of them |
-| **[Drafts](drafts/)** | half-baked ideas in progress, not yet held to the separation the other sections observe | the authors |
 
 The three-way split between **spec**, **impl**, and **rust** is the organising idea, and the test for which one a statement belongs in is:
 
