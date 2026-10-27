@@ -474,6 +474,12 @@ def self_test():
     check("touching bars are merged into one",
           merged == "\\DIFdelbegin \\DIFdel{a}\\DIFadd{b}\\DIFaddend \n")
 
+    embed = ('<iframe style="width: 100%" src="https://www.youtube-nocookie.com/embed/D-lovlY30kQ" '
+             'title="A teaser" allowfullscreen></iframe>')
+    check("an embedded video becomes a link to it",
+          substitute_videos(f"a\n\n{embed}\n\nb")
+          == "a\n\nVideo: [A teaser](https://youtu.be/D-lovlY30kQ)\n\nb")
+
     for name in cases:
         print(f"  {'FAIL' if name in failures else 'ok  '}  {name}")
     print(f"{len(cases) - len(failures)}/{len(cases)} passed")
@@ -817,6 +823,19 @@ def substitute_mermaid(body, paths):
     return "\n".join(out)
 
 
+# A YouTube embed on a line of its own, as the site shows a video: an iframe
+# whose `src` is a youtube-nocookie.com (or youtube.com) embed URL and whose
+# `title` names the video.
+VIDEO = re.compile(
+    r'^<iframe\b(?=[^>]*\bsrc="https://www\.youtube(?:-nocookie)?\.com/embed/([\w-]+)[^"]*")'
+    r'(?=[^>]*\btitle="([^"]*)")[^>]*>\s*</iframe>[ \t]*$', re.M)
+
+
+def substitute_videos(body):
+    """Replace each embedded video with a link to it, since a PDF cannot play one."""
+    return VIDEO.sub(lambda m: f"Video: [{m.group(2)}](https://youtu.be/{m.group(1)})", body)
+
+
 def _cells(line):
     s = line.strip().strip("|")
     return [c.strip() for c in re.split(r"(?<!\\)\|", s)]
@@ -1114,7 +1133,7 @@ def build_markdown(pages, problems, figdir=None, warnings=None,
     # that node is started once rather than once per diagram.
     bodies = {}
     for rel, page in pages.items():
-        body = expand_wikilinks(rel, page["body"], pages, problems)
+        body = expand_wikilinks(rel, substitute_videos(page["body"]), pages, problems)
         body = rewrite_links(rel, body, pages, problems, figdir=figdir)
         bodies[rel] = stamp_headings(body, page["prefix"])
     sources = [s for body in bodies.values() for s in collect_mermaid(body)]
@@ -1135,7 +1154,8 @@ def build_standalone(text, rel, problems, figdir=None, warnings=None,
                      for_diff=False):
     """One page as its own document."""
     page = read_page(text, rel, fallback_title=fallback_title or Path(rel).stem)
-    body = expand_wikilinks(rel, page["body"], {rel: page}, problems, standalone=True)
+    body = expand_wikilinks(rel, substitute_videos(page["body"]), {rel: page}, problems,
+                            standalone=True)
     body = rewrite_links(rel, body, {rel: page}, problems, standalone=True, figdir=figdir)
     body = stamp_headings(body, page["prefix"])
     sources = collect_mermaid(body)

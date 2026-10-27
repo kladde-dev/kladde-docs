@@ -9,6 +9,8 @@ A cross-language file format and durability protocol with crash-safety guarantee
 Founded and currently maintained by [Robert Bamler](https://robamler.github.io/).
 Source on [GitHub](https://github.com/kladde-dev); all of these pages also as [one PDF](https://kladde-dev.github.io/kladde.pdf).
 
+<iframe style="width: 100%; aspect-ratio: 16 / 9; border: 0;" src="https://www.youtube-nocookie.com/embed/D-lovlY30kQ" title="This fork of Inkscape needs no save button. It uses kladde's durable data structures." allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+
 **Kladde** is becoming a system for *durable data structures*: containers (strings, vectors, hash maps, trees, ...) and user-defined types that behave like their ordinary in-memory counterparts, but whose every mutation is durably recorded to a file as it happens, in a way that is optimized for disk I/O.
 Unlike serialization formats like JSON or XML, there is no save step and no serialization pass.
 Unlike sqlite, there is no SQL and no object-relational layer.
